@@ -1,0 +1,17 @@
+site_name: Phidler
+site_description: Graphical CAD application for photonic integrated circuit layout, built on gdsfactory.
+docs_dir: docs
+
+theme:
+  name: readthedocs
+  highlightjs: true
+
+nav:
+  - Home: index.md
+  - User Guide: guide.md
+  - Development: development.md
+
+markdown_extensions:
+  - tables
+  - fenced_code
+  - toc

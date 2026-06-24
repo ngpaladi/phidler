@@ -4,6 +4,20 @@ A graphical CAD application for photonic integrated circuit (PIC) layout,
 built on [gdsfactory](https://gdsfactory.github.io/gdsfactory/) (phidl's
 actively-maintained successor) with a PySide6 desktop UI, and exportable GDS.
 
+A task-oriented user guide also lives in [`docs/`](docs/) as an
+[MkDocs](https://www.mkdocs.org/) site (ReadTheDocs theme). Build/serve it
+locally with:
+
+```
+pip install -e ".[docs]"
+mkdocs serve
+```
+
+then open <http://127.0.0.1:8000>. This README stays the
+single-page reference with full implementation detail; the doc site is
+shorter and organized by task (placing components, routing, saving,
+scripting console, etc.).
+
 ## Running it
 
 ```

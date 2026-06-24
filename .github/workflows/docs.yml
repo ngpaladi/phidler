@@ -1,0 +1,55 @@
+name: Build and deploy docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install docs dependencies
+        # Deliberately just `mkdocs`, not `pip install -e ".[docs]"`:
+        # mkdocs build only reads markdown + copies the already-checked-in
+        # screenshot PNGs, it never imports the phidler package itself, so
+        # pulling in the project's full dependency tree (gdsfactory,
+        # PySide6) here would be slow and an unnecessary failure point on
+        # a headless CI runner for zero benefit.
+        run: pip install mkdocs
+
+      - name: Build site
+        run: mkdocs build --strict
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
