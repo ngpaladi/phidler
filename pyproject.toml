@@ -1,0 +1,24 @@
+[project]
+name = "phidler"
+version = "0.1.0"
+description = "Graphical CAD application for photonic integrated circuit layout, built on gdsfactory"
+requires-python = ">=3.10"
+dependencies = [
+    "gdsfactory>=9.44.0",
+    "PySide6>=6.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

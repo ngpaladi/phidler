@@ -1,0 +1,139 @@
+from __future__ import annotations
+
+import json
+from dataclasses import asdict
+from pathlib import Path
+
+from .custom_components import load_custom_components
+from .model.document import LayoutDocument, ProjectSettings
+from .model.layers import LayerInfo
+from .pdk_catalog import ComponentSpec
+
+PROJECT_VERSION = 1
+
+
+def save_project(document: LayoutDocument, path: str) -> None:
+    """Serializes the *recipe* needed to rebuild the document, not the
+    gdsfactory objects themselves (those aren't serializable and don't need
+    to be — replaying add_instance/add_route reconstructs them exactly)."""
+    data = {
+        "version": PROJECT_VERSION,
+        "instances": [
+            {
+                "id": inst.id,
+                "component_spec": inst.component_spec,
+                "kwargs": inst.kwargs,
+                "transform": asdict(document.get_transform(inst.id)),
+            }
+            for inst in document.instances.values()
+        ],
+        "routes": [
+            {
+                "id": route.id,
+                "instance_id_a": route.instance_id_a,
+                "port_name_a": route.port_name_a,
+                "instance_id_b": route.instance_id_b,
+                "port_name_b": route.port_name_b,
+                "cross_section": route.cross_section,
+            }
+            for route in document.routes.values()
+        ],
+        "layers": [asdict(info) for info in document.layers.values()],
+        "reference_path": document.reference_path,
+        "custom_component_paths": document.custom_component_paths,
+        "project_settings": asdict(document.project_settings),
+    }
+    Path(path).write_text(json.dumps(data, indent=2))
+
+
+def load_project(path: str, document: LayoutDocument, scene) -> dict[str, ComponentSpec]:
+    """Replaces the contents of `document`/`scene` in place — they stay the
+    same live objects already wired into the rest of the UI — by replaying
+    the saved recipe through the normal add_instance/add_route APIs.
+    Routes are replayed after all instances since they reference instance
+    ids by name.
+
+    Returns any custom components re-imported along the way (see below) so
+    the caller can refresh the palette with them — project_io only owns
+    `document`/`scene`, not the palette widget.
+    """
+    data = json.loads(Path(path).read_text())
+
+    removed_inst_ids, removed_route_ids = document.clear_all()
+    for inst_id in removed_inst_ids:
+        scene.remove_instance_item(inst_id)
+    for route_id in removed_route_ids:
+        scene.remove_route_item(route_id)
+    scene.clear_reference_item()
+
+    # Custom components only exist in the active PDK's cell registry
+    # because load_custom_components() ran earlier *this process* — in a
+    # fresh session gf.get_component(name) wouldn't resolve them at all,
+    # so any instance using one must be re-imported before instance replay
+    # below, not after (confirmed empirically: a project with a custom
+    # part raised ValueError mid-replay and left the document empty,
+    # since clear_all() had already run by the time the failure happened).
+    custom_specs: dict[str, ComponentSpec] = {}
+    for custom_path in data.get("custom_component_paths", []):
+        try:
+            result = load_custom_components(custom_path)
+        except Exception:
+            # the rest of the project can still load even if a custom
+            # file moved/was deleted since this project was saved — any
+            # instance that actually needed it will fail its own
+            # add_instance call below and be reported then, rather than
+            # failing the whole load over a missing file up front
+            continue
+        custom_specs.update(result.specs)
+        document.record_custom_component_path(custom_path)
+
+    max_id = 0
+    for inst_data in data.get("instances", []):
+        t = inst_data["transform"]
+        document.add_instance(
+            inst_data["component_spec"],
+            inst_data["kwargs"],
+            x=t["x"],
+            y=t["y"],
+            rotation=t["rotation"],
+            mirror=t["mirror"],
+            mag=t.get("mag", 1.0),  # older saved projects predate the scale feature
+            inst_id=inst_data["id"],
+        )
+        scene.add_instance_item(inst_data["id"])
+        max_id = max(max_id, inst_data["id"])
+
+    for route_data in data.get("routes", []):
+        document.add_route(
+            route_data["instance_id_a"],
+            route_data["port_name_a"],
+            route_data["instance_id_b"],
+            route_data["port_name_b"],
+            route_data.get("cross_section", "strip"),
+            route_id=route_data["id"],
+        )
+        scene.add_route_item(route_data["id"])
+        max_id = max(max_id, route_data["id"])
+
+    for layer_data in data.get("layers", []):
+        info = LayerInfo(**layer_data)
+        document.layers[info.key] = info
+
+    document.bump_id_counter(max_id + 1)
+
+    settings_data = data.get("project_settings")
+    document.project_settings = ProjectSettings(**settings_data) if settings_data else ProjectSettings()
+
+    reference_path = data.get("reference_path")
+    if reference_path:
+        try:
+            document.import_reference(reference_path)
+        except Exception:
+            # the rest of the project is still valid even if the backdrop
+            # GDS moved/was deleted since this project was saved — don't
+            # fail the whole load over a missing visual aid
+            document.clear_reference()
+        else:
+            scene.show_reference()
+
+    return custom_specs
