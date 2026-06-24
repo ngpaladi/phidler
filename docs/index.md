@@ -8,13 +8,19 @@ desktop UI, and exportable GDS.
 
 ## Installation
 
+Requires Python 3.10+.
+
 ```
-git clone <this repo>
+git clone https://github.com/ngpaladi/phidler.git
 cd phidler
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 ```
+
+This installs Phidler in editable mode along with its test dependencies
+(`pytest`). For building this documentation site too, use
+`pip install -e ".[dev,docs]"` instead.
 
 ## Running it
 

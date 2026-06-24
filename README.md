@@ -4,19 +4,32 @@ A graphical CAD application for photonic integrated circuit (PIC) layout,
 built on [gdsfactory](https://gdsfactory.github.io/gdsfactory/) (phidl's
 actively-maintained successor) with a PySide6 desktop UI, and exportable GDS.
 
-A task-oriented user guide also lives in [`docs/`](docs/) as an
-[MkDocs](https://www.mkdocs.org/) site (ReadTheDocs theme). Build/serve it
-locally with:
+A task-oriented user guide is also published at
+**[noahpaladino.com/phidler](https://www.noahpaladino.com/phidler/)** —
+shorter than this README and organized by task (placing components,
+routing, saving, scripting console, etc.). It's built from
+[`docs/`](docs/) with [MkDocs](https://www.mkdocs.org/); to build/serve it
+yourself instead:
 
 ```
 pip install -e ".[docs]"
 mkdocs serve
 ```
 
-then open <http://127.0.0.1:8000>. This README stays the
-single-page reference with full implementation detail; the doc site is
-shorter and organized by task (placing components, routing, saving,
-scripting console, etc.).
+then open <http://127.0.0.1:8000>. This README stays the single-page
+reference with full implementation detail.
+
+## Installation
+
+Requires Python 3.10+.
+
+```
+git clone https://github.com/ngpaladi/phidler.git
+cd phidler
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
 
 ## Running it
 
@@ -26,7 +39,7 @@ scripting console, etc.).
 
 This activates the project's venv and launches the app. (See "Environment
 gotcha" below for why a plain `python -m phidler` from a different shell
-might crash on this specific machine.)
+might crash on some Linux systems.)
 
 ![Phidler main window: a ring resonator and an MMI splitter on the canvas, with the component palette, layers, and DRC panels visible](docs/screenshots/main_overview.png)
 
@@ -346,15 +359,19 @@ If anything feels off (drag lag, grid too dense/sparse, colors hard to
 read, zoom too sensitive, routing clicks feeling imprecise, the context
 menu appearing in the wrong place), tell me and I'll tune it.
 
-## Environment gotcha (this machine specifically)
+## Environment gotcha
 
-This machine has an apt-installed Qt6 6.4.2 under
-`/usr/lib/x86_64-linux-gnu/`, which conflicts with the newer Qt6 bundled
-inside the PySide6 wheel (`undefined symbol` crash on import) because the
-dynamic linker finds the system one first. `run.sh` and `run_tests.sh` work
-around this by prepending PySide6's own Qt lib directory to
-`LD_LIBRARY_PATH` before launching. If you ever run the app a different way
-(not via those scripts), you may need to do the same manually.
+On Linux, if your system already has its own Qt6 install, the dynamic
+linker can resolve it *before* the newer Qt6 bundled inside the PySide6
+wheel, causing an `undefined symbol` crash on import. `run.sh` and
+`run_tests.sh` work around this by prepending PySide6's own Qt lib
+directory to `LD_LIBRARY_PATH` before launching, so the linker finds the
+matching version first. If you ever run the app a different way (not via
+those scripts) and hit this crash, set the same variable yourself:
+
+```
+export LD_LIBRARY_PATH="$(find .venv/lib -maxdepth 1 -name 'python3.*')/site-packages/PySide6/Qt/lib:$LD_LIBRARY_PATH"
+```
 
 ## Architecture
 

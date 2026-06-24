@@ -5,13 +5,19 @@ the app, see the [User Guide](guide.md).
 
 ## Environment notes
 
-This machine has an apt-installed Qt6 6.4.2 under
-`/usr/lib/x86_64-linux-gnu/`, which conflicts with the newer Qt6 bundled
-inside the PySide6 wheel (`undefined symbol` crash on import) because the
-dynamic linker finds the system one first. `run.sh` and `run_tests.sh` work
+On Linux, if your system already has a Qt6 install (from whatever
+package manager your distro uses), the dynamic linker can resolve it
+*before* the newer Qt6 bundled inside the PySide6 wheel, causing an
+`undefined symbol` crash on import. `run.sh` and `run_tests.sh` work
 around this by prepending PySide6's own Qt lib directory to
-`LD_LIBRARY_PATH` before launching. If you ever run the app a different way
-(not via those scripts), you may need to do the same manually.
+`LD_LIBRARY_PATH` before launching, so the linker finds the matching
+version first. If you ever run the app a different way (not via those
+scripts) and hit this crash, set the same environment variable yourself —
+`run.sh` derives the path the same way:
+
+```
+export LD_LIBRARY_PATH="$(find .venv/lib -maxdepth 1 -name 'python3.*')/site-packages/PySide6/Qt/lib:$LD_LIBRARY_PATH"
+```
 
 ## Code layout
 
