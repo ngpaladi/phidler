@@ -366,11 +366,21 @@ tests/                       # all run under QT_QPA_PLATFORM=offscreen
   end-to-end tests do exist in `test_fdtd_window.py`, each driven via a
   bounded `QCoreApplication.processEvents()` polling loop rather than a
   blind wait — kept deliberately few, for the same reason.
+- Scripted sources and energy-based input were both explicitly requested
+  ("allow for scripted sources, or injecting a photon... at a given
+  energy") but initially scoped out of the plan and shipped without
+  them — caught on review, not by the user having to ask twice. Fixed by
+  adding a `kind="scripted"` `SourceSpec` (`ScriptedWaveform` in
+  `fdtd_sim.py`, `eval()`-based with the same no-sandbox trust model the
+  scripting console already uses) and a bidirectional Wavelength↔Energy
+  table-column sync using the `wavelength_um_from_photon_energy_ev`/
+  `photon_energy_ev_from_wavelength_um` helpers, which existed and were
+  tested from the start but simply weren't wired into the UI.
 
 ## Testing
 
 Run the suite with `./run_tests.sh`. It runs headlessly under
-`QT_QPA_PLATFORM=offscreen` and currently covers 276 tests.
+`QT_QPA_PLATFORM=offscreen` and currently covers 284 tests.
 
 ### Bugs found from actual use
 

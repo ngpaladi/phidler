@@ -249,6 +249,40 @@ def test_build_source_unknown_kind_raises(qapp):
         build_source(_SOI_SETTINGS, spec)
 
 
+def test_build_source_scripted_requires_a_script(qapp):
+    spec = SourceSpec(x_um=0.0, y_um=0.0, kind="scripted", script=None)
+    with pytest.raises(ValueError, match="scripted sources need a script"):
+        build_source(_SOI_SETTINGS, spec)
+
+
+def test_build_source_scripted_evaluates_the_expression(qapp):
+    spec = SourceSpec(x_um=0.0, y_um=0.0, kind="scripted", script="np.sin(2*np.pi*1.93e14*t)")
+    source = build_source(_SOI_SETTINGS, spec)
+    assert source.component == "Ez"
+    import numpy as np
+
+    values = source.waveform(np.array([0.0, 1e-15, 2e-15]))
+    assert np.isfinite(values).all()
+
+
+def test_run_simulation_with_a_scripted_source_produces_a_finite_field(qapp):
+    doc = _tiny_document()
+    spec = SourceSpec(
+        x_um=0.0, y_um=0.0, kind="scripted", script="np.sin(2*np.pi*1.93e14*t) * np.exp(-((t-2e-15)/1e-15)**2)"
+    )
+    params = FdtdParams(
+        wavelength_um=1.55, cell_size_um=0.1, run_time_fs=3.0, padding_um=0.3, pulse_fwhm_fs=1.0, sources=(spec,)
+    )
+    sim = build_simulation(doc, params)
+    result = run_simulation(sim)
+
+    import numpy as np
+
+    arr = result.fields["field"]["Ez"]
+    assert np.isfinite(arr).all()
+    assert (arr != 0).any()
+
+
 def test_build_source_photon_count_scales_amplitude_by_sqrt_n(qapp):
     """The N-fold *energy* scaling (not N^2-fold, which coherently stacking
     N copies at the same place/phase would give) was verified directly via

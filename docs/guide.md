@@ -271,21 +271,31 @@ plays the result back as a movie:
    canvas (clicking near a port snaps to its exact position, the same
    as the measure tool). Each click adds a row to the source table and a
    marker on the canvas.
-2. In the table, pick each source's **Kind**:
+2. Set the source's color either as **Wavelength (µm)** or **Energy
+   (eV)** — editing either column updates the other automatically, so
+   you can specify "a photon at 0.8 eV" directly instead of converting
+   it to a wavelength by hand.
+3. In the table, pick each source's **Kind**:
    - **dipole** — a plain oscillating point source. Always available,
      simplest option, not mode-matched to anything.
    - **single_photon** — launches a wavepacket built from the real
      guided mode at that position (needs **Core width** filled in),
      normalized to carry approximately one photon's worth of energy.
-     **Photon count** scales the energy up from there (entered as a
-     plain count, not as a separate energy field — multiply it up if
-     you want a brighter pulse).
-3. Set **Wavelength**, **Cell size**, and **Run time**, then click **Run
-   Simulation**. If the estimated run time is more than a few seconds,
-   you'll be asked to confirm first — true 3D propagation is genuinely
-   more expensive than a quick preview, and this estimate is calibrated
-   against real measured runs, not guessed.
-4. Once it finishes, use the **Play** button and the slider underneath
+     **Photon count** scales the energy up from there.
+   - **scripted** — type a Python expression of `t` (time, in seconds)
+     into the **Script** column, e.g.
+     `np.sin(2*np.pi*1.93e14*t) * np.exp(-((t-3e-15)/1e-15)**2)`
+     (`np` is available). Evaluated with the same trust model as the
+     scripting console elsewhere in this app — full Python, not a
+     restricted sandbox, since this is already a single-user desktop
+     tool. Wavelength/Energy/Photon count/Core width are ignored for
+     this kind.
+4. Set **Cell size** and **Run time**, then click **Run Simulation**. If
+   the estimated run time is more than a few seconds, you'll be asked to
+   confirm first — true 3D propagation is genuinely more expensive than
+   a quick preview, and this estimate is calibrated against real
+   measured runs, not guessed.
+5. Once it finishes, use the **Play** button and the slider underneath
    to scrub through the field evolving over time, overlaid on an outline
    of your actual chip layout — looping back to the start automatically.
 

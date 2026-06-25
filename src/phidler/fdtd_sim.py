@@ -79,15 +79,36 @@ class SourceSpec:
     "single_photon"` solves the local guided mode at `core_width_um` (the
     cross-section directly under the source position) and launches a real
     photonfdtd SinglePhotonSource built from that profile — needs
-    core_width_um; raises if it's missing rather than guessing a width."""
+    core_width_um; raises if it's missing rather than guessing a width.
+    `kind="scripted"` ignores wavelength_um/photon_count/core_width_um and
+    instead evaluates `script` (a Python expression of `t`, in seconds) as
+    the source's time-domain waveform — needs `script`."""
 
     x_um: float
     y_um: float
-    kind: str = "dipole"  # "dipole" | "single_photon"
+    kind: str = "dipole"  # "dipole" | "single_photon" | "scripted"
     wavelength_um: float = 1.55
     photon_count: int = 1
     core_width_um: float | None = None
     fwhm_fs: float = 3.0
+    script: str | None = None
+
+
+class ScriptedWaveform:
+    """Wraps a user-supplied Python expression of `t` (seconds, a NumPy
+    array) into a callable waveform, e.g.
+    "np.sin(2*np.pi*1.93e14*t) * np.exp(-((t-5e-15)/2e-15)**2)". Evaluated
+    with eval() and no restricted namespace — the same trust model the
+    scripting console already uses elsewhere in this app (a single-user
+    desktop tool, not a new security boundary), not a sandboxed subset."""
+
+    def __init__(self, script: str) -> None:
+        self.script = script
+
+    def __call__(self, t):
+        import numpy as np
+
+        return eval(self.script, {"np": np, "pi": np.pi}, {"t": np.asarray(t)})
 
 
 @dataclass(frozen=True)
@@ -250,8 +271,22 @@ def build_source(settings: ProjectSettings, spec: SourceSpec) -> Any:
     photon_count=4, 9x at photon_count=9, relative to photon_count=1) —
     the relative N-scaling is correct even though the absolute per-photon
     calibration inherits the library's own approximation.
+
+    "scripted": ignores wavelength_um/photon_count/core_width_um and
+    evaluates spec.script (a Python expression of t, in seconds) as the
+    waveform — see ScriptedWaveform.
     """
     pf = _import_photonfdtd()
+
+    if spec.kind == "scripted":
+        if not spec.script:
+            raise ValueError("scripted sources need a script")
+        return pf.PointDipole(
+            position=(spec.x_um * 1e-6, spec.y_um * 1e-6, 0.0),
+            component="Ez",
+            waveform=ScriptedWaveform(spec.script),
+        )
+
     freq0 = _C0 / (spec.wavelength_um * 1e-6)
     waveform = pf.GaussianPulse(freq0=freq0, fwhm=spec.fwhm_fs * 1e-15)
 

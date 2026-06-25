@@ -1,6 +1,7 @@
 import sys
 import types
 
+import pytest
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import QMessageBox
 
@@ -123,12 +124,14 @@ def test_remove_button_removes_row_and_marker(qapp):
 
 
 def test_collect_source_specs_reflects_table_state(qapp):
+    from phidler.panels.fdtd_window import _COL_CORE_WIDTH, _COL_KIND, _COL_PHOTON_COUNT
+
     win = MainWindow()
     fdtd_win = FdtdWindow(win.document, win.view)
     win.view.source_placement_requested.emit(1.0, 2.0)
-    fdtd_win.source_table.cellWidget(0, 2).setCurrentText("single_photon")
-    fdtd_win.source_table.item(0, 4).setText("3")
-    fdtd_win.source_table.item(0, 5).setText("0.6")
+    fdtd_win.source_table.cellWidget(0, _COL_KIND).setCurrentText("single_photon")
+    fdtd_win.source_table.item(0, _COL_PHOTON_COUNT).setText("3")
+    fdtd_win.source_table.item(0, _COL_CORE_WIDTH).setText("0.6")
 
     specs = fdtd_win._collect_source_specs()
     assert len(specs) == 1
@@ -138,6 +141,74 @@ def test_collect_source_specs_reflects_table_state(qapp):
     assert spec.core_width_um == 0.6
     assert spec.x_um == 1.0
     assert spec.y_um == 2.0
+
+
+def test_placing_a_source_fills_in_the_equivalent_photon_energy(qapp):
+    from phidler.fdtd_sim import photon_energy_ev_from_wavelength_um
+    from phidler.panels.fdtd_window import _COL_ENERGY
+
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    fdtd_win.run_wavelength_spin.setValue(1.55)
+    win.view.source_placement_requested.emit(0.0, 0.0)
+
+    energy = float(fdtd_win.source_table.item(0, _COL_ENERGY).text())
+    assert energy == pytest.approx(photon_energy_ev_from_wavelength_um(1.55), abs=1e-3)
+
+
+def test_editing_energy_column_updates_wavelength_column(qapp):
+    from phidler.fdtd_sim import wavelength_um_from_photon_energy_ev
+    from phidler.panels.fdtd_window import _COL_ENERGY, _COL_WAVELENGTH
+
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    win.view.source_placement_requested.emit(0.0, 0.0)
+
+    fdtd_win.source_table.item(0, _COL_ENERGY).setText("0.8")
+    wavelength = float(fdtd_win.source_table.item(0, _COL_WAVELENGTH).text())
+    assert wavelength == pytest.approx(wavelength_um_from_photon_energy_ev(0.8), abs=1e-3)
+
+
+def test_editing_wavelength_column_updates_energy_column(qapp):
+    from phidler.fdtd_sim import photon_energy_ev_from_wavelength_um
+    from phidler.panels.fdtd_window import _COL_ENERGY, _COL_WAVELENGTH
+
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    win.view.source_placement_requested.emit(0.0, 0.0)
+
+    fdtd_win.source_table.item(0, _COL_WAVELENGTH).setText("1.31")
+    energy = float(fdtd_win.source_table.item(0, _COL_ENERGY).text())
+    assert energy == pytest.approx(photon_energy_ev_from_wavelength_um(1.31), abs=1e-3)
+
+
+def test_scripted_kind_collects_the_script_text(qapp):
+    from phidler.panels.fdtd_window import _COL_KIND, _COL_SCRIPT
+
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    win.view.source_placement_requested.emit(0.0, 0.0)
+    fdtd_win.source_table.cellWidget(0, _COL_KIND).setCurrentText("scripted")
+    fdtd_win.source_table.item(0, _COL_SCRIPT).setText("np.sin(2*np.pi*1.93e14*t)")
+
+    specs = fdtd_win._collect_source_specs()
+    assert specs[0].kind == "scripted"
+    assert specs[0].script == "np.sin(2*np.pi*1.93e14*t)"
+
+
+def test_run_simulation_with_a_scripted_source_completes(qapp):
+    win = MainWindow()
+    doc = _tiny_document()
+    fdtd_win = FdtdWindow(doc, win.view)
+    fdtd_win.run_cell_size_spin.setValue(0.1)
+    fdtd_win.run_time_spin.setValue(3.0)
+    win.view.source_placement_requested.emit(0.0, 0.0)
+    fdtd_win.source_table.cellWidget(0, 2).setCurrentText("scripted")
+    fdtd_win.source_table.item(0, 7).setText("np.sin(2*np.pi*1.93e14*t) * np.exp(-((t-3e-15)/1e-15)**2)")
+
+    fdtd_win._on_run_clicked()
+    assert _pump_until(lambda: fdtd_win._fdtd_thread is not None and not fdtd_win._fdtd_thread.isRunning())
+    assert "Done" in fdtd_win.run_status_label.text()
 
 
 def test_dipole_row_has_no_core_width(qapp):

@@ -33,8 +33,10 @@ from phidler.fdtd_sim import (
     estimate_run_seconds,
     mode_confinement,
     nearest_z_index,
+    photon_energy_ev_from_wavelength_um,
     run_simulation,
     solve_mode_profile,
+    wavelength_um_from_photon_energy_ev,
 )
 from phidler.model.document import LayoutDocument, shapes_for_cell
 
@@ -45,7 +47,18 @@ from phidler.model.document import LayoutDocument, shapes_for_cell
 # count: time is what the user actually cares about before deciding to wait.
 _RUN_TIME_WARNING_SECONDS = 5.0
 
-_TABLE_COLUMNS = ["X (µm)", "Y (µm)", "Kind", "Wavelength (µm)", "Photon count", "Core width (µm)", ""]
+_TABLE_COLUMNS = [
+    "X (µm)",
+    "Y (µm)",
+    "Kind",
+    "Wavelength (µm)",
+    "Energy (eV)",
+    "Photon count",
+    "Core width (µm)",
+    "Script (kind=scripted)",
+    "",
+]
+_COL_X, _COL_Y, _COL_KIND, _COL_WAVELENGTH, _COL_ENERGY, _COL_PHOTON_COUNT, _COL_CORE_WIDTH, _COL_SCRIPT, _COL_REMOVE = range(9)
 
 
 class ModeWorker(QObject):
@@ -118,6 +131,7 @@ class FdtdWindow(QMainWindow):
         self._fdtd_worker = None
 
         self._source_rows: list[dict] = []  # {"marker":..., row index tracked via table}
+        self._syncing_wavelength_energy = False
         self._last_sim = None
         self._last_result = None
         self._chip_outline_drawn = False
@@ -286,6 +300,7 @@ class FdtdWindow(QMainWindow):
 
         self.source_table = QTableWidget(0, len(_TABLE_COLUMNS))
         self.source_table.setHorizontalHeaderLabels(_TABLE_COLUMNS)
+        self.source_table.itemChanged.connect(self._on_source_table_item_changed)
         layout.addWidget(self.source_table)
 
         self.run_button = QPushButton("Run Simulation")
@@ -326,20 +341,25 @@ class FdtdWindow(QMainWindow):
         marker = self.view.add_source_marker(x, y)
         row = self.source_table.rowCount()
         self.source_table.insertRow(row)
-        self.source_table.setItem(row, 0, QTableWidgetItem(f"{x:.4f}"))
-        self.source_table.setItem(row, 1, QTableWidgetItem(f"{y:.4f}"))
+        self.source_table.setItem(row, _COL_X, QTableWidgetItem(f"{x:.4f}"))
+        self.source_table.setItem(row, _COL_Y, QTableWidgetItem(f"{y:.4f}"))
 
         kind_combo = QComboBox()
-        kind_combo.addItems(["dipole", "single_photon"])
-        self.source_table.setCellWidget(row, 2, kind_combo)
+        kind_combo.addItems(["dipole", "single_photon", "scripted"])
+        self.source_table.setCellWidget(row, _COL_KIND, kind_combo)
 
-        self.source_table.setItem(row, 3, QTableWidgetItem(f"{self.run_wavelength_spin.value():.3f}"))
-        self.source_table.setItem(row, 4, QTableWidgetItem("1"))
-        self.source_table.setItem(row, 5, QTableWidgetItem("0.5"))
+        wavelength_um = self.run_wavelength_spin.value()
+        self.source_table.setItem(row, _COL_WAVELENGTH, QTableWidgetItem(f"{wavelength_um:.4f}"))
+        self.source_table.setItem(
+            row, _COL_ENERGY, QTableWidgetItem(f"{photon_energy_ev_from_wavelength_um(wavelength_um):.4f}")
+        )
+        self.source_table.setItem(row, _COL_PHOTON_COUNT, QTableWidgetItem("1"))
+        self.source_table.setItem(row, _COL_CORE_WIDTH, QTableWidgetItem("0.5"))
+        self.source_table.setItem(row, _COL_SCRIPT, QTableWidgetItem(""))
 
         remove_button = QPushButton("Remove")
         remove_button.clicked.connect(lambda checked=False, m=marker: self._on_remove_source_row(m))
-        self.source_table.setCellWidget(row, 6, remove_button)
+        self.source_table.setCellWidget(row, _COL_REMOVE, remove_button)
 
         self._source_rows.append({"marker": marker})
 
@@ -351,15 +371,48 @@ class FdtdWindow(QMainWindow):
                 del self._source_rows[row_idx]
                 return
 
+    def _on_source_table_item_changed(self, item: QTableWidgetItem) -> None:
+        """Wavelength and Energy are two views of the same underlying
+        quantity — editing either updates the other, using the conversion
+        helpers (also used/tested independently in fdtd_sim.py)."""
+        if self._syncing_wavelength_energy:
+            return
+        column = item.column()
+        if column not in (_COL_WAVELENGTH, _COL_ENERGY):
+            return
+        try:
+            value = float(item.text())
+        except ValueError:
+            return
+
+        self._syncing_wavelength_energy = True
+        try:
+            row = item.row()
+            if column == _COL_WAVELENGTH:
+                energy_ev = photon_energy_ev_from_wavelength_um(value)
+                other = self.source_table.item(row, _COL_ENERGY)
+                if other is not None:
+                    other.setText(f"{energy_ev:.4f}")
+            else:
+                wavelength_um = wavelength_um_from_photon_energy_ev(value)
+                other = self.source_table.item(row, _COL_WAVELENGTH)
+                if other is not None:
+                    other.setText(f"{wavelength_um:.4f}")
+        except ValueError:
+            pass  # non-positive value mid-edit; leave the other column alone
+        finally:
+            self._syncing_wavelength_energy = False
+
     def _collect_source_specs(self) -> tuple[SourceSpec, ...]:
         specs = []
         for row in range(self.source_table.rowCount()):
-            x_um = float(self.source_table.item(row, 0).text())
-            y_um = float(self.source_table.item(row, 1).text())
-            kind = self.source_table.cellWidget(row, 2).currentText()
-            wavelength_um = float(self.source_table.item(row, 3).text())
-            photon_count = int(self.source_table.item(row, 4).text())
-            core_width_um = float(self.source_table.item(row, 5).text()) if kind == "single_photon" else None
+            x_um = float(self.source_table.item(row, _COL_X).text())
+            y_um = float(self.source_table.item(row, _COL_Y).text())
+            kind = self.source_table.cellWidget(row, _COL_KIND).currentText()
+            wavelength_um = float(self.source_table.item(row, _COL_WAVELENGTH).text())
+            photon_count = int(self.source_table.item(row, _COL_PHOTON_COUNT).text())
+            core_width_um = float(self.source_table.item(row, _COL_CORE_WIDTH).text()) if kind == "single_photon" else None
+            script = self.source_table.item(row, _COL_SCRIPT).text() if kind == "scripted" else None
             specs.append(
                 SourceSpec(
                     x_um=x_um,
@@ -368,6 +421,7 @@ class FdtdWindow(QMainWindow):
                     wavelength_um=wavelength_um,
                     photon_count=photon_count,
                     core_width_um=core_width_um,
+                    script=script,
                 )
             )
         return tuple(specs)

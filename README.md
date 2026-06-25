@@ -280,15 +280,24 @@ so they can be regenerated after future UI changes.
     platform's core/clad index, core thickness, **and now cladding
     thickness** from Project Settings. Click **Place Source on Canvas**
     to click-place one or more sources directly on the main canvas
-    (snaps to ports, same mechanism as the measure tool); each source is
-    either a plain point dipole or a mode-injected `SinglePhotonSource`
-    (built from the same mode solver, normalized to carry approximately
-    one photon's energy — multi-photon counts scale amplitude by
-    `sqrt(N)`, not by stacking N copies, confirmed via `FluxMonitor` to
-    give N-fold energy scaling, not N²-fold). Results play back as a
-    movie — a time slider and Play/Pause (looping) button scrub through
-    field snapshots overlaid on an outline of your actual chip layout,
-    the literal "money shot" this feature was built around.
+    (snaps to ports, same mechanism as the measure tool). Each source's
+    color is entered as either **Wavelength (µm) or Energy (eV)** — the
+    table syncs the two columns bidirectionally (`wavelength_um_from_
+    photon_energy_ev`/`photon_energy_ev_from_wavelength_um` in
+    `fdtd_sim.py`), so "a photon at 0.8 eV" doesn't need converting by
+    hand. Three source kinds: a plain point dipole; a mode-injected
+    `SinglePhotonSource` (built from the same mode solver, normalized to
+    carry approximately one photon's energy — multi-photon counts scale
+    amplitude by `sqrt(N)`, not by stacking N copies, confirmed via
+    `FluxMonitor` to give N-fold energy scaling, not N²-fold); or
+    **scripted** — a Python expression of `t` (seconds) typed directly
+    into the table, evaluated as the source waveform (`ScriptedWaveform`
+    in `fdtd_sim.py`) with the same full-Python trust model the
+    scripting console elsewhere in this app already uses, not a new
+    sandboxed mini-language. Results play back as a movie — a time
+    slider and Play/Pause (looping) button scrub through field snapshots
+    overlaid on an outline of your actual chip layout, the literal
+    "money shot" this feature was built around.
 
   **Read the disclaimer in the window**: both tabs are illustrative —
   the dipole source isn't mode-matched to anything, the mode solver is
@@ -337,7 +346,7 @@ unverified" framing below was not hypothetical caution.
 ## Verification status
 
 This was built and iterated on primarily in a **headless environment**
-(`QT_QPA_PLATFORM=offscreen`). 276 automated tests cover what's checkable
+(`QT_QPA_PLATFORM=offscreen`). 284 automated tests cover what's checkable
 that way; run them with:
 
 ```
@@ -822,3 +831,13 @@ Key design notes:
   end-to-end tests do exist in `test_fdtd_window.py`, each driven via a
   bounded `QCoreApplication.processEvents()` polling loop rather than a
   blind wait — kept deliberately few, for the same reason.
+- Scripted sources and energy-based input were both explicitly requested
+  ("allow for scripted sources, or injecting a photon... at a given
+  energy") but initially scoped out of the plan and shipped without
+  them — caught on review, not by the user having to ask twice. Fixed by
+  adding a `kind="scripted"` `SourceSpec` (`ScriptedWaveform` in
+  `fdtd_sim.py`, `eval()`-based with the same no-sandbox trust model the
+  scripting console already uses) and a bidirectional Wavelength↔Energy
+  table-column sync using the `wavelength_um_from_photon_energy_ev`/
+  `photon_energy_ev_from_wavelength_um` helpers, which existed and were
+  tested from the start but simply weren't wired into the UI.
