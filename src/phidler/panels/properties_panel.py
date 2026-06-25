@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGroupBox,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -35,6 +36,12 @@ class PropertiesPanel(QWidget):
     guessed at — editing those is a stretch goal, not a v1 blocker."""
 
     params_applied = Signal(int, dict)
+    # inst_id, x, y, rotation_deg, mirror, mag — precision/typed alternative
+    # to dragging on the canvas, for exact placement (e.g. matching a known
+    # coordinate from a foundry PDK or an existing layout) rather than
+    # eyeballing a drag. Pushes the same MoveInstanceCommand drag/handle
+    # gestures do, so it's undoable the same way.
+    transform_applied = Signal(int, float, float, float, bool, float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -45,6 +52,23 @@ class PropertiesPanel(QWidget):
         self.title_label = QLabel("No selection")
         layout.addWidget(self.title_label)
 
+        self.transform_group = QGroupBox("Transform")
+        transform_layout = QFormLayout(self.transform_group)
+        self.x_spin = self._make_transform_spin()
+        self.y_spin = self._make_transform_spin()
+        self.rotation_spin = self._make_transform_spin(minimum=-360.0, maximum=360.0, decimals=2)
+        self.mirror_check = QCheckBox()
+        self.scale_spin = self._make_transform_spin(minimum=0.001, maximum=1000.0, decimals=4)
+        transform_layout.addRow("X (µm)", self.x_spin)
+        transform_layout.addRow("Y (µm)", self.y_spin)
+        transform_layout.addRow("Rotation (°)", self.rotation_spin)
+        transform_layout.addRow("Mirror", self.mirror_check)
+        transform_layout.addRow("Scale", self.scale_spin)
+        self.apply_transform_button = QPushButton("Apply Transform")
+        self.apply_transform_button.clicked.connect(self._on_apply_transform)
+        transform_layout.addRow(self.apply_transform_button)
+        layout.addWidget(self.transform_group)
+
         self.form_layout = QFormLayout()
         layout.addLayout(self.form_layout)
 
@@ -54,6 +78,13 @@ class PropertiesPanel(QWidget):
         layout.addStretch(1)
 
         self.setEnabled(False)
+
+    @staticmethod
+    def _make_transform_spin(minimum: float = -1e6, maximum: float = 1e6, decimals: int = 4) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setDecimals(decimals)
+        return spin
 
     def show_instance(
         self,
@@ -76,6 +107,49 @@ class PropertiesPanel(QWidget):
             self._fields[p.name] = widget
 
         self.setEnabled(True)
+
+    def update_transform(self, x: float, y: float, rotation: float, mirror: bool, mag: float) -> None:
+        """Syncs the transform fields to the instance's current values —
+        called on selection change and from the same periodic timer that
+        keeps the on-canvas transform handles positioned, so a drag/handle
+        gesture is reflected here too. Skips the sync entirely while the
+        user has focus in one of these fields, the same is-interacting
+        guard the handles use for their own periodic resync, so typing
+        isn't clobbered mid-edit."""
+        if self._is_editing_transform():
+            return
+        self.x_spin.blockSignals(True)
+        self.y_spin.blockSignals(True)
+        self.rotation_spin.blockSignals(True)
+        self.mirror_check.blockSignals(True)
+        self.scale_spin.blockSignals(True)
+        self.x_spin.setValue(x)
+        self.y_spin.setValue(y)
+        self.rotation_spin.setValue(rotation)
+        self.mirror_check.setChecked(mirror)
+        self.scale_spin.setValue(mag)
+        self.x_spin.blockSignals(False)
+        self.y_spin.blockSignals(False)
+        self.rotation_spin.blockSignals(False)
+        self.mirror_check.blockSignals(False)
+        self.scale_spin.blockSignals(False)
+
+    def _is_editing_transform(self) -> bool:
+        return any(
+            w.hasFocus() for w in (self.x_spin, self.y_spin, self.rotation_spin, self.mirror_check, self.scale_spin)
+        )
+
+    def _on_apply_transform(self) -> None:
+        if self._inst_id is None:
+            return
+        self.transform_applied.emit(
+            self._inst_id,
+            self.x_spin.value(),
+            self.y_spin.value(),
+            self.rotation_spin.value(),
+            self.mirror_check.isChecked(),
+            self.scale_spin.value(),
+        )
 
     def clear(self) -> None:
         self._inst_id = None

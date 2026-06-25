@@ -161,6 +161,7 @@ def test_save_and_load_round_trips_project_settings(qapp, tmp_path):
         core_index=2.0,
         clad_index=1.44,
         thickness_um=0.4,
+        clad_thickness_um=3.5,
         wavelength_um=1.31,
         cross_section="nitride",
     )
@@ -175,8 +176,29 @@ def test_save_and_load_round_trips_project_settings(qapp, tmp_path):
     assert s.platform_name == "Silicon Nitride (SiN)"
     assert math.isclose(s.core_index, 2.0)
     assert math.isclose(s.thickness_um, 0.4)
+    assert math.isclose(s.clad_thickness_um, 3.5)
     assert math.isclose(s.wavelength_um, 1.31)
     assert s.cross_section == "nitride"
+
+
+def test_load_project_file_missing_just_clad_thickness_field_uses_default(qapp, tmp_path):
+    """A .phidler saved before clad_thickness_um existed has a
+    "project_settings" object missing just that one key (unlike the
+    "no project_settings key at all" case below) — ProjectSettings(**data)
+    must fill in the dataclass default rather than raise a TypeError."""
+    import json
+
+    win = MainWindow()
+    _build_sample(win)
+    project_path = tmp_path / "old.phidler"
+    save_project(win.document, str(project_path))
+    data = json.loads(project_path.read_text())
+    del data["project_settings"]["clad_thickness_um"]
+    project_path.write_text(json.dumps(data))
+
+    win2 = MainWindow()
+    load_project(str(project_path), win2.document, win2.scene)  # must not raise
+    assert math.isclose(win2.document.project_settings.clad_thickness_um, 2.0)
 
 
 def test_load_old_project_file_without_settings_field_uses_defaults(qapp, tmp_path):

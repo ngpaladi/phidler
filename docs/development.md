@@ -32,6 +32,7 @@ src/phidler/
   export_script.py          # writes a standalone .py that recreates the design via direct gdsfactory calls
   import_script.py          # AST-parses a Phidler-generated .py back into document/scene state
   waveguide_calc.py          # effective-index-method single-mode width estimate + platform presets
+  fdtd_sim.py                # pure-compute FDTD wiring (photonfdtd) — no Qt/threading, fully unit-testable
   model/
     document.py            # LayoutDocument — owns the gdsfactory top cell; ProjectSettings metadata
     placed_instance.py     # PlacedInstance / PlacedRoute records
@@ -41,7 +42,7 @@ src/phidler/
     scene.py                # QGraphicsScene wrapper around LayoutDocument; fixed large sceneRect for panning
     view.py                 # pan/zoom/grid/snap/zoom-to-fit, Y-flip, drag->undo wiring, placement/routing/context-menu
     polygon_item.py         # per-instance QGraphicsItem rendering (hull+holes, ports)
-    transform_overlay.py     # on-canvas rotate/mirror/scale buttons+sliders
+    transform_handles.py      # on-canvas drag handles for rotate/scale (the standard 2D-editor convention)
   panels/
     component_palette.py    # curated category tree (core photonics first, niche under "Other"), click-to-place, hover preview wiring
     component_preview.py     # renders a component's actual geometry to a small pixmap; floating popup widget
@@ -50,6 +51,7 @@ src/phidler/
     drc_panel.py             # DRC threshold inputs + violation list
     console_panel.py          # interactive Python REPL (code.InteractiveInterpreter) against the live session
     project_settings_dialog.py # material/thickness/wavelength picker shown on startup and File > New
+    fdtd_window.py            # FDTD top-level window: mode-solve tab, propagation tab, source table, movie playback; FdtdWorker/ModeWorker (QThread wrappers around fdtd_sim.py)
 tests/                       # all run under QT_QPA_PLATFORM=offscreen
 ```
 
@@ -61,17 +63,39 @@ tests/                       # all run under QT_QPA_PLATFORM=offscreen
   scale commute (so `QTransform.scale(mag, -mag if mirror else mag)` in
   one call reproduces klayout's mirror-then-scale exactly), but rotation
   must still be the outermost (last-applied) operation.
-- The transform overlay repositions via a 120ms polling timer rather than
+- The transform handles reposition via a 120ms polling timer rather than
   hooking into every view-mutating interaction (pan/zoom/resize/drag)
   individually — simpler and harder to leave a gap in than enumerating
   every path that could move the selected item on screen. It skips
-  re-syncing its own slider values while the user is mid-drag on one
-  (`QSlider.isSliderDown()`), or the periodic sync would fight the drag.
-- `QWidget.isVisible()` reflects the *entire* ancestor chain, not just the
-  widget's own shown/hidden state — a test that called `view.show()` but
-  never `win.show()` saw the transform overlay (parented through
-  `view.viewport()`) report `isVisible() == False` even after calling
-  `.show()` on it directly, since `MainWindow` itself was never shown.
+  re-syncing handle positions while any handle reports `is_dragging`, or
+  the periodic sync would fight the drag.
+- The handles are real `QGraphicsItem`s added directly to the scene (not
+  a `QWidget` floating over the viewport, which the first version of this
+  feature used) — confirmed empirically that `ItemIgnoresTransformations`
+  keeps a handle's on-screen pixel size constant across zoom levels, the
+  standard look for resize handles, and that being plain scene items
+  means they pan/zoom with the view for free, no manual position-mapping
+  needed the way the QWidget version required.
+- A corner-drag scale gesture keeps the **diagonally opposite corner**
+  fixed in absolute scene coordinates, the standard 2D-editor resize
+  behavior — solved once at drag-start for the `mag` and `(x, y)` that
+  satisfy both "opposite corner unchanged" and "dragged corner tracks the
+  cursor," not re-derived per mouse-move frame. This was a deliberate
+  fix during development: anchoring the scale at the instance's local
+  origin instead (where `mag` actually mathematically pivots, per
+  klayout's `DCplxTrans`) does NOT have this property — for `straight`,
+  whose local origin sits almost on the bounding box edge, that would
+  make one corner barely move and the opposite corner swing wildly for a
+  small mouse movement. The rotate handle, by contrast, pivots around the
+  instance's local origin directly (same pivot the `R` key already uses),
+  which needs no such compensation.
+- The rotate handle computes rotation as a **delta angle** (how far the
+  mouse has swept around the pivot since the press, added to the
+  rotation at press-time), not an absolute target angle — verified
+  empirically that the scene-frame `atan2` angle and the `rotation`
+  parameter consumed by `DCplxTrans`/`QTransform.rotate()` move in the
+  same direction by the same amount, so the delta is correct without any
+  sign correction for the canvas's global Y-flip.
 - `LayoutScene` sets a fixed, large `sceneRect` (100mm × 100mm) rather than
   letting `QGraphicsView` auto-size it from placed content — see
   [Bugs found from actual use](#bugs-found-from-actual-use) below for why
@@ -121,6 +145,16 @@ tests/                       # all run under QT_QPA_PLATFORM=offscreen
   `QTest`-based mouse-drag tests elsewhere. The hover-preview tests follow
   the same approach: they emit `itemEntered` directly (a plain Qt signal,
   not a native event) rather than injecting a synthetic mouse-move.
+- The full test suite has a low (~1-in-9 in one measured batch), pre-
+  existing native-crash flake under the offscreen platform — present
+  before any of the FDTD/matplotlib work, confirmed directly: it still
+  reproduces with `--ignore`-ing every new FDTD test file, so the
+  `PySide6.QtSvg` module visible in the crash's loaded-extension-modules
+  dump is incidental (loaded by something already in the dependency
+  tree), not evidence the FDTD integration caused it. Root cause not
+  pinned down; treated the same as the `sendEvent` segfault above — a
+  known, narrow, environment-specific instability documented here rather
+  than silently retried until green. If a run fails, rerun it.
 - The hover preview always colors layers with the same deterministic
   default scheme as a brand-new layer would get, not whatever you've
   customized in the open document's Layers panel — and its by-name pixmap
@@ -164,6 +198,17 @@ tests/                       # all run under QT_QPA_PLATFORM=offscreen
   1550nm, against the ~450-500nm commonly used and the generic PDK's own
   500nm "strip" default. The dialog's disclaimer says this explicitly
   rather than letting the number imply more precision than it has.
+- The Lithium Niobate preset's `core_index` (2.211 at 1550nm) was
+  cross-checked against two independent sources rather than taken from
+  one: the standard Zelmon, Small & Jundt (1997) Sellmeier fit for
+  congruent LiNbO3, and a second data point — the photonfdtd project's
+  own LNOI mode-solver example uses n=2.30 at 600nm, which the same
+  Sellmeier equation reproduces to 3 significant figures (2.296),
+  confirming the coefficients are correct rather than mis-remembered. The
+  Lithium Tantalate preset's index (2.14) is a standard literature
+  reference value but didn't have a second source available to
+  cross-check against during development — noted as such in the code
+  rather than presented with the same confidence as the LN figure.
 - `import_script.py` only inspects a script's *direct top-level
   statements* (`tree.body`), never a recursive `ast.walk()`. Confirmed
   empirically why this matters: a hand-written `for i in range(3): inst =
@@ -187,11 +232,145 @@ tests/                       # all run under QT_QPA_PLATFORM=offscreen
   item position, not the document's (still-stale) stored transform — see
   `LayoutDocument.get_absolute_ports_for_transform`, which takes an
   explicit override transform for exactly this.
+- The Properties panel's precision-entry transform fields use the exact
+  same is-interacting-style guard the on-canvas handles use for their own
+  periodic resync (`PropertiesPanel._is_editing_transform`, checked via
+  `QWidget.hasFocus()`) — but `hasFocus()` never becomes true under
+  `QT_QPA_PLATFORM=offscreen`, confirmed empirically across several
+  `setFocus()`/`activateWindow()` combinations, since there's no real
+  window manager to grant input focus headlessly. The regression test for
+  this guard's logic monkeypatches the guard method directly rather than
+  trying to exercise real Qt focus, which this environment can't produce.
+- The measure tool's label uses `QGraphicsItem.ItemIgnoresTransformations`
+  for constant on-screen text size across zoom — the same flag the
+  on-canvas transform handles use, and a real, easy-to-hit mistake during
+  development: setting the flag via `label.ItemIgnoresTransformations`
+  (an instance attribute lookup on a `QGraphicsSimpleTextItem`) raises
+  `AttributeError`, since the flag is only defined on the `QGraphicsItem`
+  base class, not inherited into the instance namespace that way — caught
+  immediately by actually running a simulated click through the real
+  widget rather than only unit-testing the math in isolation.
+- Port-snapping for a measurement click reuses `InstanceItem.nearest_port`
+  unchanged — the same hit-radius logic and constant routing mode's port
+  clicks already use — rather than introducing a second, possibly
+  inconsistent distance threshold for "close enough to snap."
+- Align/Distribute's "top"/"bottom" had a real, easy-to-get-backwards
+  trap: a plain `QRectF`'s `top()`/`bottom()`/`left()`/`right()` only
+  return whatever min/max order the rect happened to be *constructed*
+  with — confirmed empirically with `QRectF().setCoords(0, 5, 10, 0)`,
+  where `top()` returned 5.0 and `bottom()` returned 0.0, the opposite of
+  the conventional smaller/larger-y meaning. `QGraphicsItem.mapRectToScene`
+  happened to already return a normalized rect in the cases tested, but
+  `_selected_scene_bboxes` calls `.normalized()` explicitly anyway rather
+  than depending on that being guaranteed. Separately, even a correctly
+  *normalized* rect's `top()` (the smaller scene-y) is the **visual
+  bottom** on screen, not the visual top — confirmed empirically that the
+  canvas's global Y-flip makes a larger scene-y coordinate render higher
+  up — so "Align Top" deliberately reads `box.bottom()` internally, with
+  a regression test (`test_align_top_uses_the_visual_screen_direction_
+  not_qrectf_naming`) that exists specifically to catch a future edit
+  that gets this backwards.
+- Align/Distribute computes each instance's move as a single scalar
+  shift along one axis (`target − current_edge_or_center`, added to the
+  stored `x` or `y`), rather than decomposing each instance's rotation/
+  mirror/scale to reposition it — this works uniformly regardless of an
+  instance's own rotation or scale, since `mapRectToScene` already gives
+  the correct axis-aligned bounding box for *any* transform, and only the
+  position needs to change for a pure align/distribute (rotation, mirror,
+  and scale are deliberately left untouched).
+- The FDTD integration is split into a pure-compute core (`fdtd_sim.py`,
+  no Qt or threading at all) and a thin Qt layer on top (`fdtd_window.py`'s
+  `FdtdWorker`/`ModeWorker`, `QThread` wrappers) — built and tested in
+  that order, on advice given before writing any of it: entangling
+  compute with threading is what makes a feature like this hard to test,
+  so they're kept apart deliberately, not as an afterthought refactor.
+- The original v1 of this feature forced `z_size=0.0` on
+  `from_gdsfactory`'s 3D `Simulation`, collapsing the vertical dimension
+  to one cell for speed — this was **replaced**, not kept: a user asked
+  "shouldn't I be able to set cladding thickness?", and investigation
+  showed the quasi-2D collapse made that setting inert regardless of its
+  value, since the single z-slice resolved core/cladding contrast purely
+  by XY polygon footprint, not vertical position. True 3D is genuinely
+  more expensive (calibrated empirically: 141k cells/394 steps → 2.5s,
+  525k cells/1312 steps → 40.8s, ~6×10⁻⁸s/cell-step), but is what makes
+  cladding thickness — and the "money shot" top-down field movie — mean
+  what they claim to mean.
+- Removing the z-collapse surfaced a real, separate bug, caught by
+  directly inspecting `sim.eps_r` rather than trusting the adapter's
+  docs: background slabs only covering *above* and *below* the core's
+  own z-range left that z-range itself unstamped outside the waveguide
+  polygon, silently defaulting to vacuum (`eps_r=1`) instead of lateral
+  cladding. Fixed by adding a third background slab spanning the same
+  z-range as the core layer, stamped first so the polygon still wins
+  inside the waveguide footprint (per `from_gdsfactory`'s own documented
+  stamping order).
+- `photonfdtd.ModeSolver` (a 2D scalar-Helmholtz cross-section eigenmode
+  solver, already in the package, previously unused) is the tool that
+  makes "cladding thickness" answerable: at a deliberately-too-thin
+  0.05µm cladding the mode is visibly truncated against the solver's
+  zero-amplitude domain boundary (wrong n_eff 2.14 vs converged 2.60,
+  29% edge/peak amplitude ratio); at ≥1.0µm it converges cleanly (~0%).
+  `mode_confinement()` turns this into a direct "well confined" /
+  "cladding may be too thin" status message instead of leaving the user
+  to interpret a raw ratio. The solver's own eigensolve cost is
+  superlinear in grid size (6.5s at 414k points, didn't converge in 30s
+  at 1.65M during calibration) — the UI defaults (`cell_size_um=0.02`,
+  modest lateral padding) were chosen to stay well under a second, not
+  guessed.
+- `photonfdtd.sources.SinglePhotonSource` (also already in the package)
+  is the literal mechanism behind "inject a photon at a given energy" —
+  a `ModeSource` built from a solved mode profile, amplitude-normalized
+  to carry approximately `h·freq0` of energy; its own docstring flags
+  this normalization as approximate and suggests verifying with a
+  `FluxMonitor`. Done: the absolute one-photon baseline measured ~20×
+  off from the theoretical value (consistent with that disclosed
+  approximation), but the *relative* N-photon scaling was confirmed
+  exact — `photon_count=4` gave exactly 4× the integrated flux energy of
+  `photon_count=1`, and `photon_count=9` gave exactly 9×. This matters
+  because the naive approach (stacking N coherent copies of the source
+  at the same place/phase) would have scaled energy by N² instead of N
+  — amplitude adds linearly for coherent sources, and energy is
+  proportional to amplitude squared. `build_source` instead scales one
+  source's amplitude by `sqrt(photon_count)`, confirmed by the test above
+  to give the correct linear-in-N energy scaling.
+- `from_gdsfactory` itself returns `sources=[]`/`monitors=[]` (per its
+  own docstring) — `build_simulation` adds the configured sources and a
+  `FieldMonitor` itself; skipping that step would silently produce an
+  all-zero field with nothing exciting it, not an error.
+- `FdtdWindow`'s matplotlib canvases need an explicit `setMinimumHeight`
+  — the same squeeze-to-~10px issue found (and fixed the same way) for
+  the original docked panel applies to any matplotlib canvas sharing
+  layout space with other widgets; confirmed again by actually grabbing
+  a screenshot of the assembled window, not just unit-testing it.
+- A real layout-rendering bug was caught the same way: drawing the chip
+  outline by setting the plot's axis limits to the layout's own bounding
+  box *before* adding the field image clipped almost the entire field
+  out of view, since the simulated domain (padding + PML) is wider than
+  the bbox. Fixed by drawing the field image first and setting axis
+  limits to its own extent, with the chip outline drawn as a reference
+  on top — not found by reasoning about the code, found by looking at a
+  rendered screenshot and noticing the field was almost entirely cropped
+  away.
+- Constructing `FdtdWindow()` (via `from phidler.panels.fdtd_window
+  import FdtdWindow`, inside `MainWindow._open_fdtd_window`) raises
+  `ImportError` if matplotlib isn't installed (it's part of the optional
+  `fdtd` extras, not a core dependency) — caught there and shown as a
+  message box instead of a crash, so a user without the extras installed
+  still gets a fully working app, just without this one menu action's
+  real functionality.
+- `FdtdWorker`/`ModeWorker`'s own tests call `.run()` directly rather
+  than driving a real `QThread` start/stop cycle in most cases, on advice
+  given before writing the tests: the compute-correctness confidence
+  already comes from `fdtd_sim.py`'s own tests, so the worker only needs
+  to show it calls through and emits correctly. A handful of real
+  end-to-end tests do exist in `test_fdtd_window.py`, each driven via a
+  bounded `QCoreApplication.processEvents()` polling loop rather than a
+  blind wait — kept deliberately few, for the same reason.
 
 ## Testing
 
 Run the suite with `./run_tests.sh`. It runs headlessly under
-`QT_QPA_PLATFORM=offscreen` and currently covers 178 tests.
+`QT_QPA_PLATFORM=offscreen` and currently covers 276 tests.
 
 ### Bugs found from actual use
 
@@ -302,14 +481,16 @@ assessed without a real display:
   routing click-to-pick-a-port interaction feels natural — none of this
   changed since the original headless build, and none of it can be judged
   without running it.
-- The on-canvas transform overlay (buttons/sliders for rotate/mirror/scale)
-  and the Project Settings dialog are both new and both fall in this
-  bucket too. Every piece of their *logic* is tested directly (slider
-  live-preview vs. commit-on-release, value sync, the width calculation
-  itself) but `QDialog.exec()` is a blocking modal call — same as every
-  other dialog in this app — so nobody has actually seen the Project
-  Settings dialog rendered, and the transform overlay's on-canvas
-  position/sizing/readability hasn't been judged by a human either.
+- The on-canvas transform handles and the Project Settings dialog are both
+  new and both fall in this bucket too. Every piece of their *logic* is
+  tested directly — including, for the handles, the specific property
+  that actually matters (a corner drag keeps the diagonally opposite
+  corner exactly fixed, confirmed via a real simulated `QTest` mouse
+  drag through the actual view, not just a direct method call) — but
+  `QDialog.exec()` is a blocking modal call, same as every other dialog
+  in this app, so nobody has actually seen the Project Settings dialog
+  rendered, and whether the handles feel natural to grab/drag at actual
+  mouse speed hasn't been judged by a human either.
 
 ### Manual test checklist
 

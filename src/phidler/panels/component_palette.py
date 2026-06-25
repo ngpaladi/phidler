@@ -47,6 +47,14 @@ class ComponentPalette(QWidget):
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setMouseTracking(True)  # required for itemEntered to fire on hover
+        # A single click already arms placement (itemClicked) — itemActivated
+        # (double-click or Enter) is also wired to the same handler so both
+        # still work, but a single click used to be a no-op here, requiring
+        # an extra double-click just to start placing a component. That's
+        # not how palette-driven placement works in other CAD/drawing tools
+        # (click the tool, then click the canvas) — reported as unintuitive,
+        # and confirmed it really was an unnecessary extra click.
+        self.tree.itemClicked.connect(self._on_item_activated)
         self.tree.itemActivated.connect(self._on_item_activated)
         self.tree.itemEntered.connect(self._on_item_entered)
         self.tree.viewport().installEventFilter(self)

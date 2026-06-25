@@ -60,6 +60,19 @@ class ProjectSettingsDialog(QDialog):
         self.thickness_spin.valueChanged.connect(self._update_suggestion)
         form.addRow("Core thickness", self.thickness_spin)
 
+        self.clad_thickness_spin = QDoubleSpinBox()
+        self.clad_thickness_spin.setRange(0.001, 100.0)
+        self.clad_thickness_spin.setDecimals(3)
+        self.clad_thickness_spin.setSuffix(" µm")
+        self.clad_thickness_spin.setValue(initial.clad_thickness_um)
+        self.clad_thickness_spin.setToolTip(
+            "A generic default, not sourced from any specific foundry process. "
+            "Doesn't affect the suggested-width estimate above (which assumes "
+            "semi-infinite cladding) — it's the vertical simulation domain extent "
+            "used by FDTD Simulation's mode solver and propagation runs."
+        )
+        form.addRow("Cladding thickness", self.clad_thickness_spin)
+
         self.wavelength_spin = QDoubleSpinBox()
         self.wavelength_spin.setRange(0.1, 20.0)
         self.wavelength_spin.setDecimals(3)
@@ -119,6 +132,7 @@ class ProjectSettingsDialog(QDialog):
             core_index=self.core_index_spin.value(),
             clad_index=self.clad_index_spin.value(),
             thickness_um=self.thickness_spin.value(),
+            clad_thickness_um=self.clad_thickness_spin.value(),
             wavelength_um=self.wavelength_spin.value(),
             cross_section=self.cross_section_combo.currentText(),
         )

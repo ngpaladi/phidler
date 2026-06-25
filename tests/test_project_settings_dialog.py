@@ -9,7 +9,19 @@ def test_dialog_defaults_to_silicon_soi(qapp):
     assert dialog.platform_combo.currentText() == "Silicon (SOI)"
     assert math.isclose(dialog.core_index_spin.value(), 3.45)
     assert math.isclose(dialog.thickness_spin.value(), 0.220)
+    assert math.isclose(dialog.clad_thickness_spin.value(), 2.0)
     assert dialog.cross_section_combo.currentText() == "strip"
+
+
+def test_switching_platform_does_not_touch_clad_thickness(qapp):
+    """Cladding thickness is a wafer/process choice, not a material
+    property — unlike core_index/clad_index/thickness_um, it must not
+    get silently overwritten just because the user picked a different
+    platform preset."""
+    dialog = ProjectSettingsDialog()
+    dialog.clad_thickness_spin.setValue(5.5)
+    dialog.platform_combo.setCurrentText("Silicon Nitride (SiN)")
+    assert math.isclose(dialog.clad_thickness_spin.value(), 5.5)
 
 
 def test_dialog_seeded_from_existing_settings(qapp):
@@ -54,9 +66,11 @@ def test_result_settings_reflects_current_field_values(qapp):
     dialog = ProjectSettingsDialog()
     dialog.platform_combo.setCurrentText("Silicon Nitride (SiN)")
     dialog.wavelength_spin.setValue(1.31)
+    dialog.clad_thickness_spin.setValue(3.5)
 
     settings = dialog.result_settings()
     assert settings.platform_name == "Silicon Nitride (SiN)"
     assert math.isclose(settings.core_index, 2.0)
     assert math.isclose(settings.wavelength_um, 1.31)
+    assert math.isclose(settings.clad_thickness_um, 3.5)
     assert settings.cross_section == "nitride"

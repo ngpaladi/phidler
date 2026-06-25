@@ -1,0 +1,278 @@
+import sys
+import types
+
+from PySide6.QtCore import QCoreApplication
+from PySide6.QtWidgets import QMessageBox
+
+from phidler.fdtd_sim import FdtdParams, SourceSpec
+from phidler.main_window import MainWindow
+from phidler.model.document import LayoutDocument, ProjectSettings
+from phidler.panels.fdtd_window import FdtdWindow
+
+
+def _tiny_document() -> LayoutDocument:
+    doc = LayoutDocument()
+    doc.add_instance("straight", {"length": 1.5, "width": 0.5})
+    doc.project_settings = ProjectSettings(core_index=3.45, clad_index=1.44, thickness_um=0.22, clad_thickness_um=1.0)
+    return doc
+
+
+def _pump_until(predicate, max_iters: int = 300, sleep_s: float = 0.02) -> bool:
+    import time
+
+    for _ in range(max_iters):
+        QCoreApplication.processEvents()
+        time.sleep(sleep_s)
+        if predicate():
+            return True
+    return False
+
+
+# -- construction ---------------------------------------------------------- #
+
+
+def test_window_has_two_tabs(qapp):
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    assert fdtd_win.centralWidget().count() == 2
+    assert fdtd_win.centralWidget().tabText(0) == "Vertical Mode Profile"
+    assert fdtd_win.centralWidget().tabText(1) == "Propagation (FDTD)"
+
+
+def test_window_prefills_wavelength_from_project_settings(qapp):
+    win = MainWindow()
+    win.document.project_settings.wavelength_um = 1.31
+    fdtd_win = FdtdWindow(win.document, win.view)
+    assert fdtd_win.mode_wavelength_spin.value() == 1.31
+    assert fdtd_win.run_wavelength_spin.value() == 1.31
+
+
+def test_window_shows_clad_thickness_from_project_settings(qapp):
+    win = MainWindow()
+    win.document.project_settings.clad_thickness_um = 3.5
+    fdtd_win = FdtdWindow(win.document, win.view)
+    assert "3.500" in fdtd_win.run_clad_thickness_label.text()
+
+
+# -- mode tab ---------------------------------------------------------------- #
+
+
+def test_mode_solve_runs_through_real_threaded_wiring(qapp):
+    win = MainWindow()
+    fdtd_win = FdtdWindow(_tiny_document(), win.view)
+    fdtd_win.mode_core_width_spin.setValue(0.5)
+    fdtd_win.mode_wavelength_spin.setValue(1.55)
+    fdtd_win.document.project_settings.clad_thickness_um = 2.0
+
+    fdtd_win._on_solve_mode_clicked()
+    assert _pump_until(lambda: fdtd_win._mode_thread is not None and not fdtd_win._mode_thread.isRunning())
+
+    assert "n_eff" in fdtd_win.mode_status_label.text()
+    assert "Well confined" in fdtd_win.mode_status_label.text()
+    assert fdtd_win.mode_solve_button.isEnabled()
+
+
+def test_mode_solve_with_too_thin_cladding_reports_truncation(qapp):
+    win = MainWindow()
+    doc = _tiny_document()
+    doc.project_settings.clad_thickness_um = 0.05
+    fdtd_win = FdtdWindow(doc, win.view)
+    fdtd_win.mode_core_width_spin.setValue(0.5)
+
+    fdtd_win._on_solve_mode_clicked()
+    assert _pump_until(lambda: fdtd_win._mode_thread is not None and not fdtd_win._mode_thread.isRunning())
+
+    assert "Cladding may be too thin" in fdtd_win.mode_status_label.text()
+
+
+# -- source placement --------------------------------------------------------- #
+
+
+def test_place_source_button_arms_canvas_source_mode(qapp):
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    fdtd_win.place_source_button.setChecked(True)
+    assert win.view.source_mode is True
+    fdtd_win.place_source_button.setChecked(False)
+    assert win.view.source_mode is False
+
+
+def test_canvas_click_signal_adds_a_table_row_and_marker(qapp):
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    fdtd_win.run_wavelength_spin.setValue(1.55)
+
+    win.view.source_placement_requested.emit(2.0, -1.0)
+
+    assert fdtd_win.source_table.rowCount() == 1
+    assert fdtd_win.source_table.item(0, 0).text() == "2.0000"
+    assert fdtd_win.source_table.item(0, 1).text() == "-1.0000"
+    assert len(win.view._source_markers) == 1
+
+
+def test_remove_button_removes_row_and_marker(qapp):
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    win.view.source_placement_requested.emit(0.0, 0.0)
+    marker = fdtd_win._source_rows[0]["marker"]
+
+    fdtd_win._on_remove_source_row(marker)
+
+    assert fdtd_win.source_table.rowCount() == 0
+    assert len(win.view._source_markers) == 0
+
+
+def test_collect_source_specs_reflects_table_state(qapp):
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    win.view.source_placement_requested.emit(1.0, 2.0)
+    fdtd_win.source_table.cellWidget(0, 2).setCurrentText("single_photon")
+    fdtd_win.source_table.item(0, 4).setText("3")
+    fdtd_win.source_table.item(0, 5).setText("0.6")
+
+    specs = fdtd_win._collect_source_specs()
+    assert len(specs) == 1
+    spec = specs[0]
+    assert spec.kind == "single_photon"
+    assert spec.photon_count == 3
+    assert spec.core_width_um == 0.6
+    assert spec.x_um == 1.0
+    assert spec.y_um == 2.0
+
+
+def test_dipole_row_has_no_core_width(qapp):
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    win.view.source_placement_requested.emit(0.0, 0.0)
+    # default kind is "dipole"
+    specs = fdtd_win._collect_source_specs()
+    assert specs[0].kind == "dipole"
+    assert specs[0].core_width_um is None
+
+
+def test_closing_window_clears_markers_and_exits_source_mode(qapp):
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    win.view.source_placement_requested.emit(0.0, 0.0)
+    fdtd_win.place_source_button.setChecked(True)
+
+    fdtd_win.close()
+
+    assert win.view.source_mode is False
+    assert len(win.view._source_markers) == 0
+
+
+# -- running + playback -------------------------------------------------------- #
+
+
+def test_run_simulation_through_real_threaded_wiring_completes_and_enables_playback(qapp):
+    win = MainWindow()
+    doc = _tiny_document()
+    fdtd_win = FdtdWindow(doc, win.view)
+    fdtd_win.run_cell_size_spin.setValue(0.1)
+    fdtd_win.run_time_spin.setValue(3.0)
+
+    fdtd_win._on_run_clicked()
+    assert fdtd_win._fdtd_thread is not None
+    assert _pump_until(lambda: not fdtd_win._fdtd_thread.isRunning())
+
+    assert "Done" in fdtd_win.run_status_label.text()
+    assert fdtd_win.frame_slider.isEnabled()
+    assert fdtd_win.frame_slider.maximum() > 0
+
+
+def test_run_simulation_on_empty_layout_shows_warning_not_crash(qapp, monkeypatch):
+    win = MainWindow()
+    fdtd_win = FdtdWindow(LayoutDocument(), win.view)
+
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(True))
+    fdtd_win._on_run_clicked()
+
+    assert warned
+    assert fdtd_win._fdtd_thread is None
+
+
+def test_run_simulation_warns_before_a_slow_estimated_run(qapp, monkeypatch):
+    win = MainWindow()
+    doc = _tiny_document()
+    inst_id = next(iter(doc.instances))
+    doc.update_instance_params(inst_id, {"length": 100.0, "width": 0.5})
+    fdtd_win = FdtdWindow(doc, win.view)
+    fdtd_win.run_cell_size_spin.setValue(0.02)
+    fdtd_win.run_time_spin.setValue(500.0)
+
+    asked = []
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: (asked.append(True), QMessageBox.No)[1]
+    )
+    fdtd_win._on_run_clicked()
+
+    assert asked
+    assert fdtd_win._fdtd_thread is None  # declined, so no run started
+
+
+def test_play_toggle_starts_and_stops_the_timer(qapp):
+    win = MainWindow()
+    doc = _tiny_document()
+    fdtd_win = FdtdWindow(doc, win.view)
+    fdtd_win.run_cell_size_spin.setValue(0.1)
+    fdtd_win.run_time_spin.setValue(3.0)
+    fdtd_win._on_run_clicked()
+    assert _pump_until(lambda: not fdtd_win._fdtd_thread.isRunning())
+
+    fdtd_win.play_button.setChecked(True)
+    assert fdtd_win._play_timer.isActive()
+    fdtd_win.play_button.setChecked(False)
+    assert not fdtd_win._play_timer.isActive()
+
+
+def test_frame_advance_wraps_around_at_the_end(qapp):
+    win = MainWindow()
+    doc = _tiny_document()
+    fdtd_win = FdtdWindow(doc, win.view)
+    fdtd_win.run_cell_size_spin.setValue(0.1)
+    fdtd_win.run_time_spin.setValue(3.0)
+    fdtd_win._on_run_clicked()
+    assert _pump_until(lambda: not fdtd_win._fdtd_thread.isRunning())
+
+    fdtd_win.frame_slider.setValue(fdtd_win.frame_slider.maximum())
+    fdtd_win._advance_frame()
+    assert fdtd_win.frame_slider.value() == 0
+
+
+# -- MainWindow wiring --------------------------------------------------------- #
+
+
+def test_main_window_has_simulate_menu_action(qapp):
+    win = MainWindow()
+    assert win.fdtd_window_action.text() == "FDTD Simulation…"
+
+
+def test_main_window_opens_fdtd_window_lazily_and_reuses_it(qapp):
+    win = MainWindow()
+    assert win._fdtd_window is None
+    win._open_fdtd_window()
+    first = win._fdtd_window
+    assert isinstance(first, FdtdWindow)
+    win._open_fdtd_window()
+    assert win._fdtd_window is first
+
+
+def test_main_window_shows_a_warning_when_fdtd_extras_are_missing(qapp, monkeypatch):
+    """Simulates photonfdtd/matplotlib not being installed by making the
+    module import succeed but the FdtdWindow name missing from it — the
+    same ImportError shape `from phidler.panels.fdtd_window import
+    FdtdWindow` would raise if the module's own internal matplotlib import
+    failed and propagated up."""
+    fake_module = types.ModuleType("phidler.panels.fdtd_window")
+    monkeypatch.setitem(sys.modules, "phidler.panels.fdtd_window", fake_module)
+
+    win = MainWindow()
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(True))
+
+    win._open_fdtd_window()
+
+    assert warned
+    assert win._fdtd_window is None

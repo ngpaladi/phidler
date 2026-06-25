@@ -15,6 +15,15 @@ dev = [
 docs = [
     "mkdocs>=1.6.0",
 ]
+# photonfdtd isn't published on PyPI yet (sibling project, not a Phidler
+# package) — install it from its own checkout first
+# (pip install -e /path/to/FastTiming/photonfdtd), then this version
+# constraint will already be satisfied and `pip install -e ".[fdtd]"`
+# won't need network access for it.
+fdtd = [
+    "photonfdtd>=0.1.0",
+    "matplotlib>=3.7",
+]
 
 [build-system]
 requires = ["setuptools>=68.0"]

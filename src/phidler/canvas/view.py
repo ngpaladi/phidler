@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QUndoStack
-from PySide6.QtWidgets import QGraphicsView
+from PySide6.QtWidgets import (
+    QGraphicsEllipseItem,
+    QGraphicsItem,
+    QGraphicsLineItem,
+    QGraphicsSimpleTextItem,
+    QGraphicsView,
+)
 
 from phidler.model.document import Transform
 
@@ -25,6 +33,10 @@ class LayoutView(QGraphicsView):
     placement_requested = Signal(str, float, float)  # component_spec, x, y
     placement_armed_changed = Signal(bool)
     routing_mode_changed = Signal(bool)
+    measure_mode_changed = Signal(bool)
+    measurement_taken = Signal(float, float, float)  # dx, dy, distance (all microns)
+    source_mode_changed = Signal(bool)
+    source_placement_requested = Signal(float, float)  # scene x, y in microns
     context_menu_requested = Signal(QPoint)  # viewport-pixel position
     cursor_position_changed = Signal(float, float)  # scene x, y in microns
 
@@ -43,6 +55,11 @@ class LayoutView(QGraphicsView):
         self._pan_last_pos = QPointF()
         self._drag_start_transforms: dict[int, Transform] = {}
         self.armed_component: str | None = None
+        self.measure_mode = False
+        self._measure_first_point: QPointF | None = None
+        self._measure_items: list = []  # current annotation's QGraphicsItems
+        self.source_mode = False
+        self._source_markers: list = []  # accumulates across clicks, unlike measure mode
 
     # -- placement mode ---------------------------------------------------
 
@@ -57,9 +74,129 @@ class LayoutView(QGraphicsView):
         self.placement_armed_changed.emit(False)
 
     def set_routing_mode(self, enabled: bool) -> None:
+        if enabled:
+            self.set_measure_mode(False)
+            self.set_source_mode(False)
         self.scene().routing_mode = enabled
         self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
         self.routing_mode_changed.emit(enabled)
+
+    # -- measure mode -------------------------------------------------------
+
+    def set_measure_mode(self, enabled: bool) -> None:
+        if enabled:
+            self.set_routing_mode(False)
+            self.set_source_mode(False)
+            self.cancel_placement()
+        else:
+            self._clear_measurement()
+        self.measure_mode = enabled
+        self._measure_first_point = None
+        self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
+        self.measure_mode_changed.emit(enabled)
+
+    # -- source-placement mode -----------------------------------------------
+
+    def set_source_mode(self, enabled: bool) -> None:
+        """Click-to-place mode for FDTD source markers, used by FdtdWindow.
+        Markers accumulate across clicks (unlike measure mode's single
+        replaced annotation) since the use case is placing several
+        sources — clearing them is the caller's job via
+        clear_source_markers(), not implicit on mode toggle."""
+        if enabled:
+            self.set_routing_mode(False)
+            self.set_measure_mode(False)
+            self.cancel_placement()
+        self.source_mode = enabled
+        self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
+        self.source_mode_changed.emit(enabled)
+
+    def add_source_marker(self, x: float, y: float) -> QGraphicsItem:
+        """Adds a small constant-pixel-size marker glyph at the given scene
+        position and returns it, so the caller (FdtdWindow) can track one
+        marker per source row and remove it later via remove_source_marker."""
+        marker = QGraphicsEllipseItem(-5, -5, 10, 10)
+        marker.setBrush(QColor("#ffaa00"))
+        marker.setPen(QPen(QColor("#664400"), 1))
+        marker.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        marker.setZValue(2000.0)
+        marker.setPos(x, y)
+        self.scene().addItem(marker)
+        self._source_markers.append(marker)
+        return marker
+
+    def remove_source_marker(self, marker: QGraphicsItem) -> None:
+        if marker in self._source_markers:
+            self._source_markers.remove(marker)
+        self.scene().removeItem(marker)
+
+    def clear_source_markers(self) -> None:
+        for marker in self._source_markers:
+            self.scene().removeItem(marker)
+        self._source_markers = []
+
+    def _handle_source_click(self, viewport_pos: QPoint) -> None:
+        raw_scene_pt = self.mapToScene(viewport_pos)
+        scene_pt = self._nearest_port_scene_point(raw_scene_pt) or raw_scene_pt
+        self.source_placement_requested.emit(scene_pt.x(), scene_pt.y())
+
+    def _clear_measurement(self) -> None:
+        for item in self._measure_items:
+            self.scene().removeItem(item)
+        self._measure_items = []
+
+    def _nearest_port_scene_point(self, scene_pt: QPointF) -> QPointF | None:
+        """If scene_pt is within port-click range of any instance's port,
+        return that port's exact scene position instead of the raw click
+        point — reuses the same nearest_port()/hit-radius logic routing
+        mode already uses for port clicks, so measuring between two ports
+        lands on their exact centers rather than wherever you clicked near
+        one."""
+        for item in self.scene().items_by_inst.values():
+            local_pt = item.mapFromScene(scene_pt)
+            port_name = item.nearest_port(local_pt)
+            if port_name is None:
+                continue
+            for name, x, y in item._ports:
+                if name == port_name:
+                    return item.mapToScene(QPointF(x, y))
+        return None
+
+    def _handle_measure_click(self, viewport_pos: QPoint) -> None:
+        raw_scene_pt = self.mapToScene(viewport_pos)
+        scene_pt = self._nearest_port_scene_point(raw_scene_pt) or raw_scene_pt
+
+        if self._measure_first_point is None:
+            self._clear_measurement()
+            self._measure_first_point = scene_pt
+            return
+
+        p1 = self._measure_first_point
+        p2 = scene_pt
+        dx = p2.x() - p1.x()
+        dy = p2.y() - p1.y()
+        distance = math.hypot(dx, dy)
+        self._draw_measurement(p1, p2, dx, dy, distance)
+        self.measurement_taken.emit(dx, dy, distance)
+        self._measure_first_point = None
+
+    def _draw_measurement(self, p1: QPointF, p2: QPointF, dx: float, dy: float, distance: float) -> None:
+        self._clear_measurement()
+        pen = QPen(QColor("#00e0ff"), 0, Qt.DashLine)
+        line = QGraphicsLineItem(p1.x(), p1.y(), p2.x(), p2.y())
+        line.setPen(pen)
+        line.setZValue(2000.0)
+        self.scene().addItem(line)
+
+        label = QGraphicsSimpleTextItem(f"{distance:.3f} µm  (dx={dx:.3f}, dy={dy:.3f})")
+        label.setBrush(QColor("#00e0ff"))
+        label.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        label.setZValue(2000.0)
+        mid = QPointF((p1.x() + p2.x()) / 2, (p1.y() + p2.y()) / 2)
+        label.setPos(mid)
+        self.scene().addItem(label)
+
+        self._measure_items = [line, label]
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key_Escape:
@@ -69,6 +206,14 @@ class LayoutView(QGraphicsView):
                 return
             if self.scene().routing_mode:
                 self.set_routing_mode(False)
+                event.accept()
+                return
+            if self.measure_mode:
+                self.set_measure_mode(False)
+                event.accept()
+                return
+            if self.source_mode:
+                self.set_source_mode(False)
                 event.accept()
                 return
         super().keyPressEvent(event)
@@ -101,6 +246,14 @@ class LayoutView(QGraphicsView):
             component_spec = self.armed_component
             self.cancel_placement()
             self.placement_requested.emit(component_spec, x, y)
+            event.accept()
+            return
+        if self.measure_mode and event.button() == Qt.LeftButton:
+            self._handle_measure_click(event.position().toPoint())
+            event.accept()
+            return
+        if self.source_mode and event.button() == Qt.LeftButton:
+            self._handle_source_click(event.position().toPoint())
             event.accept()
             return
         super().mousePressEvent(event)

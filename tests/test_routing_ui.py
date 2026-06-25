@@ -179,6 +179,28 @@ def test_route_export_includes_route_geometry(qapp, tmp_path):
     assert not reimported.bbox().empty()
 
 
+def test_routes_use_straight_sections_and_euler_bends(qapp):
+    """Locks in "straight sections and adiabatic turns": confirmed by
+    inspecting route_single's actual signature that its `bend` parameter
+    already defaults to `bend_euler` (continuously-varying curvature —
+    the standard low-loss "adiabatic" turn in photonics, not a separately
+    named "adiabatic" component) and that our add_route call never
+    overrides it. This test checks the *actual* cell names a real route
+    produces, not just the default parameter value, so a future change
+    that accidentally passes a different `bend=` would be caught here."""
+    win = MainWindow()
+    a_id, b_id = _place_two_straights(win)  # places with a real gap + 90-degree turn
+    win._on_port_clicked(a_id, "o2")
+    win._on_port_clicked(b_id, "o1")
+    route_id = next(iter(win.document.routes))
+    route = win.document.routes[route_id]
+
+    cell_names = [ref.cell.name for ref in route.refs]
+    assert any("bend_euler" in name for name in cell_names)
+    assert any("straight" in name for name in cell_names)
+    assert not any("bend_circular" in name for name in cell_names)
+
+
 def test_clicking_far_from_any_port_does_nothing(qapp):
     win = MainWindow()
     a_id, _b_id = _place_two_straights(win)

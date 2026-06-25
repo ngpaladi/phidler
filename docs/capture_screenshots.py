@@ -124,6 +124,54 @@ def drc_violation() -> None:
     save(win, "drc_violation")
 
 
+def _pump_events(app, predicate, max_iters: int = 300, sleep_s: float = 0.02) -> None:
+    import time
+
+    for _ in range(max_iters):
+        app.processEvents()
+        time.sleep(sleep_s)
+        if predicate():
+            return
+
+
+def fdtd_mode_profile() -> None:
+    from phidler.panels.fdtd_window import FdtdWindow
+
+    win = MainWindow()
+    a = win.document.add_instance("straight", {"length": 3.0, "width": 0.5})
+    win.scene.add_instance_item(a.id)
+
+    fdtd_win = FdtdWindow(win.document, win.view)
+    fdtd_win.resize(750, 950)
+    fdtd_win.show()
+    fdtd_win.centralWidget().setCurrentIndex(0)
+    fdtd_win.mode_core_width_spin.setValue(0.5)
+    fdtd_win._on_solve_mode_clicked()
+    _pump_events(app, lambda: fdtd_win._mode_thread is not None and not fdtd_win._mode_thread.isRunning())
+    save(fdtd_win, "fdtd_mode_profile")
+
+
+def fdtd_propagation() -> None:
+    from phidler.panels.fdtd_window import FdtdWindow
+
+    win = MainWindow()
+    a = win.document.add_instance("straight", {"length": 3.0, "width": 0.5})
+    win.scene.add_instance_item(a.id)
+
+    fdtd_win = FdtdWindow(win.document, win.view)
+    fdtd_win.resize(750, 950)
+    fdtd_win.show()
+    fdtd_win.centralWidget().setCurrentIndex(1)
+    fdtd_win.run_cell_size_spin.setValue(0.06)
+    fdtd_win.run_time_spin.setValue(20.0)
+    fdtd_win._on_source_placement_requested(-0.4, 0.0)
+    fdtd_win._on_run_clicked()
+    _pump_events(app, lambda: fdtd_win._fdtd_thread is not None and not fdtd_win._fdtd_thread.isRunning())
+    fdtd_win.frame_slider.setValue(fdtd_win.frame_slider.maximum())
+    app.processEvents()
+    save(fdtd_win, "fdtd_propagation")
+
+
 def console_session() -> None:
     win = MainWindow()
     win.resize(1200, 800)
@@ -148,5 +196,7 @@ if __name__ == "__main__":
     transform_overlay()
     project_settings_dialog()
     drc_violation()
+    fdtd_mode_profile()
+    fdtd_propagation()
     console_session()
     print("done")

@@ -32,6 +32,29 @@ PLATFORM_PRESETS: dict[str, PlatformPreset] = {
     "Silicon Nitride (SiN)": PlatformPreset(
         "Silicon Nitride (SiN)", core_index=2.0, clad_index=1.44, thickness_um=0.400, cross_section="nitride"
     ),
+    # Lithium niobate ordinary index at 1550nm: 2.211, from the Zelmon,
+    # Small & Jundt (1997) Sellmeier fit for congruent LiNbO3 — cross-checked
+    # against a second, independent source: the photonfdtd project's own
+    # LNOI mode-solver example uses n=2.30 at 600nm, which the same Sellmeier
+    # equation reproduces to 3 significant figures (2.296), so this isn't a
+    # single unverified number. Thin-film LN-on-insulator (TFLN) commercial
+    # wafers commonly use ~300nm device-layer thickness; SiO2 cladding/box
+    # (n=1.44) is standard. No LN-specific cross_section exists in the
+    # generic PDK used here, so this defaults to "strip" same as silicon —
+    # this preset only changes the suggested-width estimate and project
+    # metadata, not the active PDK's actual material/layer set.
+    "Lithium Niobate (LN)": PlatformPreset(
+        "Lithium Niobate (LN)", core_index=2.211, clad_index=1.44, thickness_um=0.300, cross_section="strip"
+    ),
+    # Lithium tantalate ordinary index at 1550nm: ~2.14, a standard
+    # literature reference value (LiTaO3 has much lower birefringence than
+    # LiNbO3, so ordinary/extraordinary indices are close together). Less
+    # independently cross-checked here than the LN entry above — there was
+    # no second source available to validate it against during development
+    # — so treat this one as representative rather than precisely sourced.
+    "Lithium Tantalate (LT)": PlatformPreset(
+        "Lithium Tantalate (LT)", core_index=2.14, clad_index=1.44, thickness_um=0.300, cross_section="strip"
+    ),
     "Custom": PlatformPreset("Custom", core_index=3.45, clad_index=1.44, thickness_um=0.220, cross_section="strip"),
 }
 

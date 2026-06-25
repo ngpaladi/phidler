@@ -6,10 +6,25 @@ On startup (and via File > New), Phidler shows a Project Settings dialog:
 
 <img src="screenshots/project_settings_dialog.png" width="420" alt="Project Settings dialog">
 
-- **Platform**: pick Silicon (SOI), Silicon Nitride, or Custom to set the
-  core/cladding refractive indices and core thickness.
+- **Platform**: pick Silicon (SOI), Silicon Nitride, Lithium Niobate (LN),
+  Lithium Tantalate (LT), or Custom to set the core/cladding refractive
+  indices and core thickness. LN/LT use real published thin-film-on-
+  insulator index values (cross-checked against literature; see
+  [Development](development.md#key-design-notes) for sourcing), not a
+  full multi-layer stack-up model — there's no LN/LT-specific
+  cross_section in the generic PDK either, so these presets affect the
+  suggested-width estimate and project metadata, same as the other
+  platforms, not the actual GDS layers.
 - **Design wavelength**: used together with the platform to estimate a
   suggested single-mode waveguide width.
+- **Cladding thickness**: a generic default (2µm), not tied to any
+  specific foundry process or platform — switching platforms doesn't
+  change this field, since it's a wafer/process choice rather than a
+  material property. Doesn't affect the suggested-width estimate (which
+  assumes a semi-infinite cladding) but is the real vertical extent used
+  by FDTD Simulation's mode solver and propagation runs — see
+  [FDTD simulation](#fdtd-simulation) for why this number actually
+  matters there.
 - **Default cross-section**: which gdsfactory cross-section new routes use
   by default.
 
@@ -31,8 +46,8 @@ Use the **Components** panel on the left:
   detectors) are expanded by default. Everything else (MEMS, quantum,
   microfluidics, analog, test structures, etc.) is under **Other**.
 - Hover over a component to preview its actual geometry before placing it.
-- Double-click (or select and press Enter) to arm placement, then click
-  on the canvas to place it.
+- Click a component (or select it and press Enter) to arm placement, then
+  click on the canvas to place it.
 
 <img src="screenshots/palette_hover_preview.png" width="260" alt="Component palette"> <img src="screenshots/hover_preview_popup.png" width="200" alt="Hover preview">
 
@@ -60,20 +75,37 @@ automatically.
 - **Right-click** the canvas for a context menu of common actions.
 - Grid pitch and snap-to-grid are adjustable from the toolbar.
 
-### Transform overlay
+### Aligning and distributing multiple instances
 
-Selecting a single instance shows a floating panel directly over it:
+Select 2 or more instances, then use **Edit > Align** (or the same submenu
+in the right-click context menu):
 
-<img src="screenshots/transform_overlay.png" width="520" alt="Transform overlay">
+- Align Left/Right/Top/Bottom Edges, or Align Horizontal/Vertical Centers.
+- Distribute Horizontally/Vertically — needs 3+ instances; spaces their
+  centers evenly along that axis, keeping the two extreme instances fixed.
 
-- Rotate ±90° buttons, or drag the rotation slider for free rotation.
-- Mirror toggle.
-- Scale slider (10%–400%) — this is a real geometric magnification (it
-  resizes the instance's shape and ports), not a component parameter.
-- Reset clears rotation, mirror, and scale back to defaults.
+Each is a single undo step, even when it moves several instances.
 
-Dragging a slider previews live; the change commits to the undo stack
-when you release it.
+### Transform handles
+
+Selecting a single instance shows the standard drag-handle interface
+directly on the canvas — the same convention used by PowerPoint,
+Keynote, Figma, Illustrator, and most 2D editors:
+
+<img src="screenshots/transform_overlay.png" width="520" alt="On-canvas transform handles: 4 corner resize handles and 1 rotate handle above the shape">
+
+- **4 corner handles** — drag any one to resize. This is a real geometric
+  magnification (it resizes the instance's shape and ports, not a
+  component parameter like length), and it's uniform: dragging any
+  corner keeps the diagonally opposite corner fixed in place, same as a
+  standard resize handle.
+- **1 handle above the shape** — drag it to rotate freely around the
+  instance's position.
+- For mirror, quick 90° rotation, or resetting rotation/mirror/scale back
+  to defaults, use `M` / `R` or the right-click context menu — those
+  aren't drag gestures, so they're not on the handles.
+
+Both gestures preview live and commit to the undo stack when you release.
 
 ## Editing parameters
 
@@ -81,6 +113,16 @@ Select an instance and use the **Properties** panel (right side) to edit
 its parameters — length, width, radius, cross-section, etc. Click **Apply**
 to regenerate its geometry. `cross_section` is a dropdown of the active
 platform's valid names, so you can't type something invalid.
+
+### Precision transform entry
+
+The same panel has a **Transform** section above the parameter form —
+X, Y, Rotation, Mirror, and Scale as typed numeric fields, for exact
+placement instead of dragging by eye (matching a known coordinate from a
+foundry PDK, for instance). Edit the values and click **Apply Transform**
+to commit — it's undoable the same way a canvas drag is. The fields track
+the selected instance's live transform automatically; editing one pauses
+that tracking until you click elsewhere, so your typing isn't overwritten.
 
 ## Layers
 
@@ -94,9 +136,25 @@ visibility or change a layer's color with the checkbox and color swatch.
    tooltip).
 2. Pick a cross-section from the toolbar dropdown.
 3. Click a port on one component, then a port on another. A route is
-   drawn between them.
+   drawn between them — straight sections joined by euler bends
+   (continuously-varying curvature, the standard low-loss "adiabatic"
+   turn in photonics), not constant-radius circular bends.
 4. Routes are selectable and deletable like any other item, and fully
    undoable.
+
+## Measuring distances
+
+1. Click **Measure** in the toolbar.
+2. Click a first point, then a second. A dashed line and label appear
+   showing the distance, dx, and dy between them (also shown in the
+   status bar) — clicking near a port snaps to its exact center, the
+   same way routing's port clicks do.
+3. Click again to start a new measurement (clears the old one), or press
+   `Esc` to cancel a pending first point and exit Measure mode.
+
+Turning on Measure mode turns off Route mode and cancels any armed
+placement, and vice versa — only one click-driven mode is active at a
+time.
 
 ## Reference GDS backdrop
 
@@ -174,3 +232,76 @@ typing until you enter a blank line. Up/Down arrows recall history.
 Everything the console does is real and immediate, but **bypasses the
 undo stack** — it's a power-user tool for quick scripted edits, not a
 replacement for the normal undo-tracked UI actions.
+
+## FDTD simulation
+
+**Simulate > FDTD Simulation…** opens a separate window that runs a real
+local FDTD solve against your actual placed layout, using `photonfdtd` —
+a separate, optional dependency not published on PyPI. If it's not
+installed, you'll see a message explaining what to install instead of a
+crash. The window has two tabs: a fast **Vertical Mode Profile** solver,
+and full **Propagation (FDTD)** with movie playback.
+
+### Checking your cladding is thick enough
+
+Before running a full simulation, the **Vertical Mode Profile** tab is
+worth a quick check — it solves the guided mode for your waveguide's
+cross-section in well under a second:
+
+1. Enter the **Core width**, **Wavelength**, and (optionally) more than
+   one mode to solve for.
+2. Click **Solve**. The plot shows the mode's intensity confined within
+   the core (the white outline), decaying into the cladding above and
+   below.
+3. The status line reports the effective index and whether the mode is
+   **well confined** or whether the **cladding may be too thin** — if
+   your cladding (set in **File > Project Settings…**) isn't thick
+   enough, the mode gets visibly squashed against the edge of the plot
+   instead of decaying naturally. That's your answer to "is my cladding
+   thickness enough" without needing a full propagation run.
+
+![Vertical mode profile: a confined mode shown within the waveguide core outline, with n_eff and a confinement status reported above](screenshots/fdtd_mode_profile.png)
+
+### Placing sources and running a simulation
+
+The **Propagation (FDTD)** tab runs a true 3D time-domain simulation and
+plays the result back as a movie:
+
+1. Click **Place Source on Canvas**, then click anywhere on the main
+   canvas (clicking near a port snaps to its exact position, the same
+   as the measure tool). Each click adds a row to the source table and a
+   marker on the canvas.
+2. In the table, pick each source's **Kind**:
+   - **dipole** — a plain oscillating point source. Always available,
+     simplest option, not mode-matched to anything.
+   - **single_photon** — launches a wavepacket built from the real
+     guided mode at that position (needs **Core width** filled in),
+     normalized to carry approximately one photon's worth of energy.
+     **Photon count** scales the energy up from there (entered as a
+     plain count, not as a separate energy field — multiply it up if
+     you want a brighter pulse).
+3. Set **Wavelength**, **Cell size**, and **Run time**, then click **Run
+   Simulation**. If the estimated run time is more than a few seconds,
+   you'll be asked to confirm first — true 3D propagation is genuinely
+   more expensive than a quick preview, and this estimate is calibrated
+   against real measured runs, not guessed.
+4. Once it finishes, use the **Play** button and the slider underneath
+   to scrub through the field evolving over time, overlaid on an outline
+   of your actual chip layout — looping back to the start automatically.
+
+![Propagation result: red/blue field pattern radiating from a point source and coupling into a waveguide, overlaid on its outline, with the time slider and Play button below the source table](screenshots/fdtd_propagation.png)
+
+**Read the disclaimer in the window.** Both tabs run a real solve against
+your geometry, not a mockup — but treat the results as a qualitative
+look at how light spreads through your structure, not a calibrated
+transmission measurement or an actual quantum simulation, the same
+spirit as the waveguide-width estimate in Project Settings. The mode
+solver is scalar (no TE/TM distinction), and "photon count" scales
+energy correctly *relative* to itself, but the absolute one-photon
+baseline isn't exactly h·f — see the window's own disclaimer text for
+specifics.
+
+The material stack (core/cladding index, core thickness, **and now
+cladding thickness**) comes from your current Project Settings platform
+— switching between Silicon, SiN, LN, or LT there changes what gets
+simulated here too.

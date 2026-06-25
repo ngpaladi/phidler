@@ -57,6 +57,13 @@ class ProjectSettings:
     core_index: float = 3.45
     clad_index: float = 1.44
     thickness_um: float = 0.220
+    # Generic default (2µm), not sourced from any specific foundry process —
+    # a wafer/process choice independent of which platform/material is
+    # selected, so platform-preset switching does not touch this field.
+    # Doesn't affect the EIM width estimate (which assumes semi-infinite
+    # cladding) but is the real domain extent for the FDTD/mode-solver
+    # vertical stack.
+    clad_thickness_um: float = 2.0
     wavelength_um: float = 1.55
     cross_section: str = "strip"
 

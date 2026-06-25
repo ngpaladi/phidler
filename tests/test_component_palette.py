@@ -1,6 +1,7 @@
 import inspect
 
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 
 from phidler.panels.component_palette import ComponentPalette
 from phidler.pdk_catalog import ComponentSpec, build_catalog
@@ -96,3 +97,46 @@ def test_add_components_merges_custom_category(qapp):
     assert custom_item is not None
     child_labels = [custom_item.child(i).text(0) for i in range(custom_item.childCount())]
     assert "My Part" in child_labels
+
+
+def test_single_click_on_a_leaf_item_arms_placement(qapp):
+    """A single click used to be a no-op (only itemActivated — double-click
+    or Enter — armed placement), reported as an unintuitive extra click
+    compared to how palette-driven placement works elsewhere. Verified via
+    a real simulated QTest mouse click through the actual tree widget, not
+    just a direct signal emission, since the bug was specifically about
+    what a real single click does."""
+    catalog = build_catalog()
+    palette = ComponentPalette(catalog)
+    palette.show()
+
+    waveguides_item = _find_top_level(palette, "Waveguides")
+    children = [waveguides_item.child(i) for i in range(waveguides_item.childCount())]
+    straight_item = next(c for c in children if c.text(0) == "Straight")
+
+    received = []
+    palette.place_requested.connect(received.append)
+
+    rect = palette.tree.visualItemRect(straight_item)
+    QTest.mouseClick(palette.tree.viewport(), Qt.LeftButton, Qt.NoModifier, rect.center())
+
+    assert received == ["straight"]
+
+
+def test_single_click_on_a_category_header_does_not_arm_placement(qapp):
+    """A category header has no underlying component name, so a single
+    click on one (e.g. to expand/collapse it) must not emit
+    place_requested — only leaf items carry the _NAME_ROLE data the
+    handler checks for."""
+    catalog = build_catalog()
+    palette = ComponentPalette(catalog)
+    palette.show()
+
+    waveguides_item = _find_top_level(palette, "Waveguides")
+    received = []
+    palette.place_requested.connect(received.append)
+
+    rect = palette.tree.visualItemRect(waveguides_item)
+    QTest.mouseClick(palette.tree.viewport(), Qt.LeftButton, Qt.NoModifier, rect.center())
+
+    assert received == []
