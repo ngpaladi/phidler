@@ -134,6 +134,7 @@ class FdtdWindow(QMainWindow):
         self._syncing_wavelength_energy = False
         self._last_sim = None
         self._last_result = None
+        self._last_params = None
         self._chip_outline_drawn = False
 
         self._play_timer = QTimer(self)
@@ -190,10 +191,12 @@ class FdtdWindow(QMainWindow):
         self.mode_status_label.setWordWrap(True)
         layout.addWidget(self.mode_status_label)
 
-        self.mode_figure = Figure(figsize=(4, 3))
+        self.mode_figure = Figure(figsize=(4, 3), facecolor="#141414")
         self.mode_canvas = FigureCanvasQTAgg(self.mode_figure)
         self.mode_canvas.setMinimumHeight(280)
+        self.mode_canvas.setStyleSheet("background: #141414;")
         self.mode_ax = self.mode_figure.add_subplot(111)
+        self.mode_ax.set_facecolor("#141414")
         layout.addWidget(self.mode_canvas)
 
         return widget
@@ -248,6 +251,7 @@ class FdtdWindow(QMainWindow):
         self.mode_ax.set_xlabel("y (µm)")
         self.mode_ax.set_ylabel("z (µm)")
         self.mode_ax.set_title("|ψ| — mode profile")
+        self._dark_axes(self.mode_figure, self.mode_ax)
         self.mode_canvas.draw()
 
     def _on_mode_failed(self, message: str) -> None:
@@ -324,10 +328,12 @@ class FdtdWindow(QMainWindow):
         playback_row.addWidget(self.frame_slider)
         layout.addLayout(playback_row)
 
-        self.run_figure = Figure(figsize=(4, 3))
+        self.run_figure = Figure(figsize=(4, 3), facecolor="#141414")
         self.run_canvas = FigureCanvasQTAgg(self.run_figure)
         self.run_canvas.setMinimumHeight(280)
+        self.run_canvas.setStyleSheet("background: #141414;")
         self.run_ax = self.run_figure.add_subplot(111)
+        self.run_ax.set_facecolor("#141414")
         layout.addWidget(self.run_canvas)
 
         return widget
@@ -438,6 +444,7 @@ class FdtdWindow(QMainWindow):
 
     def _on_run_clicked(self) -> None:
         params = self._current_params()
+        self._last_params = params
         try:
             cell_count = estimate_grid_cell_count(self.document, params)
         except ValueError as exc:
@@ -543,16 +550,47 @@ class FdtdWindow(QMainWindow):
             # own extent instead, so the full simulated domain stays
             # visible with the chip geometry drawn as a reference on top.
             self._draw_chip_outline(self.run_ax)
+            self._draw_source_markers(self.run_ax)
             self.run_ax.set_xlim(extent[0], extent[1])
             self.run_ax.set_ylim(extent[2], extent[3])
             self.run_ax.set_xlabel("x (µm)")
             self.run_ax.set_ylabel("y (µm)")
             self.run_ax.set_title("Ez field, top-down (mid-core height)")
+            self._dark_axes(self.run_figure, self.run_ax)
             self._chip_outline_drawn = True
         else:
             self._field_im.set_data(frame.T)
             self._field_im.set_clim(-vmax, vmax)
         self.run_canvas.draw()
+
+    @staticmethod
+    def _dark_axes(fig, ax) -> None:
+        bg = "#141414"
+        fig.patch.set_facecolor(bg)
+        ax.set_facecolor(bg)
+        for item in (ax.xaxis.label, ax.yaxis.label):
+            item.set_color("#bbbbbb")
+        ax.title.set_color("#eeeeee")
+        ax.tick_params(colors="#777777", labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#2e2e2e")
+
+    def _draw_source_markers(self, ax) -> None:
+        if self._last_params is None:
+            return
+        for i, src in enumerate(self._last_params.sources, 1):
+            ax.plot(
+                src.x_um, src.y_um,
+                marker="*", markersize=12,
+                color="#ffaa00", markeredgecolor="#000000",
+                markeredgewidth=0.4, linestyle="none", zorder=10,
+            )
+            ax.annotate(
+                f"S{i}", (src.x_um, src.y_um),
+                xytext=(5, 4), textcoords="offset points",
+                color="#ffaa00", fontsize=7.5, fontweight="bold",
+                zorder=11,
+            )
 
     def _draw_chip_outline(self, ax) -> None:
         from matplotlib.patches import Polygon as MplPolygon

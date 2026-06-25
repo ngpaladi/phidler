@@ -114,6 +114,8 @@ its parameters — length, width, radius, cross-section, etc. Click **Apply**
 to regenerate its geometry. `cross_section` is a dropdown of the active
 platform's valid names, so you can't type something invalid.
 
+<img src="screenshots/properties_panel_example.png" width="300" alt="Properties panel showing editable parameters for a selected ring resonator">
+
 ### Precision transform entry
 
 The same panel has a **Transform** section above the parameter form —
@@ -130,6 +132,8 @@ The **Layers** panel (right side) lists every layer your design actually
 uses — it starts empty and grows as you place/route/import. Toggle
 visibility or change a layer's color with the checkbox and color swatch.
 
+<img src="screenshots/layers_panel_example.png" width="320" alt="Layers panel showing active layers with visibility toggles and color swatches">
+
 ## Routing
 
 1. Click **Route** in the toolbar (or press the shortcut shown in the
@@ -142,6 +146,8 @@ visibility or change a layer's color with the checkbox and color swatch.
 4. Routes are selectable and deletable like any other item, and fully
    undoable.
 
+<img src="screenshots/routing_example.png" width="700" alt="Routing: a straight waveguide connected to a bend via an auto-routed euler path, with the Route button active in the toolbar">
+
 ## Measuring distances
 
 1. Click **Measure** in the toolbar.
@@ -151,6 +157,8 @@ visibility or change a layer's color with the checkbox and color swatch.
    same way routing's port clicks do.
 3. Click again to start a new measurement (clears the old one), or press
    `Esc` to cancel a pending first point and exit Measure mode.
+
+<img src="screenshots/measure_tool_example.png" width="700" alt="Measure tool: a dashed cyan line with a distance/dx/dy label across two components">
 
 Turning on Measure mode turns off Route mode and cancels any armed
 placement, and vice versa — only one click-driven mode is active at a

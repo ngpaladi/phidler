@@ -172,6 +172,88 @@ def fdtd_propagation() -> None:
     save(fdtd_win, "fdtd_propagation")
 
 
+def routing_example() -> None:
+    from PySide6.QtCore import QPointF
+
+    win = MainWindow()
+    win.resize(1100, 700)
+    win.show()
+
+    a = win.document.add_instance("straight", {"length": 8.0, "width": 0.5})
+    win.scene.add_instance_item(a.id)
+    win.document.set_transform(a.id, Transform(x=-8.0, y=0.0, rotation=0.0, mirror=False))
+
+    b = win.document.add_instance("bend_euler", {})
+    win.scene.add_instance_item(b.id)
+    win.document.set_transform(b.id, Transform(x=4.0, y=0.0, rotation=0.0, mirror=False))
+
+    route = win.document.add_route(a.id, "o2", b.id, "o1", "strip")
+    win.scene.add_route_item(route.id)
+
+    win.view.zoom_to_fit()
+    win.view.scale(0.8, 0.8)
+    win.scene.clearSelection()
+    win.route_action.setChecked(True)
+    save(win, "routing_example")
+    win.route_action.setChecked(False)
+
+
+def measure_tool_example() -> None:
+    from PySide6.QtCore import QPointF
+
+    win = MainWindow()
+    win.resize(1100, 700)
+    win.show()
+
+    a = win.document.add_instance("straight", {"length": 12.0, "width": 0.5})
+    win.scene.add_instance_item(a.id)
+    win.document.set_transform(a.id, Transform(x=-6.0, y=0.0, rotation=0.0, mirror=False))
+
+    b = win.document.add_instance("bend_euler", {})
+    win.scene.add_instance_item(b.id)
+    win.document.set_transform(b.id, Transform(x=6.0, y=0.0, rotation=0.0, mirror=False))
+
+    win.view.zoom_to_fit()
+    win.view.scale(0.75, 0.75)
+    win.view.set_measure_mode(True)
+    win.view._draw_measurement(
+        QPointF(-6.0, 0.0), QPointF(6.0, 0.0),
+        dx=12.0, dy=0.0, distance=12.0,
+    )
+    save(win, "measure_tool_example")
+    win.view.set_measure_mode(False)
+
+
+def layers_panel_example() -> None:
+    win = MainWindow()
+    win.resize(350, 500)
+    win.show()
+
+    for comp, kwargs, x in [
+        ("straight", {"length": 10.0, "width": 0.5}, 0.0),
+        ("bend_euler", {}, 15.0),
+        ("mmi1x2", {}, 25.0),
+    ]:
+        inst = win.document.add_instance(comp, kwargs)
+        win.scene.add_instance_item(inst.id)
+        win.document.set_transform(inst.id, Transform(x=x, y=0.0, rotation=0.0, mirror=False))
+
+    win.undo_stack.indexChanged.emit(0)
+    save(win.layers_panel, "layers_panel_example")
+
+
+def properties_panel_example() -> None:
+    win = MainWindow()
+    win.resize(320, 600)
+    win.show()
+
+    inst = win.document.add_instance("ring_single", {"radius": 8.0, "gap": 0.3})
+    win.scene.add_instance_item(inst.id)
+    win.scene.items_by_inst[inst.id].setSelected(True)
+    win.scene.selectionChanged.emit()
+    save(win.properties_panel, "properties_panel_example")
+
+
 def console_session() -> None:
     win = MainWindow()
     win.resize(1200, 800)
@@ -198,5 +280,9 @@ if __name__ == "__main__":
     drc_violation()
     fdtd_mode_profile()
     fdtd_propagation()
+    routing_example()
+    measure_tool_example()
+    layers_panel_example()
+    properties_panel_example()
     console_session()
     print("done")
