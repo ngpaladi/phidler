@@ -108,13 +108,15 @@ class SourceSpec:
     instead evaluates `script` (a Python expression of `t`, in seconds) as
     the source's time-domain waveform — needs `script`.
 
-    `kind="cherenkov"` models a charged particle crossing the domain faster
-    than light's local phase velocity: a line of point dipoles along a path,
-    each fired with a delay equal to the particle's transit time to that
-    point (distance / (beta·c)). Their superposition forms the Cherenkov
-    shock cone, opening at cos(theta)=1/(beta·n). Uses velocity_beta (v/c),
-    direction_deg, and cherenkov_length_um for the path; cherenkov_segments
-    sets how finely the path is sampled."""
+    `kind="cherenkov"` models a charged particle punching up through the chip,
+    perpendicular to the layout plane (out of the top-down view): a line of
+    point dipoles along the +z track, each fired with a delay equal to the
+    particle's transit time to that point (distance / (beta·c)). Their
+    superposition forms the Cherenkov shock cone (opening at
+    cos(theta)=1/(beta·n)), seen top-down as a ring spreading from the (x, y)
+    impact point. Uses velocity_beta (v/c) and direction_deg (tilt from
+    vertical); the track is kept inside the dielectric stack. cherenkov_segments
+    sets how finely it's sampled."""
 
     x_um: float
     y_um: float
@@ -125,8 +127,8 @@ class SourceSpec:
     fwhm_fs: float = 3.0
     script: str | None = None
     velocity_beta: float = 0.8  # particle speed as a fraction of c (Cherenkov needs beta·n > 1)
-    direction_deg: float = 0.0  # particle travel direction in the XY plane
-    cherenkov_length_um: float = 5.0  # length of the particle track
+    direction_deg: float = 0.0  # tilt of the +z track from vertical (0 = straight up, out of plane)
+    cherenkov_length_um: float = 5.0  # track length in z (clamped to the dielectric stack)
     cherenkov_segments: int = 24  # point dipoles sampled along the track
 
 
@@ -376,16 +378,30 @@ def build_source(settings: ProjectSettings, spec: SourceSpec) -> Any:
         if spec.velocity_beta <= 0:
             raise ValueError("cherenkov sources need a positive velocity_beta (v/c)")
         v = spec.velocity_beta * _C0  # particle speed (m/s)
-        angle = math.radians(spec.direction_deg)
-        ux, uy = math.cos(angle), math.sin(angle)
+        # The particle travels (mostly) along +z — up and out of the chip plane,
+        # the way a real charged particle punches through the wafer — so the
+        # top-down field view shows the Cherenkov shock as a ring spreading from
+        # the (x, y) impact point. direction_deg tilts the track from vertical
+        # (0 = straight through). The track is kept inside the dielectric stack
+        # (core + cladding), both because that's where Cherenkov light is
+        # actually emitted and so the dipoles never fall outside the domain.
+        clad_m = effective_clad_thickness_um(settings, spec.wavelength_um) * 1e-6
+        thickness_m = settings.thickness_um * 1e-6
+        diel_span = thickness_m + 2 * clad_m
+        z_center = thickness_m / 2.0  # mid-core; the dielectric runs [-clad, thickness+clad]
+        span_m = min(spec.cherenkov_length_um * 1e-6, diel_span)
+        tilt = math.radians(spec.direction_deg)
+        ux, uy, uz = math.sin(tilt), 0.0, math.cos(tilt)
         n_seg = max(spec.cherenkov_segments, 2)
-        span_m = spec.cherenkov_length_um * 1e-6
         step_m = span_m / (n_seg - 1)
         fwhm_s = spec.fwhm_fs * 1e-15
+        x0 = spec.x_um * 1e-6 - ux * span_m / 2
+        y0 = spec.y_um * 1e-6 - uy * span_m / 2
+        z0 = z_center - uz * span_m / 2  # enter from below, exit above
         dipoles = []
         for i in range(n_seg):
-            s = i * step_m  # arc length from the track start
-            pos = (spec.x_um * 1e-6 + ux * s, spec.y_um * 1e-6 + uy * s, 0.0)
+            s = i * step_m  # distance travelled along the track
+            pos = (x0 + ux * s, y0 + uy * s, z0 + uz * s)
             # Each point fires when the particle reaches it: delay = s / v.
             pulse = pf.GaussianPulse(freq0=freq0, fwhm=fwhm_s, delay=s / v)
             dipoles.append(pf.PointDipole(position=pos, component="Ez", waveform=pulse))

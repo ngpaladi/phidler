@@ -298,12 +298,14 @@ plays the result back as a movie:
      restricted sandbox, since this is already a single-user desktop
      tool. Wavelength/Energy/Photon count/Core width are ignored for
      this kind.
-   - **cherenkov** — models a charged particle crossing the domain faster
-     than light's local phase velocity. It is laid down as a track of
-     point dipoles, each fired with a delay equal to the particle's
-     transit time to that point (distance / βc), whose superposition
-     forms the Cherenkov shock cone. Set the particle speed **β = v/c**,
-     the **track direction**, and the **track length** in the source row
+   - **cherenkov** — models a charged particle punching *up through the
+     chip* (perpendicular to the layout plane, out of the top-down view)
+     faster than light's local phase velocity. It is laid down as a track
+     of point dipoles along the z axis, each fired with a delay equal to
+     the particle's transit time to that point (distance / βc), whose
+     superposition forms the Cherenkov shock cone — seen top-down as a
+     ring spreading from the impact point. Set the particle speed
+     **β = v/c** and the **tilt from vertical** in the source row
      (Cherenkov radiation requires β·n > 1, i.e. faster than the medium's
      phase velocity).
 4. Set **Cell size** and **Run time**, then click **Run Simulation**. If

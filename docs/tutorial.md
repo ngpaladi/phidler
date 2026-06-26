@@ -206,11 +206,13 @@ You choose the excitation per source in the source table's **Kind** column:
 - **single photon** — launches the locally-solved guided mode (a mode-matched
   source).
 - **scripted** — drives the source with your own Python waveform expression.
-- **cherenkov** — models a charged particle crossing the domain faster than
-  light's local phase velocity, laid down as a track of time-staggered dipoles
-  (transit time = distance / βc). Their superposition forms the Cherenkov shock
-  cone — set the particle speed (β = v/c), track direction, and track length in
-  the source row.
+- **cherenkov** — models a charged particle punching *up through the chip*
+  (perpendicular to the layout, out of the top-down view) faster than light's
+  local phase velocity, laid down as a track of time-staggered dipoles along
+  the z axis (transit time = distance / βc). Their superposition forms the
+  Cherenkov shock cone, seen top-down as a ring spreading from the impact
+  point — set the particle speed (β = v/c) and the tilt from vertical in the
+  source row.
 
 > The effective index your mode solve produces is fed back into the propagation
 > **time** readouts and rulers, so after solving, the femtosecond numbers on

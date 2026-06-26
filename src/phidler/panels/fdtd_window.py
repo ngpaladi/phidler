@@ -70,8 +70,8 @@ _TABLE_COLUMNS = [
     "Core width (µm)",
     "Script (kind=scripted)",
     "β = v/c (cherenkov)",
-    "Track dir ° (cherenkov)",
-    "Track µm (cherenkov)",
+    "Tilt ° from vertical (cherenkov)",
+    "Track µm in z (cherenkov)",
     "",
 ]
 (

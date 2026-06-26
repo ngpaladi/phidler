@@ -306,27 +306,31 @@ def test_build_source_single_photon_builds_a_mode_injected_source(qapp):
     assert source.n_eff > 1.0
 
 
-def test_build_source_cherenkov_is_a_track_of_time_staggered_dipoles(qapp):
+def test_build_source_cherenkov_travels_in_z_out_of_plane(qapp):
     spec = SourceSpec(
-        x_um=0.0,
-        y_um=0.0,
+        x_um=3.0,
+        y_um=1.0,
         kind="cherenkov",
         velocity_beta=0.8,
-        direction_deg=0.0,
-        cherenkov_length_um=5.0,
+        direction_deg=0.0,  # straight up, perpendicular to the chip plane
         cherenkov_segments=6,
     )
     dipoles = build_source(_SOI_SETTINGS, spec)
     assert isinstance(dipoles, list) and len(dipoles) == 6
-    # March along +x, with monotonically increasing fire delays (transit time).
-    xs = [round(d.position[0] * 1e6, 3) for d in dipoles]
-    delays = [d.waveform.delay for d in dipoles]
-    assert xs == sorted(xs) and xs[0] == 0.0 and abs(xs[-1] - 5.0) < 1e-6
-    assert all(delays[i] < delays[i + 1] for i in range(len(delays) - 1))
-    # delay to 1µm at β=0.8 is 1e-6 / (0.8·c).
-    from phidler.fdtd_sim import _C0
 
-    assert math.isclose(delays[1], 1e-6 / (0.8 * _C0), rel_tol=1e-6)
+    # The particle punches through in z: x/y stay at the impact point, z climbs
+    # monotonically through the dielectric stack, fire delays increase (transit).
+    xs = [d.position[0] * 1e6 for d in dipoles]
+    ys = [d.position[1] * 1e6 for d in dipoles]
+    zs = [d.position[2] * 1e6 for d in dipoles]
+    delays = [d.waveform.delay for d in dipoles]
+    assert all(math.isclose(x, 3.0, abs_tol=1e-9) for x in xs)
+    assert all(math.isclose(y, 1.0, abs_tol=1e-9) for y in ys)
+    assert zs == sorted(zs) and zs[0] < 0 < zs[-1]  # crosses the z=0 monitor plane
+    assert all(delays[i] < delays[i + 1] for i in range(len(delays) - 1))
+    # The track stays within the dielectric stack (core + 2·cladding).
+    diel_half = _SOI_SETTINGS.thickness_um / 2 + _SOI_SETTINGS.clad_thickness_um + 1e-6
+    assert max(abs(z) for z in zs) <= diel_half + _SOI_SETTINGS.thickness_um
 
 
 def test_build_source_cherenkov_requires_positive_beta(qapp):
