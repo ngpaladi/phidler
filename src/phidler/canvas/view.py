@@ -20,6 +20,38 @@ _MIN_SCALE = 0.01
 _MAX_SCALE = 2000.0
 _PORT_SNAP_THRESHOLD_UM = 2.0  # micron-space, independent of zoom level
 
+# Speed of light in vacuum [µm/fs] — used for spatial↔propagation-time conversion.
+C0_UM_PER_FS: float = 0.299_792_458
+
+# Available display-unit modes shared by LayoutView and FieldView.
+UNIT_MODES: list[tuple[str, str]] = [
+    ("µm  (spatial)", "um"),
+    ("fs  (propagation time in vacuum)", "fs"),
+]
+
+
+def nice_ticks(lo: float, hi: float, max_ticks: int = 7) -> list[float]:
+    """Human-readable tick positions spanning [lo, hi] with at most max_ticks values."""
+    span = hi - lo
+    if span <= 0 or not math.isfinite(span) or not math.isfinite(lo):
+        return []
+    raw_step = span / max_ticks
+    try:
+        magnitude = 10.0 ** math.floor(math.log10(raw_step))
+    except ValueError:
+        return []
+    step = magnitude * 10
+    for mult in (1, 2, 5, 10):
+        if span / (magnitude * mult) <= max_ticks:
+            step = magnitude * mult
+            break
+    first = math.ceil(lo / step) * step
+    ticks, val = [], first
+    while val <= hi + step * 1e-9:
+        ticks.append(round(val / step) * step)
+        val += step
+    return ticks
+
 
 class LayoutView(QGraphicsView):
     """Pan/zoom/grid canvas for a LayoutScene.
@@ -51,6 +83,8 @@ class LayoutView(QGraphicsView):
         self.undo_stack = undo_stack
         self.grid_pitch = 1.0  # microns
         self.snap_enabled = True
+        self._unit_mode: str = "um"   # "um" | "fs"
+        self._n_eff: float = 1.0      # phase index for µm↔fs conversion
         self._panning = False
         self._pan_last_pos = QPointF()
         self._drag_start_transforms: dict[int, Transform] = {}
@@ -410,7 +444,95 @@ class LayoutView(QGraphicsView):
         # replacing the transform outright, so no re-flip is needed here).
         self.fitInView(padded, Qt.KeepAspectRatio)
 
-    # -- grid -------------------------------------------------------------
+    # -- coordinate unit helpers ------------------------------------------
+
+    def set_unit_mode(self, mode: str) -> None:
+        """Switch axis labels between 'um' (spatial) and 'fs' (propagation time)."""
+        self._unit_mode = mode
+        self.viewport().update()
+
+    def set_n_eff(self, n: float) -> None:
+        """Update the effective phase index used for µm↔fs conversion."""
+        self._n_eff = max(n, 1e-6)
+        if self._unit_mode == "fs":
+            self.viewport().update()
+
+    def um_to_display(self, um: float) -> float:
+        """Convert a µm scene coordinate to the current display unit value."""
+        return um * self._n_eff / C0_UM_PER_FS if self._unit_mode == "fs" else um
+
+    def display_to_um(self, val: float) -> float:
+        """Inverse: display unit value → µm scene coordinate."""
+        return val * C0_UM_PER_FS / self._n_eff if self._unit_mode == "fs" else val
+
+    def unit_str(self) -> str:
+        """Short label for the current display unit, including n_eff when relevant."""
+        if self._unit_mode == "fs":
+            return f"fs (n={self._n_eff:.3f})"
+        return "µm"
+
+    # -- grid + foreground labels -----------------------------------------
+
+    def drawForeground(self, painter, rect: QRectF) -> None:
+        """Draw axis coordinate labels in the current display unit."""
+        painter.save()
+        painter.resetTransform()          # switch to viewport pixel coordinates
+
+        vp = self.viewport()
+        vp_w, vp_h = vp.width(), vp.height()
+
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+
+        # Compute nice tick positions in display units over the visible scene rect
+        xmin_d = self.um_to_display(rect.left())
+        xmax_d = self.um_to_display(rect.right())
+        ymin_d = self.um_to_display(rect.top())
+        ymax_d = self.um_to_display(rect.bottom())
+
+        x_ticks_d = nice_ticks(xmin_d, xmax_d)
+        y_ticks_d = nice_ticks(ymin_d, ymax_d)
+
+        label_color = QColor("#aaaaaa")
+        shadow_color = QColor(0, 0, 0, 140)
+
+        def draw_shadowed(x_px: int, y_px: int, text: str) -> None:
+            painter.setPen(QPen(shadow_color))
+            for ddx, ddy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+                painter.drawText(x_px + ddx, y_px + ddy, text)
+            painter.setPen(QPen(label_color))
+            painter.drawText(x_px, y_px, text)
+
+        margin_l = 36
+        margin_b = 14
+
+        # X-axis labels along the bottom edge
+        for x_d in x_ticks_d:
+            x_um = self.display_to_um(x_d)
+            px = int(self.mapFromScene(QPointF(x_um, 0)).x())
+            if not (margin_l <= px <= vp_w - 5):
+                continue
+            label = f"{x_d:.4g}"
+            tw = fm.horizontalAdvance(label)
+            draw_shadowed(px - tw // 2, vp_h - 3, label)
+
+        # Y-axis labels along the left edge
+        for y_d in y_ticks_d:
+            y_um = self.display_to_um(y_d)
+            py = int(self.mapFromScene(QPointF(0, y_um)).y())
+            if not (5 <= py <= vp_h - margin_b):
+                continue
+            draw_shadowed(4, py + fm.ascent() // 2, f"{y_d:.4g}")
+
+        # Unit suffix centred at bottom-right
+        unit = self.unit_str()
+        painter.setPen(QPen(QColor("#666666")))
+        uw = fm.horizontalAdvance(unit)
+        painter.drawText(vp_w - uw - 6, vp_h - 3, unit)
+
+        painter.restore()
 
     def drawBackground(self, painter, rect: QRectF) -> None:
         painter.fillRect(rect, QColor("#1e1e1e"))

@@ -62,7 +62,9 @@ def _build_pixmap(name: str) -> QPixmap | None:
 
     for layer_key, shapes in sorted(shapes_by_layer.items()):
         color = QColor(_color_for(*layer_key))
-        painter.setBrush(QBrush(color))
+        fill = QColor(color)
+        fill.setAlpha(180)
+        painter.setBrush(QBrush(fill))
         painter.setPen(QPen(color.darker(120), 0))
         for hull, holes in shapes:
             mapped_hull = [to_pixel(p) for p in hull]

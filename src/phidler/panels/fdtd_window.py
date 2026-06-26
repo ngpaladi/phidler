@@ -1,12 +1,27 @@
+"""FDTD simulation window — native Qt rendering, no matplotlib dependency."""
 from __future__ import annotations
 
+import math
 import time
 
-from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal
+import numpy as np
+from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QImage,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPolygonF,
+    QTransform,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGraphicsScene,
+    QGraphicsView,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -21,7 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from phidler.canvas.view import LayoutView
+from phidler.canvas.view import C0_UM_PER_FS, UNIT_MODES, LayoutView, nice_ticks
 from phidler.fdtd_sim import (
     DISCLAIMER,
     FdtdParams,
@@ -40,11 +55,6 @@ from phidler.fdtd_sim import (
 )
 from phidler.model.document import LayoutDocument, shapes_for_cell
 
-# Estimated-time threshold above which the user is asked to confirm before
-# a run starts — true 3D propagation is much more expensive per cell than
-# the old quasi-2D path it replaced, so this is a time estimate (from
-# fdtd_sim.estimate_run_seconds's empirical calibration), not a bare cell
-# count: time is what the user actually cares about before deciding to wait.
 _RUN_TIME_WARNING_SECONDS = 5.0
 
 _TABLE_COLUMNS = [
@@ -60,13 +70,420 @@ _TABLE_COLUMNS = [
 ]
 _COL_X, _COL_Y, _COL_KIND, _COL_WAVELENGTH, _COL_ENERGY, _COL_PHOTON_COUNT, _COL_CORE_WIDTH, _COL_SCRIPT, _COL_REMOVE = range(9)
 
+# ---------------------------------------------------------------------------
+# Colormaps: 256-entry uint8 (N, 3) tables built by piecewise-linear interp.
+# ---------------------------------------------------------------------------
+
+def _build_cmap(control_pts: list[tuple[float, float, float, float]]) -> np.ndarray:
+    cp = np.array(control_pts, dtype=np.float32)
+    ts, rgb = cp[:, 0], cp[:, 1:]
+    idx = np.linspace(0.0, 1.0, 256)
+    table = np.zeros((256, 3), dtype=np.uint8)
+    for ch in range(3):
+        table[:, ch] = np.clip(np.interp(idx, ts, rgb[:, ch]) * 255, 0, 255).astype(np.uint8)
+    return table
+
+
+_VIRIDIS = _build_cmap([
+    (0.000, 0.267, 0.005, 0.329),
+    (0.250, 0.282, 0.300, 0.529),
+    (0.500, 0.129, 0.567, 0.550),
+    (0.750, 0.369, 0.718, 0.388),
+    (1.000, 0.993, 0.906, 0.144),
+])
+
+_RDBU = _build_cmap([
+    (0.000, 0.843, 0.188, 0.153),
+    (0.250, 0.957, 0.647, 0.510),
+    (0.500, 1.000, 1.000, 1.000),
+    (0.750, 0.573, 0.773, 0.871),
+    (1.000, 0.263, 0.576, 0.765),
+])
+
+# ---------------------------------------------------------------------------
+# Cladding materials dropdown
+# ---------------------------------------------------------------------------
+
+_CLADDING_MATERIALS: list[tuple[str, float | None]] = [
+    ("SiO₂ — thermal oxide (n = 1.444)", 1.444),
+    ("SiO₂ — PECVD (n = 1.460)", 1.460),
+    ("Air (n = 1.000)", 1.000),
+    ("Si₃N₄ (n = 2.000)", 2.000),
+    ("BCB (n = 1.535)", 1.535),
+    ("SU-8 (n = 1.580)", 1.580),
+    ("Water (n = 1.330)", 1.330),
+    ("Custom…", None),
+]
+
+# ---------------------------------------------------------------------------
+# Run-time slider: log scale 10–1000 fs over 200 integer steps
+# ---------------------------------------------------------------------------
+
+_RT_MIN_FS = 10.0
+_RT_MAX_FS = 1_000.0
+_RT_STEPS = 200
+
+
+def _slider_to_fs(v: int) -> float:
+    t = v / _RT_STEPS
+    return _RT_MIN_FS * (_RT_MAX_FS / _RT_MIN_FS) ** t
+
+
+def _fs_to_slider(fs: float) -> int:
+    fs_c = max(_RT_MIN_FS, min(_RT_MAX_FS, fs))
+    t = math.log(fs_c / _RT_MIN_FS) / math.log(_RT_MAX_FS / _RT_MIN_FS)
+    return int(round(t * _RT_STEPS))
+
+
+# ---------------------------------------------------------------------------
+# Coordinate units — aliases for the canonical names from canvas.view
+# ---------------------------------------------------------------------------
+
+_C0_UM_PER_FS = C0_UM_PER_FS
+_UNIT_MODES = UNIT_MODES
+_nice_ticks = nice_ticks
+
+
+# ---------------------------------------------------------------------------
+# QImage helper
+# ---------------------------------------------------------------------------
+
+def _array_to_qimage(
+    data: np.ndarray,
+    cmap_table: np.ndarray,
+    symmetric: bool = False,
+) -> QImage:
+    """Convert a 2-D float array to a QImage suitable for a Y-flipped scene.
+
+    data shape: (Nx, Ny) where Nx is the scene-x (column) dimension and Ny
+    is the scene-y (row) dimension.  Row 0 in the returned image corresponds
+    to the minimum scene-y value so that, with the view's scale(1, -1) Y-flip,
+    minimum-y data appears at the bottom of the viewport (correct orientation).
+    """
+    if symmetric:
+        vmax = max(float(np.abs(data).max()), 1e-30)
+        t = ((data + vmax) / (2.0 * vmax) * 255.0).clip(0, 255).astype(np.uint8)
+    else:
+        lo, hi = float(data.min()), float(data.max())
+        if hi == lo:
+            hi = lo + 1.0
+        t = ((data - lo) / (hi - lo) * 255.0).clip(0, 255).astype(np.uint8)
+
+    # t.T → (Ny, Nx): row 0 = ymin data, matching Y-flipped view orientation
+    rgb = cmap_table[t.T]                         # (Ny, Nx, 3)
+    h, w = rgb.shape[:2]
+    rgb_c = np.ascontiguousarray(rgb)
+    img = QImage(rgb_c.data, w, h, w * 3, QImage.Format_RGB888)
+    return img.copy()                             # .copy() owns the pixel memory
+
+
+# ---------------------------------------------------------------------------
+# FieldView — QGraphicsView with Y-flip, pan, zoom, and field-image display
+# ---------------------------------------------------------------------------
+
+class FieldView(QGraphicsView):
+    """Renders a 2-D field result as a QGraphicsPixmapItem in scene (µm)
+    coordinates, sharing the same Y-flipped coordinate system as LayoutView
+    so that 'copy viewport from design canvas' is a single fitInView call."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        scene = QGraphicsScene(self)
+        self.setScene(scene)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setRenderHint(QPainter.Antialiasing, True)
+        self.scale(1.0, -1.0)                     # Y-up, same as LayoutView
+        self.setBackgroundBrush(QBrush(QColor("#1e1e1e")))
+        self.setMinimumHeight(240)
+
+        self._pix_item = None                     # QGraphicsPixmapItem | None
+        self._overlay_items: list = []
+        self._unit_mode: str = "um"               # "um" | "fs"
+        self._n_eff: float = 1.0                  # phase index for µm→fs conversion
+
+        # Placeholder label parented to the viewport widget so it sits inside
+        # the scene area rather than over the frame/scrollbars.
+        self._placeholder = QLabel("No result — click Compute to run", self.viewport())
+        self._placeholder.setAlignment(Qt.AlignCenter)
+        self._placeholder.setStyleSheet("color: #555555; font-size: 10pt;")
+        self._placeholder.setGeometry(self.viewport().rect())
+
+    # -- event overrides -------------------------------------------------------
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._placeholder.setGeometry(self.viewport().rect())
+
+    def wheelEvent(self, event) -> None:
+        factor = 1.15 if event.angleDelta().y() > 0 else 1.0 / 1.15
+        new_scale = abs(self.transform().m11()) * factor
+        if 0.001 < new_scale < 50_000:
+            self.scale(factor, factor)
+
+    # -- coordinate units ------------------------------------------------------
+
+    def set_unit_mode(self, mode: str) -> None:
+        """Switch axis display units: 'um' (spatial) or 'fs' (time of flight)."""
+        self._unit_mode = mode
+        self.viewport().update()
+
+    def set_n_eff(self, n: float) -> None:
+        """Set the effective phase index used for µm→fs propagation-time conversion."""
+        self._n_eff = max(n, 1e-6)
+        if self._unit_mode == "fs":
+            self.viewport().update()
+
+    def _to_display(self, um: float) -> float:
+        """Convert a scene µm coordinate to the current display unit.
+
+        Uses the waveguide effective index so that t = x · n_eff / c₀,
+        i.e. the time it takes a phase front to travel x µm in the medium.
+        """
+        return um * self._n_eff / _C0_UM_PER_FS if self._unit_mode == "fs" else um
+
+    def _unit_str(self) -> str:
+        if self._unit_mode == "fs":
+            return f"fs  (n = {self._n_eff:.3f})"
+        return "µm"
+
+    def _to_scene(self, display_val: float) -> float:
+        """Inverse of _to_display: display unit value → scene µm."""
+        return display_val * _C0_UM_PER_FS / self._n_eff if self._unit_mode == "fs" else display_val
+
+    # -- grid + axis labels ----------------------------------------------------
+
+    def drawBackground(self, painter, rect) -> None:
+        super().drawBackground(painter, rect)
+        if self._pix_item is None:
+            return
+
+        # rect is the exposed scene rectangle (scene Y increases upward).
+        # Compute nice tick positions in display units, then convert to scene µm.
+        xmin, xmax = rect.left(), rect.right()
+        ymin, ymax = rect.top(), rect.bottom()   # ymin < ymax in scene coords
+
+        x_disp = _nice_ticks(self._to_display(xmin), self._to_display(xmax))
+        y_disp = _nice_ticks(self._to_display(ymin), self._to_display(ymax))
+        x_scene = [self._to_scene(d) for d in x_disp]
+        y_scene = [self._to_scene(d) for d in y_disp]
+
+        pen = QPen(QColor("#383838"), 0)          # cosmetic (1-px) dark grid
+        painter.setPen(pen)
+        for x in x_scene:
+            painter.drawLine(QPointF(x, ymin), QPointF(x, ymax))
+        for y in y_scene:
+            painter.drawLine(QPointF(xmin, y), QPointF(xmax, y))
+
+    def drawForeground(self, painter, rect) -> None:
+        if self._pix_item is None:
+            return
+
+        xmin, xmax = rect.left(), rect.right()
+        ymin, ymax = rect.top(), rect.bottom()
+
+        x_disp = _nice_ticks(self._to_display(xmin), self._to_display(xmax))
+        y_disp = _nice_ticks(self._to_display(ymin), self._to_display(ymax))
+        x_scene = [self._to_scene(d) for d in x_disp]
+        y_scene = [self._to_scene(d) for d in y_disp]
+
+        painter.save()
+        painter.resetTransform()                  # switch to viewport pixel coords
+
+        vp = self.viewport()
+        vp_w, vp_h = vp.width(), vp.height()
+
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+
+        label_color = QColor("#cccccc")
+        shadow_color = QColor(0, 0, 0, 160)
+
+        def draw_label(x_px: int, y_px: int, text: str) -> None:
+            painter.setPen(QPen(shadow_color))
+            for dx, dy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+                painter.drawText(x_px + dx, y_px + dy, text)
+            painter.setPen(QPen(label_color))
+            painter.drawText(x_px, y_px, text)
+
+        margin_bottom = 16
+        margin_left = 40
+
+        # X-axis tick labels near the bottom of the viewport
+        for x_s, x_d in zip(x_scene, x_disp):
+            px = int(self.mapFromScene(QPointF(x_s, 0)).x())
+            if not (margin_left <= px <= vp_w - 5):
+                continue
+            label = f"{x_d:.4g}"
+            tw = fm.horizontalAdvance(label)
+            draw_label(px - tw // 2, vp_h - 4, label)
+
+        # Y-axis tick labels near the left of the viewport
+        for y_s, y_d in zip(y_scene, y_disp):
+            py = int(self.mapFromScene(QPointF(0, y_s)).y())
+            if not (5 <= py <= vp_h - margin_bottom):
+                continue
+            draw_label(4, py + fm.ascent() // 2, f"{y_d:.4g}")
+
+        # Axis unit label
+        unit = self._unit_str()
+        painter.setPen(QPen(QColor("#888888")))
+        painter.drawText(vp_w // 2 - fm.horizontalAdvance(unit) // 2, vp_h - 2, unit)
+
+        painter.restore()
+
+    # -- field image -----------------------------------------------------------
+
+    def set_image(
+        self,
+        data: np.ndarray,
+        extent: tuple[float, float, float, float],
+        cmap_table: np.ndarray,
+        *,
+        symmetric: bool = False,
+    ) -> None:
+        """Place a field image covering (xmin, xmax, ymin, ymax) in scene µm.
+
+        data: shape (Nx, Ny), scene x = axis 0, scene y = axis 1.
+        """
+        img = _array_to_qimage(data, cmap_table, symmetric=symmetric)
+        pixmap = QPixmap.fromImage(img)
+
+        xmin, xmax, ymin, ymax = extent
+        nx, ny = data.shape
+        sx = (xmax - xmin) / nx
+        sy = (ymax - ymin) / ny
+
+        if self._pix_item is None:
+            self._pix_item = self.scene().addPixmap(pixmap)
+        else:
+            self._pix_item.setPixmap(pixmap)
+
+        self._pix_item.setTransform(QTransform().scale(sx, sy))
+        self._pix_item.setPos(xmin, ymin)
+        self._pix_item.setZValue(-10)
+        self._placeholder.setVisible(False)
+
+    def update_image(
+        self,
+        data: np.ndarray,
+        cmap_table: np.ndarray,
+        *,
+        symmetric: bool = False,
+    ) -> None:
+        """Update pixel data only (no transform change — for frame animation)."""
+        if self._pix_item is None:
+            return
+        img = _array_to_qimage(data, cmap_table, symmetric=symmetric)
+        self._pix_item.setPixmap(QPixmap.fromImage(img))
+
+    # -- overlays --------------------------------------------------------------
+
+    def clear_overlays(self) -> None:
+        for item in self._overlay_items:
+            self.scene().removeItem(item)
+        self._overlay_items.clear()
+
+    def add_polygon_overlay(
+        self,
+        hull: list[tuple[float, float]],
+        pen_color: str = "#333333",
+    ) -> None:
+        poly = QPolygonF([QPointF(x, y) for x, y in hull])
+        item = self.scene().addPolygon(poly, QPen(QColor(pen_color), 0), QBrush(Qt.NoBrush))
+        item.setZValue(0)
+        self._overlay_items.append(item)
+
+    def add_source_marker(self, x: float, y: float) -> None:
+        r = 0.25
+        item = self.scene().addEllipse(
+            x - r, y - r, 2 * r, 2 * r,
+            QPen(QColor("#cc7700"), 0),
+            QBrush(QColor("#ffaa00")),
+        )
+        item.setZValue(10)
+        self._overlay_items.append(item)
+
+    def add_rect_overlay(
+        self, x: float, y: float, w: float, h: float, pen_color: str = "#ffffff"
+    ) -> None:
+        item = self.scene().addRect(x, y, w, h, QPen(QColor(pen_color), 0), QBrush(Qt.NoBrush))
+        item.setZValue(5)
+        self._overlay_items.append(item)
+
+    # -- viewport helpers ------------------------------------------------------
+
+    def fit_to_image(self) -> None:
+        if self._pix_item is not None:
+            rect = self._pix_item.mapToScene(self._pix_item.boundingRect()).boundingRect()
+            self.fitInView(rect, Qt.KeepAspectRatio)
+
+    def copy_viewport_from(self, other: LayoutView) -> None:
+        """Snap to the design canvas's currently visible scene region."""
+        visible = other.mapToScene(other.viewport().rect()).boundingRect()
+        self.fitInView(visible, Qt.KeepAspectRatio)
+
+
+# ---------------------------------------------------------------------------
+# _CladRow — cladding material selector widget
+# ---------------------------------------------------------------------------
+
+class _CladRow(QWidget):
+    """Dropdown of preset cladding materials plus an optional custom-n spinbox."""
+
+    index_changed = Signal(float)
+
+    def __init__(self, default_n: float = 1.444, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self._combo = QComboBox()
+        for name, _ in _CLADDING_MATERIALS:
+            self._combo.addItem(name)
+        layout.addWidget(self._combo)
+
+        self._custom_spin = QDoubleSpinBox()
+        self._custom_spin.setRange(1.0, 5.0)
+        self._custom_spin.setDecimals(3)
+        self._custom_spin.setSingleStep(0.01)
+        self._custom_spin.setValue(default_n)
+        self._custom_spin.setVisible(False)
+        layout.addWidget(self._custom_spin)
+
+        self._combo.currentIndexChanged.connect(self._on_combo_changed)
+        self._custom_spin.valueChanged.connect(self._on_custom_changed)
+
+        # Select the entry whose n is closest to default_n
+        best_idx = 0
+        best_err = float("inf")
+        for i, (_, n) in enumerate(_CLADDING_MATERIALS):
+            if n is not None and abs(n - default_n) < best_err:
+                best_err = abs(n - default_n)
+                best_idx = i
+        self._combo.setCurrentIndex(best_idx)
+
+    def clad_index(self) -> float:
+        _, n = _CLADDING_MATERIALS[self._combo.currentIndex()]
+        return self._custom_spin.value() if n is None else n
+
+    def _on_combo_changed(self, idx: int) -> None:
+        _, n = _CLADDING_MATERIALS[idx]
+        self._custom_spin.setVisible(n is None)
+        self.index_changed.emit(self.clad_index())
+
+    def _on_custom_changed(self, value: float) -> None:
+        self.index_changed.emit(value)
+
+
+# ---------------------------------------------------------------------------
+# Worker objects (off-thread compute, same pattern as before)
+# ---------------------------------------------------------------------------
 
 class ModeWorker(QObject):
-    """Thin QThread wrapper around build_mode_solver+solve_mode_profile —
-    same split as FdtdWorker below: the actual compute lives in
-    fdtd_sim.py with no Qt/threading involved, fully unit-tested there;
-    this only moves the call off the GUI thread."""
-
     finished = Signal(object, float)  # ModeResult, elapsed_seconds
     failed = Signal(str)
 
@@ -88,10 +505,6 @@ class ModeWorker(QObject):
 
 
 class FdtdWorker(QObject):
-    """Runs build_simulation()+run_simulation() off the main thread — true
-    3D propagation is genuinely expensive (calibrated empirically at
-    ~6e-8 s/cell-step on dev hardware), so this must not block the UI."""
-
     finished = Signal(object, object, float)  # Simulation, Result, elapsed_seconds
     failed = Signal(str)
 
@@ -112,12 +525,15 @@ class FdtdWorker(QObject):
         self.finished.emit(sim, result, elapsed)
 
 
+# ---------------------------------------------------------------------------
+# Main window
+# ---------------------------------------------------------------------------
+
 class FdtdWindow(QMainWindow):
-    """Top-level (non-modal) window for FDTD simulation — replaces the
-    original docked FdtdPanel. Two tabs: a fast vertical mode-profile
-    solver (the tool that makes cladding thickness matter — see
-    fdtd_sim.mode_confinement) and full 3D propagation with click-placed
-    sources and movie playback."""
+    """Top-level FDTD simulation window. Two tabs: vertical mode profile and
+    full 3D propagation. Field results rendered natively in a QGraphicsView
+    (same Y-flipped coordinate system as the design canvas), so the viewport
+    initialises to match wherever the user was looking in the design."""
 
     def __init__(self, document: LayoutDocument, view: LayoutView, parent=None) -> None:
         super().__init__(parent)
@@ -125,17 +541,18 @@ class FdtdWindow(QMainWindow):
         self.document = document
         self.view = view
 
-        self._mode_thread = None
-        self._mode_worker = None
-        self._fdtd_thread = None
-        self._fdtd_worker = None
+        self._mode_thread: QThread | None = None
+        self._mode_worker: ModeWorker | None = None
+        self._fdtd_thread: QThread | None = None
+        self._fdtd_worker: FdtdWorker | None = None
 
-        self._source_rows: list[dict] = []  # {"marker":..., row index tracked via table}
+        self._source_rows: list[dict] = []
         self._syncing_wavelength_energy = False
+        self._syncing_run_time = False
         self._last_sim = None
         self._last_result = None
-        self._last_params = None
-        self._chip_outline_drawn = False
+        self._last_params: FdtdParams | None = None
+        self._field_image_initialized = False
 
         self._play_timer = QTimer(self)
         self._play_timer.setInterval(100)
@@ -147,14 +564,18 @@ class FdtdWindow(QMainWindow):
         tabs.addTab(self._build_propagation_tab(), "Propagation (FDTD)")
 
         self.view.source_placement_requested.connect(self._on_source_placement_requested)
-        self.resize(700, 800)
 
-    # -- mode profile tab --------------------------------------------------
+        # Seed both field views with the project's core index as the initial
+        # phase index for µm→fs conversion; updated to n_eff after each mode solve.
+        n0 = self.document.project_settings.core_index
+        self.mode_view.set_n_eff(n0)
+        self.run_view.set_n_eff(n0)
+
+        self.resize(700, 820)
+
+    # -- mode profile tab ------------------------------------------------------
 
     def _build_mode_tab(self) -> QWidget:
-        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-        from matplotlib.figure import Figure
-
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -181,9 +602,17 @@ class FdtdWindow(QMainWindow):
         self.mode_num_modes_spin.setValue(1)
         form.addRow("Number of modes", self.mode_num_modes_spin)
 
+        self.mode_clad_row = _CladRow(default_n=self.document.project_settings.clad_index)
+        form.addRow("Cladding material", self.mode_clad_row)
+
+        self.mode_units_combo = QComboBox()
+        for label, _ in _UNIT_MODES:
+            self.mode_units_combo.addItem(label)
+        form.addRow("Axis units", self.mode_units_combo)
+
         layout.addLayout(form)
 
-        self.mode_solve_button = QPushButton("Solve")
+        self.mode_solve_button = QPushButton("Compute")
         self.mode_solve_button.clicked.connect(self._on_solve_mode_clicked)
         layout.addWidget(self.mode_solve_button)
 
@@ -191,13 +620,11 @@ class FdtdWindow(QMainWindow):
         self.mode_status_label.setWordWrap(True)
         layout.addWidget(self.mode_status_label)
 
-        self.mode_figure = Figure(figsize=(4, 3), facecolor="#141414")
-        self.mode_canvas = FigureCanvasQTAgg(self.mode_figure)
-        self.mode_canvas.setMinimumHeight(280)
-        self.mode_canvas.setStyleSheet("background: #141414;")
-        self.mode_ax = self.mode_figure.add_subplot(111)
-        self.mode_ax.set_facecolor("#141414")
-        layout.addWidget(self.mode_canvas)
+        self.mode_view = FieldView()
+        self.mode_units_combo.currentIndexChanged.connect(
+            lambda i: self.mode_view.set_unit_mode(_UNIT_MODES[i][1])
+        )
+        layout.addWidget(self.mode_view, stretch=1)
 
         return widget
 
@@ -206,6 +633,7 @@ class FdtdWindow(QMainWindow):
             wavelength_um=self.mode_wavelength_spin.value(),
             core_width_um=self.mode_core_width_spin.value(),
             num_modes=self.mode_num_modes_spin.value(),
+            clad_index=self.mode_clad_row.clad_index(),
         )
         self.mode_solve_button.setEnabled(False)
         self.mode_status_label.setText("Solving…")
@@ -221,49 +649,41 @@ class FdtdWindow(QMainWindow):
         self._mode_thread.start()
 
     def _on_mode_finished(self, result, elapsed: float) -> None:
-        from matplotlib.patches import Rectangle
-
         self.mode_solve_button.setEnabled(True)
         check = mode_confinement(result)
-        self.mode_status_label.setText(f"n_eff = {result.n_eff[0]:.4f}   ({elapsed:.2f}s)\n{check.message}")
-
-        # abs() to match the "|psi|" title -- the raw eigenvector's sign is
-        # arbitrary (an artifact of the solver, not physically meaningful),
-        # so plotting it unsigned avoids a confusing two-lobed plot with a
-        # washed-out background. Caught by actually looking at a rendered
-        # screenshot, not just checking the data shape.
-        psi = abs(result.psi[0])
-        self.mode_ax.clear()
-        extent = [result.y[0] * 1e6, result.y[-1] * 1e6, result.z[0] * 1e6, result.z[-1] * 1e6]
-        self.mode_ax.imshow(psi.T, origin="lower", extent=extent, cmap="viridis", aspect="auto")
-        core_width_um = self.mode_core_width_spin.value()
-        core_thickness_um = self.document.project_settings.thickness_um
-        self.mode_ax.add_patch(
-            Rectangle(
-                (-core_width_um / 2, -core_thickness_um / 2),
-                core_width_um,
-                core_thickness_um,
-                fill=False,
-                edgecolor="white",
-                linewidth=1.5,
-            )
+        n_eff = float(result.n_eff[0])
+        self.mode_status_label.setText(
+            f"n_eff = {n_eff:.4f}   ({elapsed:.2f} s)\n{check.message}"
         )
-        self.mode_ax.set_xlabel("y (µm)")
-        self.mode_ax.set_ylabel("z (µm)")
-        self.mode_ax.set_title("|ψ| — mode profile")
-        self._dark_axes(self.mode_figure, self.mode_ax)
-        self.mode_canvas.draw()
+
+        # Update all views so the fs ruler uses the solved n_eff rather than
+        # the bulk core index; propagate to the design canvas too so its
+        # coordinate labels and status-bar cursor position stay consistent.
+        self.mode_view.set_n_eff(n_eff)
+        self.run_view.set_n_eff(n_eff)
+        self.view.set_n_eff(n_eff)
+
+        psi = abs(result.psi[0])          # (Ny, Nz) — lateral × vertical
+        y_um = result.y * 1e6             # scene x axis
+        z_um = result.z * 1e6             # scene y axis
+        extent = (float(y_um[0]), float(y_um[-1]), float(z_um[0]), float(z_um[-1]))
+
+        self.mode_view.set_image(psi, extent, _VIRIDIS, symmetric=False)
+        self.mode_view.clear_overlays()
+
+        cw = self.mode_core_width_spin.value()
+        ct = self.document.project_settings.thickness_um
+        self.mode_view.add_rect_overlay(-cw / 2, -ct / 2, cw, ct, pen_color="#ffffff")
+
+        self.mode_view.fit_to_image()
 
     def _on_mode_failed(self, message: str) -> None:
         self.mode_solve_button.setEnabled(True)
         self.mode_status_label.setText(f"Error: {message}")
 
-    # -- propagation tab -----------------------------------------------------
+    # -- propagation tab -------------------------------------------------------
 
     def _build_propagation_tab(self) -> QWidget:
-        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-        from matplotlib.figure import Figure
-
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -273,27 +693,53 @@ class FdtdWindow(QMainWindow):
         layout.addWidget(disclaimer)
 
         form = QFormLayout()
+
         self.run_wavelength_spin = QDoubleSpinBox()
         self.run_wavelength_spin.setDecimals(3)
         self.run_wavelength_spin.setRange(0.1, 10.0)
         self.run_wavelength_spin.setValue(self.document.project_settings.wavelength_um)
         form.addRow("Wavelength (µm)", self.run_wavelength_spin)
 
-        default_params = FdtdParams(wavelength_um=self.run_wavelength_spin.value())
         self.run_cell_size_spin = QDoubleSpinBox()
         self.run_cell_size_spin.setDecimals(3)
         self.run_cell_size_spin.setRange(0.005, 1.0)
+        default_params = FdtdParams(wavelength_um=self.run_wavelength_spin.value())
         self.run_cell_size_spin.setValue(default_params.resolved_cell_size_um())
         form.addRow("Cell size (µm)", self.run_cell_size_spin)
 
+        # Run time: spinbox + log-scale slider in one row
+        rt_widget = QWidget()
+        rt_layout = QHBoxLayout(rt_widget)
+        rt_layout.setContentsMargins(0, 0, 0, 0)
+
         self.run_time_spin = QDoubleSpinBox()
         self.run_time_spin.setDecimals(1)
-        self.run_time_spin.setRange(1.0, 100000.0)
-        self.run_time_spin.setValue(default_params.resolved_run_time_fs())
-        form.addRow("Run time (fs)", self.run_time_spin)
+        self.run_time_spin.setRange(1.0, 100_000.0)
+        self.run_time_spin.setSuffix(" fs")
+        default_rt = default_params.resolved_run_time_fs()
+        self.run_time_spin.setValue(default_rt)
+        self.run_time_spin.setFixedWidth(110)
+        rt_layout.addWidget(self.run_time_spin)
 
-        self.run_clad_thickness_label = QLabel(f"{self.document.project_settings.clad_thickness_um:.3f} µm (Project Settings)")
+        self.run_time_slider = QSlider(Qt.Horizontal)
+        self.run_time_slider.setRange(0, _RT_STEPS)
+        self.run_time_slider.setValue(_fs_to_slider(default_rt))
+        rt_layout.addWidget(self.run_time_slider)
+
+        form.addRow("Run time", rt_widget)
+
+        self.run_clad_row = _CladRow(default_n=self.document.project_settings.clad_index)
+        form.addRow("Cladding material", self.run_clad_row)
+
+        self.run_clad_thickness_label = QLabel(
+            f"{self.document.project_settings.clad_thickness_um:.3f} µm (Project Settings)"
+        )
         form.addRow("Cladding thickness", self.run_clad_thickness_label)
+
+        self.run_units_combo = QComboBox()
+        for label, _ in _UNIT_MODES:
+            self.run_units_combo.addItem(label)
+        form.addRow("Axis units", self.run_units_combo)
 
         layout.addLayout(form)
 
@@ -304,10 +750,11 @@ class FdtdWindow(QMainWindow):
 
         self.source_table = QTableWidget(0, len(_TABLE_COLUMNS))
         self.source_table.setHorizontalHeaderLabels(_TABLE_COLUMNS)
+        self.source_table.setMaximumHeight(140)
         self.source_table.itemChanged.connect(self._on_source_table_item_changed)
         layout.addWidget(self.source_table)
 
-        self.run_button = QPushButton("Run Simulation")
+        self.run_button = QPushButton("Compute")
         self.run_button.clicked.connect(self._on_run_clicked)
         layout.addWidget(self.run_button)
 
@@ -319,6 +766,7 @@ class FdtdWindow(QMainWindow):
         self.play_button = QPushButton("Play")
         self.play_button.setCheckable(True)
         self.play_button.setEnabled(False)
+        self.play_button.setFixedWidth(60)
         self.play_button.toggled.connect(self._on_play_toggled)
         playback_row.addWidget(self.play_button)
 
@@ -328,17 +776,39 @@ class FdtdWindow(QMainWindow):
         playback_row.addWidget(self.frame_slider)
         layout.addLayout(playback_row)
 
-        self.run_figure = Figure(figsize=(4, 3), facecolor="#141414")
-        self.run_canvas = FigureCanvasQTAgg(self.run_figure)
-        self.run_canvas.setMinimumHeight(280)
-        self.run_canvas.setStyleSheet("background: #141414;")
-        self.run_ax = self.run_figure.add_subplot(111)
-        self.run_ax.set_facecolor("#141414")
-        layout.addWidget(self.run_canvas)
+        self.run_view = FieldView()
+        self.run_units_combo.currentIndexChanged.connect(
+            lambda i: self.run_view.set_unit_mode(_UNIT_MODES[i][1])
+        )
+        layout.addWidget(self.run_view, stretch=1)
+
+        # Wire slider↔spinbox sync (re-entrancy guard: _syncing_run_time)
+        self.run_time_spin.valueChanged.connect(self._on_run_time_spin_changed)
+        self.run_time_slider.valueChanged.connect(self._on_run_time_slider_changed)
 
         return widget
 
-    # -- source placement ---------------------------------------------------
+    # -- run time slider sync --------------------------------------------------
+
+    def _on_run_time_spin_changed(self, value: float) -> None:
+        if self._syncing_run_time:
+            return
+        self._syncing_run_time = True
+        try:
+            self.run_time_slider.setValue(_fs_to_slider(value))
+        finally:
+            self._syncing_run_time = False
+
+    def _on_run_time_slider_changed(self, v: int) -> None:
+        if self._syncing_run_time:
+            return
+        self._syncing_run_time = True
+        try:
+            self.run_time_spin.setValue(_slider_to_fs(v))
+        finally:
+            self._syncing_run_time = False
+
+    # -- source placement ------------------------------------------------------
 
     def _on_place_source_toggled(self, checked: bool) -> None:
         self.view.set_source_mode(checked)
@@ -378,9 +848,6 @@ class FdtdWindow(QMainWindow):
                 return
 
     def _on_source_table_item_changed(self, item: QTableWidgetItem) -> None:
-        """Wavelength and Energy are two views of the same underlying
-        quantity — editing either updates the other, using the conversion
-        helpers (also used/tested independently in fdtd_sim.py)."""
         if self._syncing_wavelength_energy:
             return
         column = item.column()
@@ -405,7 +872,7 @@ class FdtdWindow(QMainWindow):
                 if other is not None:
                     other.setText(f"{wavelength_um:.4f}")
         except ValueError:
-            pass  # non-positive value mid-edit; leave the other column alone
+            pass
         finally:
             self._syncing_wavelength_energy = False
 
@@ -417,22 +884,22 @@ class FdtdWindow(QMainWindow):
             kind = self.source_table.cellWidget(row, _COL_KIND).currentText()
             wavelength_um = float(self.source_table.item(row, _COL_WAVELENGTH).text())
             photon_count = int(self.source_table.item(row, _COL_PHOTON_COUNT).text())
-            core_width_um = float(self.source_table.item(row, _COL_CORE_WIDTH).text()) if kind == "single_photon" else None
-            script = self.source_table.item(row, _COL_SCRIPT).text() if kind == "scripted" else None
-            specs.append(
-                SourceSpec(
-                    x_um=x_um,
-                    y_um=y_um,
-                    kind=kind,
-                    wavelength_um=wavelength_um,
-                    photon_count=photon_count,
-                    core_width_um=core_width_um,
-                    script=script,
-                )
+            core_width_um = (
+                float(self.source_table.item(row, _COL_CORE_WIDTH).text())
+                if kind == "single_photon" else None
             )
+            script = (
+                self.source_table.item(row, _COL_SCRIPT).text()
+                if kind == "scripted" else None
+            )
+            specs.append(SourceSpec(
+                x_um=x_um, y_um=y_um, kind=kind,
+                wavelength_um=wavelength_um, photon_count=photon_count,
+                core_width_um=core_width_um, script=script,
+            ))
         return tuple(specs)
 
-    # -- running the simulation ----------------------------------------------
+    # -- running the simulation ------------------------------------------------
 
     def _current_params(self) -> FdtdParams:
         return FdtdParams(
@@ -440,6 +907,7 @@ class FdtdWindow(QMainWindow):
             cell_size_um=self.run_cell_size_spin.value(),
             run_time_fs=self.run_time_spin.value(),
             sources=self._collect_source_specs(),
+            clad_index=self.run_clad_row.clad_index(),
         )
 
     def _on_run_clicked(self) -> None:
@@ -451,22 +919,17 @@ class FdtdWindow(QMainWindow):
             QMessageBox.warning(self, "Cannot run simulation", str(exc))
             return
 
-        # n_steps isn't known without building the Simulation; estimate it
-        # the same way Simulation does (run_time / dt), cheaply, from the
-        # resolved params alone, to avoid a second expensive build.
         cell_size_m = params.resolved_cell_size_um() * 1e-6
         courant = 0.99
-        dt = courant / (299792458.0 * (3 ** 0.5) / cell_size_m)
+        dt = courant / (299_792_458.0 * (3 ** 0.5) / cell_size_m)
         n_steps = int(params.resolved_run_time_fs() * 1e-15 / dt) + 1
         estimated_seconds = estimate_run_seconds((cell_count, 1, 1), n_steps)
 
         if estimated_seconds > _RUN_TIME_WARNING_SECONDS:
             reply = QMessageBox.question(
-                self,
-                "Large simulation",
+                self, "Large simulation",
                 f"This grid has about {cell_count:,} cells and is estimated to take "
-                f"roughly {estimated_seconds:.0f}s (NumPy backend, no GPU — depends on "
-                "your machine). Continue?",
+                f"roughly {estimated_seconds:.0f} s (NumPy backend, no GPU). Continue?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -475,6 +938,8 @@ class FdtdWindow(QMainWindow):
 
         self.run_button.setEnabled(False)
         self.run_status_label.setText("Running…")
+        self._field_image_initialized = False
+
         self._fdtd_thread = QThread(self)
         self._fdtd_worker = FdtdWorker(self.document, params)
         self._fdtd_worker.moveToThread(self._fdtd_thread)
@@ -489,23 +954,38 @@ class FdtdWindow(QMainWindow):
         self.run_button.setEnabled(True)
         self._last_sim = sim
         self._last_result = result
-        self._chip_outline_drawn = False
 
         arr = result.fields["field"]["Ez"]
         n_frames = arr.shape[0]
-        self.run_status_label.setText(f"Done in {elapsed:.2f}s — {n_frames} frames, grid {arr.shape[1]}×{arr.shape[2]}×{arr.shape[3]}")
+        self.run_status_label.setText(
+            f"Done in {elapsed:.2f} s — {n_frames} frames, "
+            f"grid {arr.shape[1]}×{arr.shape[2]}×{arr.shape[3]}"
+        )
 
         self.frame_slider.setEnabled(n_frames > 1)
         self.frame_slider.setRange(0, max(n_frames - 1, 0))
         self.play_button.setEnabled(n_frames > 1)
+
+        # Draw chip outlines and source markers (once per run)
+        self.run_view.clear_overlays()
+        shapes = shapes_for_cell(self.document.top)
+        for shapes_list in shapes.values():
+            for hull, _holes in shapes_list:
+                self.run_view.add_polygon_overlay(hull)
+        if self._last_params is not None:
+            for src in self._last_params.sources:
+                self.run_view.add_source_marker(src.x_um, src.y_um)
+
+        # Render first frame then initialise viewport
         self.frame_slider.setValue(0)
         self._draw_frame(0)
+        self.run_view.copy_viewport_from(self.view)
 
     def _on_fdtd_failed(self, message: str) -> None:
         self.run_button.setEnabled(True)
         self.run_status_label.setText(f"Error: {message}")
 
-    # -- movie playback -------------------------------------------------------
+    # -- frame animation -------------------------------------------------------
 
     def _on_slider_changed(self, value: int) -> None:
         self._draw_frame(value)
@@ -520,87 +1000,29 @@ class FdtdWindow(QMainWindow):
 
     def _advance_frame(self) -> None:
         n_frames = self.frame_slider.maximum() + 1
-        next_value = (self.frame_slider.value() + 1) % max(n_frames, 1)
-        self.frame_slider.setValue(next_value)
+        self.frame_slider.setValue((self.frame_slider.value() + 1) % max(n_frames, 1))
 
     def _draw_frame(self, frame_index: int) -> None:
         if self._last_result is None or self._last_sim is None:
             return
         arr = self._last_result.fields["field"]["Ez"]
         z_idx = nearest_z_index(self._last_sim.grid, 0.0)
-        frame = arr[frame_index, :, :, z_idx]
+        frame = arr[frame_index, :, :, z_idx]          # (Nx, Ny)
 
         x_coords = self._last_sim.grid.coords[0] * 1e6
         y_coords = self._last_sim.grid.coords[1] * 1e6
-        extent = [x_coords[0], x_coords[-1], y_coords[0], y_coords[-1]]
+        extent = (
+            float(x_coords[0]), float(x_coords[-1]),
+            float(y_coords[0]), float(y_coords[-1]),
+        )
 
-        vmax = float(max(abs(frame.min()), abs(frame.max()), 1e-30))
-
-        if not self._chip_outline_drawn:
-            self.run_ax.clear()
-            self._field_im = self.run_ax.imshow(
-                frame.T, origin="lower", extent=extent, cmap="RdBu", alpha=0.75, aspect="equal", vmin=-vmax, vmax=vmax
-            )
-            # Drawn after the field image (not before — fixing a real bug
-            # found by actually screenshotting this: setting axis limits
-            # to the chip's own bbox *before* the field image was added
-            # clipped almost the whole field out of view, since the
-            # simulated domain is wider than the bbox once PML/padding is
-            # included. The outline + xlim/ylim below now match the field's
-            # own extent instead, so the full simulated domain stays
-            # visible with the chip geometry drawn as a reference on top.
-            self._draw_chip_outline(self.run_ax)
-            self._draw_source_markers(self.run_ax)
-            self.run_ax.set_xlim(extent[0], extent[1])
-            self.run_ax.set_ylim(extent[2], extent[3])
-            self.run_ax.set_xlabel("x (µm)")
-            self.run_ax.set_ylabel("y (µm)")
-            self.run_ax.set_title("Ez field, top-down (mid-core height)")
-            self._dark_axes(self.run_figure, self.run_ax)
-            self._chip_outline_drawn = True
+        if not self._field_image_initialized:
+            self.run_view.set_image(frame, extent, _RDBU, symmetric=True)
+            self._field_image_initialized = True
         else:
-            self._field_im.set_data(frame.T)
-            self._field_im.set_clim(-vmax, vmax)
-        self.run_canvas.draw()
+            self.run_view.update_image(frame, _RDBU, symmetric=True)
 
-    @staticmethod
-    def _dark_axes(fig, ax) -> None:
-        bg = "#141414"
-        fig.patch.set_facecolor(bg)
-        ax.set_facecolor(bg)
-        for item in (ax.xaxis.label, ax.yaxis.label):
-            item.set_color("#bbbbbb")
-        ax.title.set_color("#eeeeee")
-        ax.tick_params(colors="#777777", labelsize=8)
-        for spine in ax.spines.values():
-            spine.set_edgecolor("#2e2e2e")
-
-    def _draw_source_markers(self, ax) -> None:
-        if self._last_params is None:
-            return
-        for i, src in enumerate(self._last_params.sources, 1):
-            ax.plot(
-                src.x_um, src.y_um,
-                marker="*", markersize=12,
-                color="#ffaa00", markeredgecolor="#000000",
-                markeredgewidth=0.4, linestyle="none", zorder=10,
-            )
-            ax.annotate(
-                f"S{i}", (src.x_um, src.y_um),
-                xytext=(5, 4), textcoords="offset points",
-                color="#ffaa00", fontsize=7.5, fontweight="bold",
-                zorder=11,
-            )
-
-    def _draw_chip_outline(self, ax) -> None:
-        from matplotlib.patches import Polygon as MplPolygon
-
-        shapes = shapes_for_cell(self.document.top)
-        for shapes_list in shapes.values():
-            for hull, _holes in shapes_list:
-                ax.add_patch(MplPolygon(hull, closed=True, fill=False, edgecolor="black", linewidth=0.8))
-
-    # -- lifecycle ------------------------------------------------------------
+    # -- lifecycle -------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
         self._play_timer.stop()

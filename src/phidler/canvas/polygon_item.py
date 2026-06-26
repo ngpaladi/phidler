@@ -139,7 +139,9 @@ class InstanceItem(QGraphicsItem):
             for hull, holes in shapes:
                 path = _shape_to_path(hull, holes)
                 item = QGraphicsPathItem(path, self)
-                item.setBrush(QBrush(color))
+                fill = QColor(color)
+                fill.setAlpha(180)
+                item.setBrush(QBrush(fill))
                 item.setPen(QPen(color.darker(120), 0))
                 item.setVisible(visible)
                 self._layer_children.setdefault(key, []).append(item)
@@ -155,8 +157,10 @@ class InstanceItem(QGraphicsItem):
         if self.is_reference:
             return  # backdrop always renders in its fixed dim color
         qcolor = QColor(color)
+        fill = QColor(qcolor)
+        fill.setAlpha(180)
         for item in self._layer_children.get(key, []):
-            item.setBrush(QBrush(qcolor))
+            item.setBrush(QBrush(fill))
             item.setPen(QPen(qcolor.darker(120), 0))
 
     def apply_transform(self, x: float, y: float, rotation: float, mirror: bool, mag: float = 1.0) -> None:

@@ -10,32 +10,67 @@ desktop UI, and exportable GDS.
 
 Requires Python 3.10+.
 
-```
+### Linux
+
+```sh
 git clone https://github.com/ngpaladi/phidler.git
 cd phidler
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-This installs Phidler in editable mode along with its test dependencies
-(`pytest`). For building this documentation site too, use
-`pip install -e ".[dev,docs]"` instead.
+### macOS
+
+Requires Python 3.10+ from [python.org](https://www.python.org/downloads/)
+or Homebrew (`brew install python@3.12`).
+
+```sh
+git clone https://github.com/ngpaladi/phidler.git
+cd phidler
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+### Windows
+
+Requires Python 3.10+ from [python.org](https://www.python.org/downloads/).
+Run in PowerShell or Command Prompt:
+
+```
+git clone https://github.com/ngpaladi/phidler.git
+cd phidler
+python -m venv .venv
+.venv\Scripts\activate
+pip install -e ".[dev]"
+```
+
+Add `docs` to the extras (`pip install -e ".[dev,docs]"`) to also build
+this documentation site.
 
 ## Running it
 
-```
+**Linux / macOS:**
+
+```sh
 ./run.sh
 ```
 
-This launches the app and shows the Project Settings dialog first, where
-you pick a material platform before you start placing components (see
+**Windows** — `run.sh` is bash-only; launch directly instead:
+
+```
+python -m phidler
+```
+
+Both show the Project Settings dialog first, where you pick a material
+platform before placing components (see
 [Project Settings](guide.md#project-settings)).
 
-If you're on a machine where the system Qt6 conflicts with PySide6's
-bundled Qt6 (an `undefined symbol` crash on import), see
-[Development: environment notes](development.md#environment-notes) for the
-fix `run.sh` already applies.
+On Linux, if your system Qt6 conflicts with PySide6's bundled Qt6 (an
+`undefined symbol` crash on import), `run.sh` already handles this — see
+[Development: environment notes](development.md#environment-notes) for
+details.
 
 ## Next steps
 

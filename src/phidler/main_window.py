@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from phidler.canvas.scene import LayoutScene
 from phidler.canvas.transform_handles import TransformHandleSet
-from phidler.canvas.view import LayoutView
+from phidler.canvas.view import UNIT_MODES, LayoutView
 from phidler.custom_components import load_custom_components
 from phidler.drc import run_drc
 from phidler.export_script import export_python_script
@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):
         self.scene = LayoutScene(self.document, parent=self)
         self.undo_stack = QUndoStack(self)
         self.view = LayoutView(self.scene, undo_stack=self.undo_stack)
+        self.view.set_n_eff(self.document.project_settings.core_index)
         self.setCentralWidget(self.view)
 
         self._clipboard: list[tuple[str, dict]] = []
@@ -302,6 +303,18 @@ class MainWindow(QMainWindow):
         self.snap_checkbox.toggled.connect(self._on_snap_enabled_changed)
         toolbar.addWidget(self.snap_checkbox)
 
+        toolbar.addWidget(QLabel(" Units: "))
+        self.units_combo = QComboBox()
+        for label, _ in UNIT_MODES:
+            self.units_combo.addItem(label)
+        self.units_combo.setToolTip(
+            "Switch coordinate display between spatial µm and propagation time.\n"
+            "Propagation time uses the effective phase index from the last\n"
+            "mode solve (or the core index if no solve has been run)."
+        )
+        self.units_combo.currentIndexChanged.connect(self._on_unit_mode_changed)
+        toolbar.addWidget(self.units_combo)
+
         export_action = toolbar.addAction("Export GDS…")
         export_action.triggered.connect(self._export_gds)
 
@@ -427,7 +440,18 @@ class MainWindow(QMainWindow):
         self.view.context_menu_requested.connect(self._show_canvas_context_menu)
 
     def _on_cursor_position_changed(self, x: float, y: float) -> None:
-        self.cursor_pos_label.setText(f"X: {x:.3f} µm   Y: {y:.3f} µm")
+        x_d = self.view.um_to_display(x)
+        y_d = self.view.um_to_display(y)
+        unit = self.view.unit_str()
+        self.cursor_pos_label.setText(f"X: {x_d:.3f} {unit}   Y: {y_d:.3f} {unit}")
+
+    def _on_unit_mode_changed(self, idx: int) -> None:
+        mode = UNIT_MODES[idx][1]
+        self.view.set_unit_mode(mode)
+        # Propagate to the FDTD window's field views if it has been opened
+        if self._fdtd_window is not None:
+            self._fdtd_window.mode_view.set_unit_mode(mode)
+            self._fdtd_window.run_view.set_unit_mode(mode)
 
     # -- actions --------------------------------------------------------------
 

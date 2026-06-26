@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from phidler.model.layers import LayerInfo, LayerKey
+from phidler.model.layers import LayerInfo, LayerKey, layer_description
 
 
 class _LayerRow(QWidget):
@@ -34,6 +34,10 @@ class _LayerRow(QWidget):
         layout.addWidget(self.color_button)
 
         label = QLabel(f"{info.name}  ({info.layer}/{info.datatype})")
+        desc = layer_description(info.name)
+        if desc:
+            label.setToolTip(desc)
+            self.setToolTip(desc)
         layout.addWidget(label)
         layout.addStretch(1)
 

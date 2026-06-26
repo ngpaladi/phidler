@@ -122,6 +122,9 @@ class FdtdParams:
     # Empty -> build_simulation falls back to one default dipole source at
     # the layout's left edge, vertically centered (the original v1 default).
     sources: tuple[SourceSpec, ...] = ()
+    # Override the project's cladding index (e.g. from a UI dropdown).
+    # None means use document.project_settings.clad_index.
+    clad_index: float | None = None
 
     def resolved_cell_size_um(self) -> float:
         return self.cell_size_um if self.cell_size_um is not None else self.wavelength_um / 20
@@ -137,6 +140,9 @@ class ModeProfileParams:
     cell_size_um: float = 0.02
     num_modes: int = 1
     lateral_padding_factor: float = 2.0  # extra domain width on each side, in wavelengths
+    # Override the project's cladding index (e.g. from a UI dropdown).
+    # None means use settings.clad_index.
+    clad_index: float | None = None
 
 
 @dataclass(frozen=True)
@@ -204,7 +210,8 @@ def build_mode_solver(settings: ProjectSettings, params: ModeProfileParams = Mod
     (confirmed empirically before this was built)."""
     pf = _import_photonfdtd()
     core = pf.Medium.from_index(settings.core_index, name=settings.platform_name)
-    clad = pf.Medium.from_index(settings.clad_index, name="cladding")
+    clad_n = params.clad_index if params.clad_index is not None else settings.clad_index
+    clad = pf.Medium.from_index(clad_n, name="cladding")
 
     thickness_m = settings.thickness_um * 1e-6
     clad_thickness_m = settings.clad_thickness_um * 1e-6
@@ -368,7 +375,8 @@ def build_simulation(document: LayoutDocument, params: FdtdParams = FdtdParams()
     settings = document.project_settings
 
     core = pf.Medium.from_index(settings.core_index, name=settings.platform_name)
-    clad = pf.Medium.from_index(settings.clad_index, name="cladding")
+    clad_n = params.clad_index if params.clad_index is not None else settings.clad_index
+    clad = pf.Medium.from_index(clad_n, name="cladding")
     thickness_m = settings.thickness_um * 1e-6
     clad_thickness_m = settings.clad_thickness_um * 1e-6
     cell_size_m = params.resolved_cell_size_um() * 1e-6
