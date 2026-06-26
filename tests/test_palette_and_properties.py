@@ -71,6 +71,41 @@ def test_properties_panel_minimum_height_stays_small_when_populated(qapp):
     assert populated_min < 200  # comfortably smaller than the old ~780px
 
 
+def test_parameter_units_are_inferred_conservatively():
+    from phidler.panels.properties_panel import _unit_for_param
+
+    assert _unit_for_param("length", 10.0) == "µm"
+    assert _unit_for_param("radius", 5.0) == "µm"
+    assert _unit_for_param("gap", 0.2) == "µm"
+    assert _unit_for_param("angle", 90.0) == "°"
+    assert _unit_for_param("port_orientation", 0) == "°"
+    # Dimensionless / counts / fractions get no unit (never a wrong one).
+    assert _unit_for_param("p", 0.5) == ""  # euler bend fraction
+    assert _unit_for_param("neff", 2.4) == ""  # refractive index
+    assert _unit_for_param("n_periods", 10) == ""  # a count, despite "period"
+    assert _unit_for_param("npoints", 100) == ""
+    assert _unit_for_param("with_loopback", True) == ""  # bool
+    assert _unit_for_param("cross_section", "strip") == ""  # str
+
+
+def test_property_row_labels_carry_units(qapp):
+    from PySide6.QtWidgets import QFormLayout
+
+    win = MainWindow()
+    win._place_straight_waveguide()  # straight: has length (µm), width (µm)
+    inst_id = next(iter(win.document.instances))
+    win.scene.items_by_inst[inst_id].setSelected(True)
+
+    pp = win.properties_panel
+    labels = []
+    for r in range(pp.form_layout.rowCount()):
+        item = pp.form_layout.itemAt(r, QFormLayout.LabelRole)
+        if item is not None and item.widget() is not None:
+            labels.append(item.widget().text())
+    assert "length (µm)" in labels
+    assert "width (µm)" in labels
+
+
 def test_editing_property_pushes_undoable_command(qapp):
     win = MainWindow()
     win._place_straight_waveguide()

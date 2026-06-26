@@ -5,7 +5,7 @@ from PySide6.QtGui import QUndoStack
 from PySide6.QtTest import QTest
 
 from phidler.canvas.scene import LayoutScene
-from phidler.canvas.transform_handles import RotateHandleItem, ScaleHandleItem, TransformHandleSet
+from phidler.canvas.transform_handles import RotateHandleItem, TransformHandleSet
 from phidler.canvas.view import LayoutView
 from phidler.model.document import LayoutDocument, Transform
 
@@ -48,102 +48,14 @@ def test_handles_hidden_until_shown_for_an_instance(qapp):
         assert h.isVisible() is False
 
 
-def test_handles_reposition_onto_instance_corners_and_top(qapp):
+def test_scale_is_not_a_drag_gesture(qapp):
+    """Scale is set numerically in the Properties panel, not by dragging — so
+    there are no corner handles, only the rotate handle, and none of them
+    touch `mag` on a drag."""
     doc, scene, undo_stack, view, handles, inst_id = _setup(qapp)
     handles.show_for(inst_id)
-    item = scene.items_by_inst[inst_id]
-
-    corners = handles.handles[:4]
-    expected_local = [
-        QPointF(item.boundingRect().left(), item.boundingRect().top()),
-        QPointF(item.boundingRect().right(), item.boundingRect().top()),
-        QPointF(item.boundingRect().right(), item.boundingRect().bottom()),
-        QPointF(item.boundingRect().left(), item.boundingRect().bottom()),
-    ]
-    for handle, local_pt in zip(corners, expected_local):
-        expected_scene = item.mapToScene(local_pt)
-        assert math.isclose(handle.scenePos().x(), expected_scene.x(), abs_tol=1e-6)
-        assert math.isclose(handle.scenePos().y(), expected_scene.y(), abs_tol=1e-6)
-
-
-def test_corner_drag_keeps_the_opposite_corner_fixed(qapp):
-    """The actual acceptance check for 'standard drag interface': dragging
-    one corner handle must keep the diagonally opposite corner exactly
-    fixed in absolute scene coordinates, the same way every mainstream 2D
-    editor's resize handles behave. Anchoring the scale at the instance's
-    local origin instead (where `mag` actually mathematically pivots)
-    would NOT have this property — for `straight`, whose local origin
-    sits almost on the bounding box edge, that would make one corner
-    barely move and the other swing wildly. This test is the one that
-    actually encodes the user's complaint, not just 'mag changed'."""
-    doc, scene, undo_stack, view, handles, inst_id = _setup(qapp)
-    handles.show_for(inst_id)
-
-    dragged = handles.handles[2]  # opposite is handles[0]
-    opposite = handles.handles[0]
-    opposite_before = QPointF(opposite.scenePos())
-
-    dragged.mousePressEvent(_FakeEvent(dragged.scenePos()))
-    # drag outward along the diagonal away from the opposite corner, to
-    # roughly double the distance from it
-    target = dragged.scenePos() * 2 - opposite_before
-    dragged.mouseMoveEvent(_FakeEvent(target))
-
-    opposite_after = opposite.scenePos()
-    assert math.isclose(opposite_after.x(), opposite_before.x(), abs_tol=1e-6)
-    assert math.isclose(opposite_after.y(), opposite_before.y(), abs_tol=1e-6)
-
-    dragged.mouseReleaseEvent(_FakeEvent(target))
-    t = doc.get_transform(inst_id)
-    assert math.isclose(t.mag, 2.0, abs_tol=1e-6)
-
-
-def test_corner_drag_pushes_a_single_undoable_command(qapp):
-    doc, scene, undo_stack, view, handles, inst_id = _setup(qapp)
-    handles.show_for(inst_id)
-
-    h = handles.handles[2]
-    opp = handles.handles[0].scenePos()
-    h.mousePressEvent(_FakeEvent(h.scenePos()))
-    target = h.scenePos() * 1.5 - opp * 0.5
-    h.mouseMoveEvent(_FakeEvent(target))
-    h.mouseReleaseEvent(_FakeEvent(target))
-
-    assert undo_stack.count() == 1
-    undo_stack.undo()
-    t = doc.get_transform(inst_id)
-    assert math.isclose(t.mag, 1.0, abs_tol=1e-6)
-
-
-def test_corner_drag_live_preview_does_not_touch_document_until_release(qapp):
-    doc, scene, undo_stack, view, handles, inst_id = _setup(qapp)
-    handles.show_for(inst_id)
-
-    h = handles.handles[2]
-    opp = handles.handles[0].scenePos()
-    h.mousePressEvent(_FakeEvent(h.scenePos()))
-    target = h.scenePos() * 2 - opp
-    h.mouseMoveEvent(_FakeEvent(target))
-
-    item = scene.items_by_inst[inst_id]
-    assert math.isclose(item.mag, 2.0, abs_tol=1e-6)
-    assert math.isclose(doc.get_transform(inst_id).mag, 1.0, abs_tol=1e-6)  # untouched until release
-
-
-def test_corner_drag_clamps_mag_to_valid_range(qapp):
-    doc, scene, undo_stack, view, handles, inst_id = _setup(qapp)
-    handles.show_for(inst_id)
-
-    h = handles.handles[2]
-    opp = handles.handles[0].scenePos()
-    h.mousePressEvent(_FakeEvent(h.scenePos()))
-    # drag almost on top of the opposite corner -> would-be near-zero/negative mag
-    target = QPointF(opp.x() + 1e-9, opp.y() + 1e-9)
-    h.mouseMoveEvent(_FakeEvent(target))
-    h.mouseReleaseEvent(_FakeEvent(target))
-
-    t = doc.get_transform(inst_id)
-    assert t.mag > 0.0
+    assert handles.handles == [handles.rotate_handle]
+    assert all(isinstance(h, RotateHandleItem) for h in handles.handles)
 
 
 def test_rotate_handle_drag_rotates_around_local_origin_by_swept_angle(qapp):
@@ -301,12 +213,15 @@ def test_real_mouse_drag_on_handle_does_not_select_or_move_the_instance(qapp):
     view.scale(20, 20)  # zoom in so the click point isn't ambiguous
     handles.show_for(inst_id)
 
-    h = handles.handles[2]
-    press_view_pt = view.mapFromScene(h.scenePos())
+    h = handles.rotate_handle
+    press = h.scenePos()
+    press_view_pt = view.mapFromScene(press)
     QTest.mousePress(view.viewport(), Qt.LeftButton, Qt.NoModifier, press_view_pt)
     assert h.is_dragging is True
 
-    move_view_pt = view.mapFromScene(QPointF(h.scenePos().x() * 1.5, h.scenePos().y() * 1.5))
+    # Sweep tangentially (rotate the press point ~90° about the origin) so the
+    # rotate handle actually produces a rotation, not a no-op radial move.
+    move_view_pt = view.mapFromScene(QPointF(-press.y(), press.x()))
     QTest.mouseMove(view.viewport(), move_view_pt)
     QTest.mouseRelease(view.viewport(), Qt.LeftButton, Qt.NoModifier, move_view_pt)
 

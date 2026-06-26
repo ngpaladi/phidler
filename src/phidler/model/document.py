@@ -31,12 +31,21 @@ def _meander_steps(p1, p2, amplitude_um: float) -> list[dict]:
     """route_single `steps` for a single perpendicular detour of the given
     amplitude between two ports: bump perpendicular to the dominant separation
     axis, traverse halfway, bump back. Pure (no document state) so the exporter
-    can reproduce the exact detour from stored amplitude + live port positions."""
+    can reproduce the exact detour from stored amplitude + live port positions.
+
+    The bump goes *outward* — away from the centerline the route sits on (the
+    sign of the segment's midpoint) — so paired arms (e.g. the two arms of a
+    Mach-Zehnder around y=0) meander apart instead of crossing each other. The
+    detour length is identical either way, so length matching is unaffected."""
     dx = p2.dcenter[0] - p1.dcenter[0]
     dy = p2.dcenter[1] - p1.dcenter[1]
     if abs(dx) >= abs(dy):  # mostly horizontal: bump in y, traverse in x
-        return [{"dy": amplitude_um}, {"dx": (dx / 2) or 1.0}, {"dy": -amplitude_um}]
-    return [{"dx": amplitude_um}, {"dy": (dy / 2) or 1.0}, {"dx": -amplitude_um}]
+        mid_y = (p1.dcenter[1] + p2.dcenter[1]) / 2
+        a = amplitude_um if mid_y >= 0 else -amplitude_um
+        return [{"dy": a}, {"dx": (dx / 2) or 1.0}, {"dy": -a}]
+    mid_x = (p1.dcenter[0] + p2.dcenter[0]) / 2  # mostly vertical: bump in x
+    a = amplitude_um if mid_x >= 0 else -amplitude_um
+    return [{"dx": a}, {"dy": (dy / 2) or 1.0}, {"dx": -a}]
 
 
 def _shapes_from_polygons(polygons_by_layer, dbu: float, layers: dict[LayerKey, LayerInfo]) -> ShapesByLayer:

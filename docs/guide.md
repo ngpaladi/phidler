@@ -94,24 +94,18 @@ Each is a single undo step, even when it moves several instances.
 
 ### Transform handles
 
-Selecting a single instance shows the standard drag-handle interface
-directly on the canvas — the same convention used by PowerPoint,
-Keynote, Figma, Illustrator, and most 2D editors:
+Selecting a single instance shows a **rotate handle** above it on the canvas:
 
-<img src="screenshots/transform_overlay.png" width="520" alt="On-canvas transform handles: 4 corner resize handles and 1 rotate handle above the shape">
+<img src="screenshots/transform_overlay.png" width="520" alt="On-canvas rotate handle above the selected shape">
 
-- **4 corner handles** — drag any one to resize. This is a real geometric
-  magnification (it resizes the instance's shape and ports, not a
-  component parameter like length), and it's uniform: dragging any
-  corner keeps the diagonally opposite corner fixed in place, same as a
-  standard resize handle.
-- **1 handle above the shape** — drag it to rotate freely around the
-  instance's position.
-- For mirror, quick 90° rotation, or resetting rotation/mirror/scale back
-  to defaults, use `M` / `R` or the right-click context menu — those
-  aren't drag gestures, so they're not on the handles.
-
-Both gestures preview live and commit to the undo stack when you release.
+- **Drag the handle above the shape** to rotate freely around the instance's
+  position. It previews live and commits to the undo stack on release.
+- For a quick 90° rotation, a flip, or resetting rotation/mirror/scale back to
+  defaults, use `R` / `H` / `V` or the right-click context menu.
+- **Scale is not a drag gesture** — set it numerically in the Properties
+  panel's **Scale** field (below), so a stray drag can't accidentally resize a
+  component. Scale is a real geometric magnification of the shape and ports,
+  not a component parameter like length.
 
 ## Editing parameters
 

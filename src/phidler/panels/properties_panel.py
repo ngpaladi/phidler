@@ -29,6 +29,38 @@ _VOCABULARY_FIELDS: dict[str, Callable[[], list[str]]] = {
     "cross_section": list_cross_section_names,
 }
 
+# Numeric parameters that read as length-ish or numeric but carry NO unit, so
+# the unit inference below must not slap "µm" on them: p is the euler-bend
+# fraction (0–1), neff/nclad/ncore are refractive indices.
+_DIMENSIONLESS_PARAMS = {"p", "neff", "nclad", "ncore"}
+
+# Substrings that mark a value in microns. gdsfactory's geometric parameters
+# are overwhelmingly in µm; angles (handled first) are the main exception.
+_MICRON_TOKENS = (
+    "length", "width", "gap", "radius", "size", "spacing", "pitch", "offset",
+    "distance", "taper", "height", "thickness", "wavelength", "period",
+    "extension", "enclosure", "margin", "dx", "dy",
+)
+
+
+def _unit_for_param(name: str, value: object) -> str:
+    """The display unit for a component parameter, or "" when none applies.
+
+    gdsfactory uses µm for geometry and degrees for angles; counts, indices,
+    and fractions are unitless. Conservative by name + value type so an unknown
+    parameter just gets no unit rather than a wrong one."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return ""
+    if name in _DIMENSIONLESS_PARAMS:
+        return ""
+    if name.startswith(("n_", "num")):  # counts: n_periods, n_turns, num_pts, …
+        return ""
+    if "angle" in name or "orientation" in name:
+        return "°"
+    if any(token in name for token in _MICRON_TOKENS):
+        return "µm"
+    return ""
+
 
 class PropertiesPanel(QWidget):
     """Dynamic parameter form for the selected instance, built from the
@@ -160,7 +192,9 @@ class PropertiesPanel(QWidget):
                 continue
             value = current_kwargs.get(p.name, p.default)
             widget = self._make_field(p.name, value)
-            self.form_layout.addRow(p.name, widget)
+            unit = _unit_for_param(p.name, value)
+            label = f"{p.name} ({unit})" if unit else p.name
+            self.form_layout.addRow(label, widget)
             self._fields[p.name] = widget
 
         self.setEnabled(True)
