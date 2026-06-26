@@ -29,13 +29,13 @@ jobs:
           python-version: "3.12"
 
       - name: Install docs dependencies
-        # Just the docs toolchain (mkdocs-material pulls in mkdocs), not
-        # `pip install -e ".[docs]"`: mkdocs build only reads markdown + copies
-        # the already-checked-in screenshot PNGs, it never imports the phidler
-        # package itself (the screenshot-regen hook skips cleanly when phidler /
-        # PySide6 aren't importable), so pulling in the project's full
-        # dependency tree here would be slow and an unnecessary failure point.
-        run: pip install mkdocs-material
+        # Just `mkdocs`, not `pip install -e ".[docs]"`: mkdocs build only reads
+        # markdown + copies the already-checked-in screenshot PNGs, it never
+        # imports the phidler package itself (the screenshot-regen hook skips
+        # cleanly when phidler / PySide6 aren't importable), so pulling in the
+        # project's full dependency tree here would be slow and an unnecessary
+        # failure point.
+        run: pip install mkdocs
 
       - name: Build site
         run: mkdocs build --strict
