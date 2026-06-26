@@ -51,7 +51,7 @@ def _import_photonfdtd():
         raise FdtdNotAvailableError(
             "photonfdtd is not installed. It's not yet published on PyPI — "
             "install it from its own checkout first, e.g.:\n"
-            "  pip install -e /path/to/FastTiming/photonfdtd\n"
+            "  pip install -e /path/to/photonfdtd\n"
             "then `pip install -e \".[fdtd]\"` here."
         ) from exc
     return pf

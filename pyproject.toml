@@ -17,11 +17,11 @@ docs = [
 ]
 # photonfdtd isn't published on PyPI yet (sibling project, not a Phidler
 # package) — install it from its own checkout first
-# (pip install -e /path/to/FastTiming/photonfdtd), then this version
-# constraint will already be satisfied and `pip install -e ".[fdtd]"`
-# won't need network access for it.
+# (pip install -e /path/to/photonfdtd), then this version constraint will
+# already be satisfied and `pip install -e ".[fdtd]"` won't need network
+# access for it. Phidler tracks photonfdtd 0.2.x (CuPy GPU backend).
 fdtd = [
-    "photonfdtd>=0.1.0",
+    "photonfdtd>=0.2.0",
     "matplotlib>=3.7",
 ]
 
