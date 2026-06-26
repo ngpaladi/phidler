@@ -40,6 +40,7 @@ def save_project(document: LayoutDocument, path: str) -> None:
                 "goal_length_um": route.goal_length_um,
                 "auto_match": route.auto_match,
                 "meander_amplitude_um": route.meander_amplitude_um,
+                "diagonal": route.diagonal,
             }
             for route in document.routes.values()
         ],
@@ -121,6 +122,7 @@ def load_project(path: str, document: LayoutDocument, scene) -> dict[str, Compon
             goal_length_um=route_data.get("goal_length_um"),
             auto_match=route_data.get("auto_match", False),
             meander_amplitude_um=route_data.get("meander_amplitude_um"),  # rebuild same geometry, no re-search
+            diagonal=route_data.get("diagonal", False),
         )
         scene.add_route_item(route_data["id"])
         max_id = max(max_id, route_data["id"])

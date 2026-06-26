@@ -206,6 +206,7 @@ class AddRouteCommand(QUndoCommand):
         cross_section: str = "strip",
         goal_length_um: float | None = None,
         auto_match: bool = False,
+        diagonal: bool = False,
         text: str | None = None,
     ) -> None:
         super().__init__(text or "Add route")
@@ -218,6 +219,7 @@ class AddRouteCommand(QUndoCommand):
         self.cross_section = cross_section
         self.goal_length_um = goal_length_um
         self.auto_match = auto_match
+        self.diagonal = diagonal
         self._meander_amplitude_um: float | None = None  # captured so redo rebuilds the same geometry
         self.route_id: int | None = None
         self.error: Exception | None = None
@@ -240,6 +242,7 @@ class AddRouteCommand(QUndoCommand):
                 goal_length_um=self.goal_length_um,
                 auto_match=self.auto_match,
                 meander_amplitude_um=self._meander_amplitude_um,
+                diagonal=self.diagonal,
             )
         except Exception as exc:  # surfaced to the caller via .error, not re-raised (see note above)
             self.error = exc

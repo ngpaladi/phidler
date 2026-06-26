@@ -338,6 +338,13 @@ class MainWindow(QMainWindow):
             "Off (manual): route directly and just report actual vs goal."
         )
         toolbar.addWidget(self.route_auto_match_check)
+        self.route_diagonal_check = QCheckBox("Diagonal")
+        self.route_diagonal_check.setToolTip(
+            "Route directly with all-angle (diagonal) bends instead of the\n"
+            "manhattan default, so a route takes the short diagonal path rather\n"
+            "than U-turning on port orientation. Ignored when a length goal is set."
+        )
+        toolbar.addWidget(self.route_diagonal_check)
 
         toolbar.addWidget(QLabel(" Grid (µm): "))
         self.grid_pitch_spin = QDoubleSpinBox()
@@ -609,6 +616,7 @@ class MainWindow(QMainWindow):
             cross_section=self.route_cross_section,
             goal_length_um=goal_um,
             auto_match=bool(goal_um) and self.route_auto_match_check.isChecked(),
+            diagonal=self.route_diagonal_check.isChecked(),
         )
         self.undo_stack.push(command)
         if command.error is not None:

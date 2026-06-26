@@ -24,5 +24,5 @@ def test_placed_route_repr_excludes_heavy_refs_field(qapp):
     route = doc.add_route(a.id, "o2", b.id, "o1")
     text = repr(route)
     assert "cross_section='strip'" in text
-    assert "refs=" not in text
-    assert len(text) < 200
+    assert "refs=" not in text  # the heavy field stays out of the repr
+    assert len(text) < 300  # scalar metadata (goal/auto/amplitude/diagonal) is fine; the refs dump isn't

@@ -80,6 +80,24 @@ def _is_route_single_call(node: ast.expr) -> bool:
     return len(node.args) == 3 and all(_is_port_subscript(a) for a in node.args[1:])
 
 
+def _is_route_bundle_all_angle_call(node: ast.expr) -> bool:
+    """gf.routing.route_bundle_all_angle(top, [portA], [portB], ...) — the
+    diagonal-route call export_script emits, with each port wrapped in a list."""
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "route_bundle_all_angle"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "routing"
+        and isinstance(node.func.value.value, ast.Name)
+        and node.func.value.value.id == "gf"
+    ):
+        return False
+    return len(node.args) == 3 and all(
+        isinstance(a, ast.List) and len(a.elts) == 1 and _is_port_subscript(a.elts[0]) for a in node.args[1:]
+    )
+
+
 def _is_port_subscript(node: ast.expr) -> bool:
     return (
         isinstance(node, ast.Subscript)
@@ -222,6 +240,24 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
                     }
                 )
                 continue
+            if _is_route_bundle_all_angle_call(call):
+                a_var, port_a = _port_ref(call.args[1].elts[0])
+                b_var, port_b = _port_ref(call.args[2].elts[0])
+                cross_section = "strip"
+                for kw in call.keywords:
+                    if kw.arg == "cross_section":
+                        cross_section = _literal(kw.value, "route cross_section")
+                pending_routes.append(
+                    {
+                        "a_var": a_var,
+                        "port_a": port_a,
+                        "b_var": b_var,
+                        "port_b": port_b,
+                        "cross_section": cross_section,
+                        "diagonal": True,
+                    }
+                )
+                continue
         raise ScriptParseError(
             f"unrecognized top-level statement at line {getattr(node, 'lineno', '?')}: {ast.dump(node)[:200]} "
             "— Phidler's script importer only understands the flat, simple statement shapes "
@@ -278,6 +314,7 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
             route["cross_section"],
             auto_match=amplitude is not None,
             meander_amplitude_um=amplitude,
+            diagonal=route.get("diagonal", False),
         )
         scene.add_route_item(placed.id)
         max_id = max(max_id, placed.id)

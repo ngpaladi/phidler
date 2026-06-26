@@ -359,6 +359,7 @@ class LayoutDocument:
         goal_length_um: float | None = None,
         auto_match: bool = False,
         meander_amplitude_um: float | None = None,
+        diagonal: bool = False,
     ) -> PlacedRoute:
         # There's no cascade-delete: removing an instance doesn't remove
         # routes that referenced it, so a route can outlive its endpoint
@@ -377,13 +378,18 @@ class LayoutDocument:
         solved_amplitude: float | None = None
         # A supplied amplitude (project reload or Python-script import) rebuilds
         # that exact meander deterministically; a goal without an amplitude
-        # searches for one.
+        # searches for one. Length matching always uses the manhattan meander,
+        # so it takes priority over the diagonal flag.
         if meander_amplitude_um is not None or (auto_match and goal_length_um):
             route, solved_amplitude = self._route_to_goal_length(
                 p1, p2, cross_section, goal_length_um, meander_amplitude_um
             )
+            refs, length_dbu = list(route.instances), route.length
+        elif diagonal:
+            refs, length_dbu = self._route_diagonal(p1, p2, cross_section)
         else:
             route = gf.routing.route_single(self.top, p1, p2, cross_section=cross_section)
+            refs, length_dbu = list(route.instances), route.length
 
         placed = PlacedRoute(
             id=route_id if route_id is not None else self.next_id(),
@@ -392,11 +398,12 @@ class LayoutDocument:
             instance_id_b=inst_b_id,
             port_name_b=port_b,
             cross_section=cross_section,
-            refs=list(route.instances),
-            length=route.length,
+            refs=refs,
+            length=length_dbu,
             goal_length_um=goal_length_um,
             auto_match=auto_match,
             meander_amplitude_um=solved_amplitude,
+            diagonal=diagonal,
         )
         self.routes[placed.id] = placed
         for ref in placed.refs:
@@ -406,6 +413,38 @@ class LayoutDocument:
 
     def _route_length_um(self, route) -> float:
         return route.length * self.top.kcl.dbu
+
+    def _route_diagonal(self, p1, p2, cross_section: str):
+        """Route p1→p2 directly with all-angle (diagonal) euler bends, so it
+        takes the short diagonal path instead of a manhattan L/U-turn. Returns
+        (refs, length_in_dbu).
+
+        gdsfactory's all-angle router produces virtual, off-grid instances
+        (VInstance / ComponentAllAngle) that this app can neither render
+        per-ref nor delete. So the route is built in a throwaway holder,
+        flattened to plain polygons, and added back to the top cell as a single
+        ordinary reference — which renders, deletes, and exports through the
+        normal path like any other route. Falls back to the manhattan
+        route_single when gdsfactory can't realize the all-angle route (ports
+        too close for the bend radius, or an orientation it can't resolve).
+
+        route_bundle_all_angle reports length in µm; the rest of this module
+        works in database units, so the diagonal length is normalised to dbu."""
+        try:
+            holder = gf.Component()
+            routes = gf.routing.route_bundle_all_angle(holder, [p1], [p2], cross_section=cross_section)
+            route = routes[0]
+            if not route.instances:
+                raise ValueError("all-angle route is empty")
+            length_dbu = route.length / self.top.kcl.dbu
+            for vinst in route.instances:
+                vinst.insert_into(holder)
+            holder.flatten()
+            ref = self.top.add_ref(holder)
+            return [ref], length_dbu
+        except Exception:
+            route = gf.routing.route_single(self.top, p1, p2, cross_section=cross_section)
+            return list(route.instances), route.length
 
     def _route_with_meander(self, p1, p2, cross_section: str, amplitude_um: float):
         """Route p1→p2 with a single perpendicular detour ('bump') of the given

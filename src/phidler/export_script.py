@@ -82,6 +82,15 @@ def export_python_script(document: LayoutDocument, path: str) -> str:
             if a_var is None or b_var is None:
                 lines.append(f"# skipped route #{route.id}: an endpoint instance no longer exists")
                 continue
+            a_port = f"{a_var}.ports[{route.port_name_a!r}]"
+            b_port = f"{b_var}.ports[{route.port_name_b!r}]"
+            if route.diagonal:
+                # Direct all-angle (diagonal) route — same router this app uses.
+                lines.append(
+                    f"gf.routing.route_bundle_all_angle(top, [{a_port}], [{b_port}], "
+                    f"cross_section={route.cross_section!r})"
+                )
+                continue
             # Auto-matched routes carry a meander; emit its steps so the
             # standalone script reproduces the length-matched geometry rather
             # than a shorter natural route.
@@ -90,8 +99,8 @@ def export_python_script(document: LayoutDocument, path: str) -> str:
             if route.goal_length_um:
                 lines.append(f"# route #{route.id} goal length: {route.goal_length_um:.4f} µm")
             lines.append(
-                f"gf.routing.route_single(top, {a_var}.ports[{route.port_name_a!r}], "
-                f"{b_var}.ports[{route.port_name_b!r}], cross_section={route.cross_section!r}{steps_arg})"
+                f"gf.routing.route_single(top, {a_port}, {b_port}, "
+                f"cross_section={route.cross_section!r}{steps_arg})"
             )
         lines.append("")
 

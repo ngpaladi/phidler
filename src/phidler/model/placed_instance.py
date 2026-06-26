@@ -70,3 +70,8 @@ class PlacedRoute:
     goal_length_um: float | None = None
     auto_match: bool = False
     meander_amplitude_um: float | None = None
+    # Route directly with all-angle (diagonal) euler bends instead of the
+    # manhattan default, so a route can take the short diagonal path rather than
+    # U-turning on port orientation. Ignored when a length goal is set (those
+    # use the manhattan meander).
+    diagonal: bool = False
