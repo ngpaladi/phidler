@@ -339,10 +339,12 @@ class MainWindow(QMainWindow):
         )
         toolbar.addWidget(self.route_auto_match_check)
         self.route_diagonal_check = QCheckBox("Diagonal")
+        self.route_diagonal_check.setChecked(True)  # on by default: prefer the short diagonal path
         self.route_diagonal_check.setToolTip(
-            "Route directly with all-angle (diagonal) bends instead of the\n"
-            "manhattan default, so a route takes the short diagonal path rather\n"
-            "than U-turning on port orientation. Ignored when a length goal is set."
+            "Route directly with all-angle (diagonal) bends instead of\n"
+            "manhattan, so a route takes the short diagonal path rather than\n"
+            "U-turning on port orientation. Falls back to manhattan when a pair\n"
+            "of ports can't be all-angle routed. Ignored when a length goal is set."
         )
         toolbar.addWidget(self.route_diagonal_check)
 

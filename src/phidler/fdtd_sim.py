@@ -169,6 +169,11 @@ class FdtdParams:
     # unavailable backend surfaces photonfdtd's own error via the worker.
     use_gpu: bool = False
     use_numba: bool = False
+    # Field precision. float32 halves the field/CPML/monitor memory and is
+    # faster, at single-precision accuracy — more than enough for the
+    # qualitative field movie this app shows. float64 is bit-for-bit the old
+    # behavior if a run ever needs it.
+    precision: str = "float32"
 
     def resolved_cell_size_um(self) -> float:
         return self.cell_size_um if self.cell_size_um is not None else self.wavelength_um / 20
@@ -226,7 +231,7 @@ _INFINITE_CLAD_WAVELENGTHS = 6.0
 
 
 def effective_clad_thickness_um(settings: ProjectSettings, wavelength_um: float) -> float:
-    """Cladding half-extent (each side of the core) the solver/sim should use.
+    """Cladding half-extent (each side of the core) the mode solver should use.
 
     Normally the project's chosen clad_thickness_um. When clad_infinite is set,
     a wavelength-scaled extent large enough that the mode no longer interacts
@@ -234,6 +239,21 @@ def effective_clad_thickness_um(settings: ProjectSettings, wavelength_um: float)
     if settings.clad_infinite:
         return _INFINITE_CLAD_WAVELENGTHS * wavelength_um
     return settings.clad_thickness_um
+
+
+# Cap on the cladding the 3D *propagation* domain uses on each side of the core.
+# The mode solver may want a very thick (even "infinite", ~6λ) cladding so the
+# mode doesn't truncate, but FDTD propagation only needs enough to capture the
+# evanescent field — using the mode-solver value would blow the z grid up (and,
+# with it, runtime and the recorded field movie). A couple of microns is plenty
+# at telecom wavelengths.
+_FDTD_CLAD_CAP_UM = 2.0
+
+
+def fdtd_clad_thickness_um(settings: ProjectSettings, wavelength_um: float) -> float:
+    """Cladding half-extent for the 3D FDTD propagation domain — the mode
+    solver's extent, capped so the z grid stays small (see _FDTD_CLAD_CAP_UM)."""
+    return min(effective_clad_thickness_um(settings, wavelength_um), _FDTD_CLAD_CAP_UM)
 
 
 def _layout_bbox_um(document: LayoutDocument):
@@ -256,7 +276,7 @@ def estimate_grid_cell_count(document: LayoutDocument, params: FdtdParams = Fdtd
     padding_m = params.padding_um * 1e-6
     x_extent = (bbox.right - bbox.left) * 1e-6 + 2 * padding_m
     y_extent = (bbox.top - bbox.bottom) * 1e-6 + 2 * padding_m
-    clad_thickness_um = effective_clad_thickness_um(settings, params.wavelength_um)
+    clad_thickness_um = fdtd_clad_thickness_um(settings, params.wavelength_um)
     z_extent = settings.thickness_um * 1e-6 + 2 * clad_thickness_um * 1e-6 + 2 * padding_m
     grid = pf.Grid(size=(x_extent, y_extent, z_extent), cell_size=cell_size_m, pml_layers=(12, 12, 12))
     return int(grid.shape[0]) * int(grid.shape[1]) * int(grid.shape[2])
@@ -385,7 +405,7 @@ def build_source(settings: ProjectSettings, spec: SourceSpec) -> Any:
         # (0 = straight through). The track is kept inside the dielectric stack
         # (core + cladding), both because that's where Cherenkov light is
         # actually emitted and so the dipoles never fall outside the domain.
-        clad_m = effective_clad_thickness_um(settings, spec.wavelength_um) * 1e-6
+        clad_m = fdtd_clad_thickness_um(settings, spec.wavelength_um) * 1e-6
         thickness_m = settings.thickness_um * 1e-6
         diel_span = thickness_m + 2 * clad_m
         z_center = thickness_m / 2.0  # mid-core; the dielectric runs [-clad, thickness+clad]
@@ -488,7 +508,7 @@ def build_simulation(document: LayoutDocument, params: FdtdParams = FdtdParams()
     clad_n = params.clad_index if params.clad_index is not None else settings.clad_index
     clad = pf.Medium.from_index(clad_n, name="cladding")
     thickness_m = settings.thickness_um * 1e-6
-    clad_thickness_m = effective_clad_thickness_um(settings, params.wavelength_um) * 1e-6
+    clad_thickness_m = fdtd_clad_thickness_um(settings, params.wavelength_um) * 1e-6
     cell_size_m = params.resolved_cell_size_um() * 1e-6
     padding_m = params.padding_um * 1e-6
 
@@ -513,6 +533,7 @@ def build_simulation(document: LayoutDocument, params: FdtdParams = FdtdParams()
         run_time=params.resolved_run_time_fs() * 1e-15,
         use_gpu=params.use_gpu,
         use_numba=params.use_numba,
+        precision=params.precision,
     )
 
     sources = params.sources
