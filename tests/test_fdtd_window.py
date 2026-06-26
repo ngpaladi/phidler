@@ -64,8 +64,19 @@ def test_gpu_run_executes_synchronously_not_in_a_worker_thread(qapp):
     """cupy's CUDA context can't survive a Qt worker thread (crash/hang at
     teardown), so a GPU-flagged run executes on the main thread — no worker
     QThread, and the result is ready by the time _on_run_clicked returns.
-    (photonfdtd falls back to NumPy on the main thread when cupy is absent, so
-    this holds with or without a GPU.)"""
+
+    Skipped when CuPy is actually installed: this runs a real FDTD solve, and a
+    real CUDA run inside the shared pytest process leaves device state that
+    destabilises later tests. With CuPy absent (CI, most dev machines) the GPU
+    flag falls back to NumPy on the main thread, which exercises the same
+    synchronous branch this test checks."""
+    import pytest
+
+    from phidler.fdtd_sim import gpu_available
+
+    if gpu_available():
+        pytest.skip("CuPy present — a real CUDA run in the test process would destabilise the suite")
+
     win = MainWindow()
     inst = win.document.add_instance("straight", {"length": 2.0, "width": 0.5})
     win.scene.add_instance_item(inst.id)
