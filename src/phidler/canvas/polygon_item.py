@@ -106,16 +106,6 @@ class InstanceItem(QGraphicsItem):
             return best_name
         return None
 
-    def mousePressEvent(self, event) -> None:
-        scene = self.scene()
-        if scene is not None and getattr(scene, "routing_mode", False) and event.button() == Qt.LeftButton:
-            port_name = self.nearest_port(event.pos())
-            if port_name is not None:
-                scene.port_clicked.emit(self.inst_id, port_name)
-                event.accept()
-                return
-        super().mousePressEvent(event)
-
     def set_geometry(
         self,
         shapes_by_layer: dict[LayerKey, list[tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]]],

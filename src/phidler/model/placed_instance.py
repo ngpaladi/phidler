@@ -5,6 +5,26 @@ from typing import Any
 
 
 @dataclass
+class ArraySpec:
+    """How a single placed component is tiled into a rectangular array.
+
+    The default (1×1, zero pitch) is a plain single placement — `is_array`
+    is False and nothing downstream treats it specially. columns runs along
+    +x, rows along +y, both in the component's own (pre-transform) frame, so
+    the array tiles before the instance's rotation/mirror/scale is applied
+    (matching gdsfactory's array-reference semantics)."""
+
+    columns: int = 1
+    rows: int = 1
+    column_pitch: float = 0.0  # µm between columns (x)
+    row_pitch: float = 0.0  # µm between rows (y)
+
+    @property
+    def is_array(self) -> bool:
+        return self.columns > 1 or self.rows > 1
+
+
+@dataclass
 class PlacedInstance:
     """A single placed component: the gdsfactory cell/ref pair plus the spec
     needed to regenerate it (e.g. after a property-panel edit).
@@ -21,6 +41,7 @@ class PlacedInstance:
     kwargs: dict[str, Any]
     cell: Any = field(repr=False)  # gf.Component for this instance's geometry (unplaced/local frame)
     ref: Any = field(repr=False)  # kfactory DInstance placed into the document's top cell
+    array: ArraySpec = field(default_factory=ArraySpec)
     label: str = ""
     locked: bool = False
 
@@ -41,3 +62,11 @@ class PlacedRoute:
     cross_section: str
     refs: list[Any] = field(default_factory=list, repr=False)
     length: float = 0.0
+    # Optional length goal. goal_length_um is what the user asked for (in µm,
+    # converted from time at the input if needed). auto_match=True means the
+    # router inserted an adiabatic meander to approach it; meander_amplitude_um
+    # is the solved bump size, persisted so a project reload rebuilds the same
+    # geometry deterministically instead of re-searching.
+    goal_length_um: float | None = None
+    auto_match: bool = False
+    meander_amplitude_um: float | None = None

@@ -42,11 +42,15 @@ class PropertiesPanel(QWidget):
     # eyeballing a drag. Pushes the same MoveInstanceCommand drag/handle
     # gestures do, so it's undoable the same way.
     transform_applied = Signal(int, float, float, float, bool, float)
+    # inst_id, columns, rows, column_pitch, row_pitch — tile the instance into
+    # a rectangular array (replaces the old standalone *_array components).
+    array_applied = Signal(int, int, int, float, float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._inst_id: int | None = None
         self._fields: dict[str, QWidget] = {}
+        self._bbox_extent: tuple[float, float] = (0.0, 0.0)
 
         layout = QVBoxLayout(self)
         self.title_label = QLabel("No selection")
@@ -69,6 +73,26 @@ class PropertiesPanel(QWidget):
         transform_layout.addRow(self.apply_transform_button)
         layout.addWidget(self.transform_group)
 
+        self.array_group = QGroupBox("Array")
+        array_layout = QFormLayout(self.array_group)
+        self.columns_spin = self._make_count_spin()
+        self.rows_spin = self._make_count_spin()
+        self.column_pitch_spin = self._make_transform_spin(minimum=-1e6, maximum=1e6, decimals=4)
+        self.row_pitch_spin = self._make_transform_spin(minimum=-1e6, maximum=1e6, decimals=4)
+        # Bumping a count above 1 with the pitch still at 0 would stack every
+        # copy on top of the original — seed the pitch from the component's
+        # own size so a fresh array is immediately visible/sensible.
+        self.columns_spin.valueChanged.connect(lambda v: self._seed_pitch(self.column_pitch_spin, v, 0))
+        self.rows_spin.valueChanged.connect(lambda v: self._seed_pitch(self.row_pitch_spin, v, 1))
+        array_layout.addRow("Columns", self.columns_spin)
+        array_layout.addRow("Rows", self.rows_spin)
+        array_layout.addRow("Column pitch (µm)", self.column_pitch_spin)
+        array_layout.addRow("Row pitch (µm)", self.row_pitch_spin)
+        self.apply_array_button = QPushButton("Apply Array")
+        self.apply_array_button.clicked.connect(self._on_apply_array)
+        array_layout.addRow(self.apply_array_button)
+        layout.addWidget(self.array_group)
+
         self.form_layout = QFormLayout()
         layout.addLayout(self.form_layout)
 
@@ -86,17 +110,33 @@ class PropertiesPanel(QWidget):
         spin.setDecimals(decimals)
         return spin
 
+    @staticmethod
+    def _make_count_spin() -> QSpinBox:
+        spin = QSpinBox()
+        spin.setRange(1, 10_000)
+        return spin
+
+    def _seed_pitch(self, pitch_spin: QDoubleSpinBox, count: int, axis: int) -> None:
+        if count > 1 and pitch_spin.value() == 0.0 and self._bbox_extent[axis] > 0.0:
+            pitch_spin.setValue(self._bbox_extent[axis])
+
     def show_instance(
         self,
         inst_id: int,
         component_spec: str,
         signature: inspect.Signature,
         current_kwargs: dict[str, Any],
+        columns: int = 1,
+        rows: int = 1,
+        column_pitch: float = 0.0,
+        row_pitch: float = 0.0,
+        bbox_extent: tuple[float, float] = (0.0, 0.0),
     ) -> None:
         self._inst_id = inst_id
         self._fields = {}
         self.title_label.setText(f"#{inst_id}: {component_spec}")
         self._clear_form()
+        self._set_array_fields(columns, rows, column_pitch, row_pitch, bbox_extent)
 
         for p in signature.parameters.values():
             if p.default is inspect.Parameter.empty:
@@ -149,6 +189,31 @@ class PropertiesPanel(QWidget):
             self.rotation_spin.value(),
             self.mirror_check.isChecked(),
             self.scale_spin.value(),
+        )
+
+    def _set_array_fields(
+        self, columns: int, rows: int, column_pitch: float, row_pitch: float, bbox_extent: tuple[float, float]
+    ) -> None:
+        self._bbox_extent = bbox_extent
+        for spin, value in (
+            (self.columns_spin, columns),
+            (self.rows_spin, rows),
+            (self.column_pitch_spin, column_pitch),
+            (self.row_pitch_spin, row_pitch),
+        ):
+            spin.blockSignals(True)  # don't let _seed_pitch fire while seeding values
+            spin.setValue(value)
+            spin.blockSignals(False)
+
+    def _on_apply_array(self) -> None:
+        if self._inst_id is None:
+            return
+        self.array_applied.emit(
+            self._inst_id,
+            self.columns_spin.value(),
+            self.rows_spin.value(),
+            self.column_pitch_spin.value(),
+            self.row_pitch_spin.value(),
         )
 
     def clear(self) -> None:

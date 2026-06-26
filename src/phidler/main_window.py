@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from phidler.canvas.scene import LayoutScene
 from phidler.canvas.transform_handles import TransformHandleSet
-from phidler.canvas.view import UNIT_MODES, LayoutView
+from phidler.canvas.view import C0_UM_PER_FS, UNIT_MODES, LayoutView
 from phidler.custom_components import load_custom_components
 from phidler.drc import run_drc
 from phidler.export_script import export_python_script
@@ -32,8 +32,10 @@ from phidler.model.commands import (
     DeleteRouteCommand,
     EditParamsCommand,
     MoveInstanceCommand,
+    SetArrayCommand,
 )
-from phidler.model.document import LayoutDocument, Transform
+from phidler.model.document import LayoutDocument, Transform, flip_transform
+from phidler.model.placed_instance import ArraySpec
 from phidler.panels.component_palette import ComponentPalette
 from phidler.panels.console_panel import ConsolePanel
 from phidler.panels.drc_panel import DrcPanel
@@ -42,6 +44,19 @@ from phidler.panels.project_settings_dialog import ProjectSettingsDialog
 from phidler.panels.properties_panel import PropertiesPanel
 from phidler.pdk_catalog import build_catalog, list_cross_section_names
 from phidler.project_io import load_project, save_project
+
+
+def _without_array_variants(catalog):
+    """Drop components whose name carries 'array' (straight_array,
+    grating_coupler_array, pad_array, fiber_array, …). Arraying is now a
+    per-component property, so these standalone variants are hidden from the
+    palette."""
+    filtered = {}
+    for category, specs in catalog.items():
+        kept = [s for s in specs if "array" not in s.name.lower()]
+        if kept:
+            filtered[category] = kept
+    return filtered
 
 
 class MainWindow(QMainWindow):
@@ -90,21 +105,27 @@ class MainWindow(QMainWindow):
     # -- panels -------------------------------------------------------------
 
     def _build_palette_panel(self) -> None:
-        self.palette = ComponentPalette(self.catalog)
+        # The standalone *_array components are hidden: arraying is now a
+        # property of any base component (Properties > Array), so the dedicated
+        # array variants are redundant. They stay in self.catalog/catalog_by_name
+        # (not just the palette) so an older project that placed one still loads
+        # and shows its parameter form.
+        self.palette = ComponentPalette(_without_array_variants(self.catalog))
         self.palette.place_requested.connect(self.view.arm_placement)
 
-        dock = QDockWidget("Components", self)
-        dock.setWidget(self.palette)
-        self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+        self.palette_dock = QDockWidget("Components", self)
+        self.palette_dock.setWidget(self.palette)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.palette_dock)
 
     def _build_properties_panel(self) -> None:
         self.properties_panel = PropertiesPanel()
         self.properties_panel.params_applied.connect(self._on_params_applied)
         self.properties_panel.transform_applied.connect(self._on_properties_transform_applied)
+        self.properties_panel.array_applied.connect(self._on_array_applied)
 
-        dock = QDockWidget("Properties", self)
-        dock.setWidget(self.properties_panel)
-        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        self.properties_dock = QDockWidget("Properties", self)
+        self.properties_dock.setWidget(self.properties_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.properties_dock)
 
     def _build_layers_panel(self) -> None:
         self.layers_panel = LayersPanel()
@@ -112,9 +133,9 @@ class MainWindow(QMainWindow):
         self.layers_panel.visibility_changed.connect(self._on_layer_visibility_changed)
         self.layers_panel.color_changed.connect(self._on_layer_color_changed)
 
-        dock = QDockWidget("Layers", self)
-        dock.setWidget(self.layers_panel)
-        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        self.layers_dock = QDockWidget("Layers", self)
+        self.layers_dock.setWidget(self.layers_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.layers_dock)
 
     def _on_layer_visibility_changed(self, key: tuple, visible: bool) -> None:
         if key in self.document.layers:
@@ -132,19 +153,16 @@ class MainWindow(QMainWindow):
         self.drc_panel.run_requested.connect(self._on_run_drc)
         self.drc_panel.violation_selected.connect(self._on_violation_selected)
 
-        dock = QDockWidget("DRC", self)
-        dock.setWidget(self.drc_panel)
-        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        self.drc_dock = QDockWidget("DRC", self)
+        self.drc_dock.setWidget(self.drc_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.drc_dock)
 
     def _build_fdtd_panel(self) -> None:
         """Despite the name (kept so the existing early call site in
-        __init__ doesn't need to move), this no longer builds a dock — FDTD
-        simulation is a separate top-level window now, opened on demand via
-        the Simulate menu, not always present like the other docks."""
+        __init__ doesn't need to move), this no longer builds a dock or a
+        menu — FDTD simulation is a separate top-level window, opened on
+        demand from the 'Simulate' toolbar button (wired in _build_toolbar)."""
         self._fdtd_window = None
-        simulate_menu = self.menuBar().addMenu("&Simulate")
-        self.fdtd_window_action = simulate_menu.addAction("FDTD Simulation…")
-        self.fdtd_window_action.triggered.connect(self._open_fdtd_window)
 
     def _open_fdtd_window(self) -> None:
         if self._fdtd_window is not None:
@@ -289,6 +307,26 @@ class MainWindow(QMainWindow):
         self.cross_section_combo.currentTextChanged.connect(self._on_route_cross_section_changed)
         toolbar.addWidget(self.cross_section_combo)
 
+        toolbar.addWidget(QLabel(" Goal: "))
+        self.route_goal_spin = QDoubleSpinBox()
+        self.route_goal_spin.setDecimals(3)
+        self.route_goal_spin.setRange(0.0, 1e9)  # 0 == no length goal
+        self.route_goal_spin.setToolTip(
+            "Target length for the next route (0 = none). Units chosen alongside.\n"
+            "Time units convert to length via the current effective index."
+        )
+        toolbar.addWidget(self.route_goal_spin)
+        self.route_goal_unit_combo = QComboBox()
+        self.route_goal_unit_combo.addItems(["µm", "fs", "ns"])
+        toolbar.addWidget(self.route_goal_unit_combo)
+        self.route_auto_match_check = QCheckBox("Auto")
+        self.route_auto_match_check.setChecked(True)
+        self.route_auto_match_check.setToolTip(
+            "Auto: insert an adiabatic meander to approach the goal length.\n"
+            "Off (manual): route directly and just report actual vs goal."
+        )
+        toolbar.addWidget(self.route_auto_match_check)
+
         toolbar.addWidget(QLabel(" Grid (µm): "))
         self.grid_pitch_spin = QDoubleSpinBox()
         self.grid_pitch_spin.setDecimals(3)
@@ -308,7 +346,7 @@ class MainWindow(QMainWindow):
         for label, _ in UNIT_MODES:
             self.units_combo.addItem(label)
         self.units_combo.setToolTip(
-            "Switch coordinate display between spatial µm and propagation time.\n"
+            "Switch coordinate display between spatial (µm / nm) and propagation time (fs / ns).\n"
             "Propagation time uses the effective phase index from the last\n"
             "mode solve (or the core index if no solve has been run)."
         )
@@ -317,6 +355,11 @@ class MainWindow(QMainWindow):
 
         export_action = toolbar.addAction("Export GDS…")
         export_action.triggered.connect(self._export_gds)
+
+        toolbar.addSeparator()
+        self.fdtd_window_action = toolbar.addAction("Simulate")
+        self.fdtd_window_action.setToolTip("Open the FDTD simulation window (mode solve + propagation)")
+        self.fdtd_window_action.triggered.connect(self._open_fdtd_window)
 
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -386,9 +429,13 @@ class MainWindow(QMainWindow):
         self.rotate_action.setShortcut("R")
         self.rotate_action.triggered.connect(self._rotate_selected)
 
-        self.mirror_action = edit_menu.addAction("Mirror")
-        self.mirror_action.setShortcut("M")
-        self.mirror_action.triggered.connect(self._mirror_selected)
+        self.flip_h_action = edit_menu.addAction("Flip Horizontal")
+        self.flip_h_action.setShortcut("H")
+        self.flip_h_action.triggered.connect(lambda: self._flip_selected("h"))
+
+        self.flip_v_action = edit_menu.addAction("Flip Vertical")
+        self.flip_v_action.setShortcut("V")
+        self.flip_v_action.triggered.connect(lambda: self._flip_selected("v"))
 
         self.reset_transform_action = edit_menu.addAction("Reset Transform")
         self.reset_transform_action.triggered.connect(self._reset_selected_transform)
@@ -428,8 +475,28 @@ class MainWindow(QMainWindow):
         self.zoom_selection_action.triggered.connect(self.view.zoom_to_selection)
 
         view_menu.addSeparator()
+        self.thumbnails_action = view_menu.addAction("Component Thumbnails")
+        self.thumbnails_action.setCheckable(True)
+        self.thumbnails_action.setChecked(True)
+        self.thumbnails_action.setToolTip(
+            "Show a rendered thumbnail next to each component in the palette "
+            "(rendered in the background; resets to on each launch)."
+        )
+        self.thumbnails_action.toggled.connect(self.palette.set_thumbnails_visible)
+
+        view_menu.addSeparator()
+        panels_menu = view_menu.addMenu("Panels")
+        # toggleViewAction() gives a checkable action that stays in sync with
+        # the dock's actual visibility (closing a dock unchecks it, and back).
         self.console_toggle_action.setText("Console")
-        view_menu.addAction(self.console_toggle_action)
+        for dock in (
+            self.palette_dock,
+            self.properties_dock,
+            self.layers_dock,
+            self.drc_dock,
+        ):
+            panels_menu.addAction(dock.toggleViewAction())
+        panels_menu.addAction(self.console_toggle_action)
 
         view_menu.addSeparator()
         self.fullscreen_action = view_menu.addAction("Full Screen")
@@ -505,26 +572,61 @@ class MainWindow(QMainWindow):
     def _on_port_clicked(self, inst_id: int, port_name: str) -> None:
         if self._pending_route_port is None:
             self._pending_route_port = (inst_id, port_name)
+            self.view.set_route_anchor(self.view._port_scene_pos(inst_id, port_name))
             self.statusBar().showMessage(f"Route: click the second port (from #{inst_id}:{port_name})", 5000)
             return
         a_inst_id, a_port = self._pending_route_port
         self._pending_route_port = None
+        self.view.set_route_anchor(None)  # second port picked (or cancelled): drop the preview track
         if (a_inst_id, a_port) == (inst_id, port_name):
             return
+        goal_um = self._route_goal_length_um()
         command = AddRouteCommand(
-            self.document, self.scene, a_inst_id, a_port, inst_id, port_name, cross_section=self.route_cross_section
+            self.document,
+            self.scene,
+            a_inst_id,
+            a_port,
+            inst_id,
+            port_name,
+            cross_section=self.route_cross_section,
+            goal_length_um=goal_um,
+            auto_match=bool(goal_um) and self.route_auto_match_check.isChecked(),
         )
         self.undo_stack.push(command)
         if command.error is not None:
             self.undo_stack.undo()  # pop the no-op command back off the stack
             self.statusBar().showMessage(f"Routing failed: {command.error}", 5000)
             return
-        self.statusBar().showMessage(f"Routed #{a_inst_id}:{a_port} -> #{inst_id}:{port_name}", 3000)
+        route = self.document.routes[command.route_id]
+        if route.goal_length_um:
+            actual = self.route_length_um(route)
+            self.statusBar().showMessage(
+                f"Routed #{a_inst_id}:{a_port} -> #{inst_id}:{port_name}   "
+                f"goal {route.goal_length_um:.3f} µm, actual {actual:.3f} µm "
+                f"(Δ {actual - route.goal_length_um:+.3f} µm)",
+                6000,
+            )
+        else:
+            self.statusBar().showMessage(f"Routed #{a_inst_id}:{a_port} -> #{inst_id}:{port_name}", 3000)
+
+    def _route_goal_length_um(self) -> float | None:
+        """The toolbar goal length converted to µm (0 → None). Time units use
+        t = x·n_eff/c₀ inverted, the same effective index the unit switch uses."""
+        value = self.route_goal_spin.value()
+        if value <= 0:
+            return None
+        unit = self.route_goal_unit_combo.currentText()
+        if unit == "fs":
+            return value * C0_UM_PER_FS / self.view.n_eff
+        if unit == "ns":
+            return value * (C0_UM_PER_FS * 1e6) / self.view.n_eff
+        return value
 
     def _on_selection_changed(self) -> None:
         ids = self._selected_instance_ids()
         if len(ids) != 1:
             self.properties_panel.clear()
+            self._show_route_readout()
             return
         inst_id = ids[0]
         inst = self.document.instances[inst_id]
@@ -532,9 +634,45 @@ class MainWindow(QMainWindow):
         if spec is None:
             self.properties_panel.clear()
             return
-        self.properties_panel.show_instance(inst_id, inst.component_spec, spec.signature, inst.kwargs)
+        a = inst.array
+        self.properties_panel.show_instance(
+            inst_id,
+            inst.component_spec,
+            spec.signature,
+            inst.kwargs,
+            columns=a.columns,
+            rows=a.rows,
+            column_pitch=a.column_pitch,
+            row_pitch=a.row_pitch,
+            bbox_extent=self.document.get_bbox_extent_for_instance(inst_id),
+        )
         t = self.document.get_transform(inst_id)
         self.properties_panel.update_transform(t.x, t.y, t.rotation, t.mirror, t.mag)
+
+    def route_length_um(self, route) -> float:
+        """A route's physical length in µm (PlacedRoute.length is in database
+        units = nm, so scale by the layout's dbu)."""
+        return route.length * self.document.top.kcl.dbu
+
+    def _show_route_readout(self) -> None:
+        """When exactly one route is selected, report its length and the
+        propagation time that length implies at the current effective index
+        (the same n_eff the µm↔fs/ns unit switch uses)."""
+        route_ids = self._selected_route_ids()
+        if len(route_ids) != 1:
+            return
+        route = self.document.routes.get(route_ids[0])
+        if route is None:
+            return
+        length_um = self.route_length_um(route)
+        n_eff = self.view.n_eff
+        time_fs = length_um * n_eff / C0_UM_PER_FS
+        time_str = f"{time_fs / 1000:.3f} ps" if time_fs >= 1000 else f"{time_fs:.1f} fs"
+        msg = f"Route #{route.id}: {length_um:.3f} µm   ·   {time_str}  (n={n_eff:.3f})"
+        if route.goal_length_um:
+            mode = "auto" if route.auto_match and route.meander_amplitude_um is not None else "manual"
+            msg += f"   ·   goal {route.goal_length_um:.3f} µm (Δ {length_um - route.goal_length_um:+.3f}, {mode})"
+        self.statusBar().showMessage(msg, 0)
 
     def _on_properties_transform_applied(self, inst_id: int, x: float, y: float, rotation: float, mirror: bool, mag: float) -> None:
         if inst_id not in self.document.instances:
@@ -552,6 +690,21 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Parameter update failed: {command.error}", 5000)
             return
         self.statusBar().showMessage(f"Updated parameters for instance #{inst_id}", 2000)
+
+    def _on_array_applied(self, inst_id: int, columns: int, rows: int, column_pitch: float, row_pitch: float) -> None:
+        if inst_id not in self.document.instances:
+            return
+        old_array = self.document.instances[inst_id].array
+        new_array = ArraySpec(
+            columns=max(1, columns),
+            rows=max(1, rows),
+            column_pitch=column_pitch,
+            row_pitch=row_pitch,
+        )
+        self.undo_stack.push(SetArrayCommand(self.document, self.scene, inst_id, old_array, new_array))
+        self.statusBar().showMessage(
+            f"Set array {new_array.columns}×{new_array.rows} on instance #{inst_id}", 2000
+        )
 
     def _delete_selected(self) -> None:
         inst_ids = self._selected_instance_ids()
@@ -589,14 +742,14 @@ class MainWindow(QMainWindow):
             self.undo_stack.push(MoveInstanceCommand(self.document, self.scene, inst_id, old_t, new_t))
         self.undo_stack.endMacro()
 
-    def _mirror_selected(self) -> None:
+    def _flip_selected(self, axis: str) -> None:
         ids = self._selected_instance_ids()
         if not ids:
             return
-        self.undo_stack.beginMacro("Mirror")
+        self.undo_stack.beginMacro("Flip Horizontal" if axis == "h" else "Flip Vertical")
         for inst_id in ids:
             old_t = self.document.get_transform(inst_id)
-            new_t = Transform(x=old_t.x, y=old_t.y, rotation=old_t.rotation, mirror=not old_t.mirror, mag=old_t.mag)
+            new_t = flip_transform(old_t, axis)
             self.undo_stack.push(MoveInstanceCommand(self.document, self.scene, inst_id, old_t, new_t))
         self.undo_stack.endMacro()
 
@@ -774,7 +927,8 @@ class MainWindow(QMainWindow):
         construction without calling the blocking QMenu.exec()."""
         menu = QMenu(self)
         menu.addAction(self.rotate_action)
-        menu.addAction(self.mirror_action)
+        menu.addAction(self.flip_h_action)
+        menu.addAction(self.flip_v_action)
         menu.addAction(self.reset_transform_action)
         menu.addAction(self.delete_action)
         menu.addSeparator()

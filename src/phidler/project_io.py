@@ -7,6 +7,7 @@ from pathlib import Path
 from .custom_components import load_custom_components
 from .model.document import LayoutDocument, ProjectSettings
 from .model.layers import LayerInfo
+from .model.placed_instance import ArraySpec
 from .pdk_catalog import ComponentSpec
 
 PROJECT_VERSION = 1
@@ -24,6 +25,7 @@ def save_project(document: LayoutDocument, path: str) -> None:
                 "component_spec": inst.component_spec,
                 "kwargs": inst.kwargs,
                 "transform": asdict(document.get_transform(inst.id)),
+                "array": asdict(inst.array),
             }
             for inst in document.instances.values()
         ],
@@ -35,6 +37,9 @@ def save_project(document: LayoutDocument, path: str) -> None:
                 "instance_id_b": route.instance_id_b,
                 "port_name_b": route.port_name_b,
                 "cross_section": route.cross_section,
+                "goal_length_um": route.goal_length_um,
+                "auto_match": route.auto_match,
+                "meander_amplitude_um": route.meander_amplitude_um,
             }
             for route in document.routes.values()
         ],
@@ -90,6 +95,7 @@ def load_project(path: str, document: LayoutDocument, scene) -> dict[str, Compon
     max_id = 0
     for inst_data in data.get("instances", []):
         t = inst_data["transform"]
+        array_data = inst_data.get("array")  # older saved projects predate arrays
         document.add_instance(
             inst_data["component_spec"],
             inst_data["kwargs"],
@@ -99,6 +105,7 @@ def load_project(path: str, document: LayoutDocument, scene) -> dict[str, Compon
             mirror=t["mirror"],
             mag=t.get("mag", 1.0),  # older saved projects predate the scale feature
             inst_id=inst_data["id"],
+            array=ArraySpec(**array_data) if array_data else None,
         )
         scene.add_instance_item(inst_data["id"])
         max_id = max(max_id, inst_data["id"])
@@ -111,6 +118,9 @@ def load_project(path: str, document: LayoutDocument, scene) -> dict[str, Compon
             route_data["port_name_b"],
             route_data.get("cross_section", "strip"),
             route_id=route_data["id"],
+            goal_length_um=route_data.get("goal_length_um"),
+            auto_match=route_data.get("auto_match", False),
+            meander_amplitude_um=route_data.get("meander_amplitude_um"),  # rebuild same geometry, no re-search
         )
         scene.add_route_item(route_data["id"])
         max_id = max(max_id, route_data["id"])

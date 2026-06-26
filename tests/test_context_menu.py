@@ -71,7 +71,8 @@ def test_build_canvas_context_menu_contains_expected_actions(qapp):
     menu = win._build_canvas_context_menu()
     actions = menu.actions()
     assert win.rotate_action in actions
-    assert win.mirror_action in actions
+    assert win.flip_h_action in actions
+    assert win.flip_v_action in actions
     assert win.delete_action in actions
     assert win.copy_action in actions
     assert win.paste_action in actions

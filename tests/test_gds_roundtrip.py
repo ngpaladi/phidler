@@ -153,3 +153,29 @@ def test_instance_item_mag_transform_matches_klayout(qapp):
         expected = t.trans(kdb.DPoint(x, y))
         assert math.isclose(scene_pt.x(), expected.x, abs_tol=1e-9)
         assert math.isclose(scene_pt.y(), expected.y, abs_tol=1e-9)
+
+
+def test_flip_transform_reflects_across_the_expected_axis():
+    """Flip Horizontal sends x→−x, Flip Vertical sends y→−y, both about the
+    item's own origin and both involutive (flipping twice is a no-op)."""
+    import klayout.db as kdb
+
+    from phidler.model.document import Transform, flip_transform
+
+    def maps_local_to_world(t, lx, ly):
+        cplx = kdb.DCplxTrans(t.mag, t.rotation, t.mirror, t.x, t.y)
+        p = cplx * kdb.DPoint(lx, ly)
+        return (p.x, p.y)
+
+    base = Transform(x=0.0, y=0.0, rotation=0.0, mirror=False)
+    fh_x, fh_y = maps_local_to_world(flip_transform(base, "h"), 3.0, 1.0)
+    fv_x, fv_y = maps_local_to_world(flip_transform(base, "v"), 3.0, 1.0)
+    assert math.isclose(fh_x, -3.0, abs_tol=1e-9) and math.isclose(fh_y, 1.0, abs_tol=1e-9)
+    assert math.isclose(fv_x, 3.0, abs_tol=1e-9) and math.isclose(fv_y, -1.0, abs_tol=1e-9)
+
+    # Involutive even on an already rotated+mirrored placement.
+    rotated = Transform(x=2.0, y=5.0, rotation=90.0, mirror=True, mag=1.5)
+    twice = flip_transform(flip_transform(rotated, "h"), "h")
+    assert math.isclose(twice.rotation % 360, rotated.rotation % 360, abs_tol=1e-9)
+    assert twice.mirror == rotated.mirror
+    assert math.isclose(twice.mag, rotated.mag, abs_tol=1e-9)

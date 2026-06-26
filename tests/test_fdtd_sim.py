@@ -9,6 +9,7 @@ from phidler.fdtd_sim import (
     build_mode_solver,
     build_simulation,
     build_source,
+    effective_clad_thickness_um,
     estimate_grid_cell_count,
     estimate_run_seconds,
     mode_confinement,
@@ -210,6 +211,68 @@ def test_mode_confinement_passes_with_adequate_cladding(qapp):
     check = mode_confinement(result)
     assert check.well_confined is True
     assert check.edge_to_peak_ratio < 0.01
+
+
+def test_effective_clad_thickness_uses_finite_value_unless_infinite():
+    finite = ProjectSettings(clad_thickness_um=2.0, clad_infinite=False)
+    assert effective_clad_thickness_um(finite, wavelength_um=1.55) == 2.0
+
+    infinite = ProjectSettings(clad_thickness_um=2.0, clad_infinite=True)
+    # Ignores the (small) thickness, scales with wavelength, much larger.
+    assert effective_clad_thickness_um(infinite, wavelength_um=1.55) > 2.0
+    assert effective_clad_thickness_um(infinite, wavelength_um=1.55) == pytest.approx(
+        6.0 * 1.55
+    )
+
+
+def test_infinite_cladding_rescues_a_too_thin_setting_in_the_mode_solver(qapp):
+    """A 0.05µm cladding truncates the mode (the too-thin test above), but
+    turning on infinite-cladding mode ignores that thickness and solves on a
+    domain large enough that the same waveguide is well confined."""
+    thin_but_infinite = ProjectSettings(
+        core_index=3.45, clad_index=1.44, thickness_um=0.22, clad_thickness_um=0.05, clad_infinite=True
+    )
+    solver = build_mode_solver(thin_but_infinite, _MODE_PARAMS)
+    result = solve_mode_profile(solver)
+    check = mode_confinement(result, infinite_clad=True)
+    assert check.well_confined is True
+
+
+def test_infinite_cladding_enlarges_the_fdtd_z_extent(qapp):
+    doc_finite = _tiny_document()
+    doc_finite.project_settings.clad_thickness_um = 0.5
+    doc_infinite = _tiny_document()
+    doc_infinite.project_settings.clad_thickness_um = 0.5
+    doc_infinite.project_settings.clad_infinite = True
+
+    sim_finite = build_simulation(doc_finite, _FAST_PARAMS)
+    sim_infinite = build_simulation(doc_infinite, _FAST_PARAMS)
+    assert sim_infinite.grid.size[2] > sim_finite.grid.size[2]
+
+
+def test_infinite_cladding_grid_estimate_grows_too(qapp):
+    doc_finite = _tiny_document()
+    doc_finite.project_settings.clad_thickness_um = 0.5
+    doc_infinite = _tiny_document()
+    doc_infinite.project_settings.clad_thickness_um = 0.5
+    doc_infinite.project_settings.clad_infinite = True
+
+    assert estimate_grid_cell_count(doc_infinite, _FAST_PARAMS) > estimate_grid_cell_count(
+        doc_finite, _FAST_PARAMS
+    )
+
+
+def test_confinement_message_does_not_suggest_thicker_cladding_in_infinite_mode():
+    # A weakly-guided result in infinite mode: not well confined, but the
+    # message must not tell the user to raise a thickness that is ignored.
+    from phidler.fdtd_sim import ConfinementCheck
+
+    infinite = ConfinementCheck(edge_to_peak_ratio=0.2, well_confined=False, infinite_clad=True)
+    assert "increasing cladding thickness" not in infinite.message.lower()
+    assert "weakly guided" in infinite.message.lower()
+
+    finite = ConfinementCheck(edge_to_peak_ratio=0.2, well_confined=False, infinite_clad=False)
+    assert "increasing cladding thickness" in finite.message.lower()
 
 
 def test_mode_solver_is_fast_at_default_resolution(qapp):

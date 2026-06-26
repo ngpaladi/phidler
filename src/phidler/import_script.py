@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .custom_components import load_custom_components
 from .model.document import LayoutDocument, ProjectSettings
+from .model.placed_instance import ArraySpec
 from .pdk_catalog import ComponentSpec
 
 _INST_VAR_RE = re.compile(r"inst_(\d+)")
@@ -147,8 +148,17 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
                 inner = node.value.args[0]
                 component_spec = inner.args[0].value
                 kwargs = {kw.arg: _literal(kw.value, f"{var_name}.{kw.arg}") for kw in inner.keywords}
+                # Array keywords (if any) live on the outer add_ref call, not on
+                # the inner get_component — columns/rows/column_pitch/row_pitch.
+                array_kwargs = {
+                    kw.arg: _literal(kw.value, f"{var_name}.{kw.arg}")
+                    for kw in node.value.keywords
+                    if kw.arg in ("columns", "rows", "column_pitch", "row_pitch")
+                }
                 pending_instances.setdefault(var_name, {})
-                pending_instances[var_name].update(component_spec=component_spec, kwargs=kwargs)
+                pending_instances[var_name].update(
+                    component_spec=component_spec, kwargs=kwargs, array_kwargs=array_kwargs
+                )
                 continue
         if (
             isinstance(node, ast.Assign)
@@ -214,6 +224,7 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
     for var_name, data in pending_instances.items():
         match = _INST_VAR_RE.fullmatch(var_name)
         inst_id = int(match.group(1)) if match else document.next_id()
+        array_kwargs = data.get("array_kwargs") or {}
         document.add_instance(
             data["component_spec"],
             data["kwargs"],
@@ -223,6 +234,7 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
             mirror=data.get("mirror", False),
             mag=data.get("mag", 1.0),
             inst_id=inst_id,
+            array=ArraySpec(**array_kwargs) if array_kwargs else None,
         )
         scene.add_instance_item(inst_id)
         var_to_id[var_name] = inst_id

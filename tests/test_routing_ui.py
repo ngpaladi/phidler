@@ -61,6 +61,34 @@ def test_route_click_through_real_view_nearest_port(qapp):
     assert len(win.document.routes) == 1
 
 
+def test_port_click_tolerance_is_zoom_aware(qapp):
+    """The whole bug: a fixed 0.6µm hit radius is sub-pixel when zoomed out,
+    so port clicks never registered. The tolerance must scale with zoom."""
+    win = MainWindow()
+    win.view.resize(400, 400)
+    win.view.show()
+    a_id, _b_id = _place_two_straights(win)
+
+    # Zoomed out (small scale): a generous scene-space tolerance.
+    win.view.resetTransform()
+    win.view.scale(0.5, 0.5)
+    tol_out = win.view._port_click_tolerance_scene()
+    # Zoomed in: a tight scene-space tolerance (same pixels, finer µm).
+    win.view.resetTransform()
+    win.view.scale(50, 50)
+    tol_in = win.view._port_click_tolerance_scene()
+    assert tol_out > tol_in
+
+    # When zoomed out, a click ~1µm off a's o2 port (10, 0) still finds it —
+    # this is exactly the click the old fixed 0.6µm radius rejected.
+    win.view.resetTransform()
+    win.view.scale(0.5, 0.5)
+    hit = win.view._nearest_port_for_routing(QPointF(11.0, 0.0))
+    assert hit == (a_id, "o2")
+    # A click far from any port returns nothing.
+    assert win.view._nearest_port_for_routing(QPointF(500.0, 500.0)) is None
+
+
 def test_escape_exits_routing_mode_and_unchecks_toolbar_button(qapp):
     win = MainWindow()
     win.view.resize(400, 400)
@@ -209,3 +237,49 @@ def test_clicking_far_from_any_port_does_nothing(qapp):
     item = win.scene.items_by_inst[a_id]
     far_point = item.mapFromScene(QPointF(1000.0, 1000.0))
     assert item.nearest_port(far_point) is None
+
+
+def test_route_length_readout_reports_um_and_propagation_time(qapp):
+    win = MainWindow()
+    a_id, b_id = _place_two_straights(win)
+    win._on_port_clicked(a_id, "o2")
+    win._on_port_clicked(b_id, "o1")
+    route = next(iter(win.document.routes.values()))
+
+    # PlacedRoute.length is in nm; route_length_um converts via the layout dbu.
+    length_um = win.route_length_um(route)
+    assert length_um > 0
+    # A straight-ish ~20-30µm route, not a nm-scale number from forgetting dbu.
+    assert 1.0 < length_um < 1000.0
+
+    # Selecting the route surfaces a status-bar readout with both units.
+    win.scene.route_items[route.id].setSelected(True)
+    win._show_route_readout()
+    msg = win.statusBar().currentMessage()
+    assert "µm" in msg and ("fs" in msg or "ps" in msg)
+
+
+def test_routing_shows_hover_highlight_and_preview_track(qapp):
+    from PySide6.QtCore import QPointF
+
+    win = MainWindow()
+    win.view.resize(400, 400)
+    win.view.show()
+    a_id, b_id = _place_two_straights(win)
+    win.route_action.setChecked(True)
+
+    # Hovering near a's o2 (10,0) highlights that port.
+    snap_pt = win.view._update_hover_port(QPointF(10.0, 0.0))
+    assert snap_pt is not None
+    assert win.view._hover_port_item is not None and win.view._hover_port_item.isVisible()
+
+    # After the first port click, a preview track anchor + line exist.
+    win._on_port_clicked(a_id, "o2")
+    assert win.view._route_anchor is not None
+    win.view._update_route_preview(QPointF(5.0, 5.0))
+    assert win.view._route_preview_item is not None
+
+    # Completing the route clears the preview.
+    win._on_port_clicked(b_id, "o1")
+    assert win.view._route_anchor is None
+    assert win.view._route_preview_item is None

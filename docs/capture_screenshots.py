@@ -272,7 +272,104 @@ def console_session() -> None:
     crop_bottom("console_session", fraction=0.38)
 
 
+def _mzi_window(with_delay: bool = True):
+    """A Mach-Zehnder interferometer: one mmi1x2 splitter, one mmi2x2
+    combiner, two arms. The lower arm is length-matched to a longer target so
+    it picks up a meander delay (used by the tutorial to show goal-length
+    routing)."""
+    win = MainWindow()
+    win.resize(1280, 560)
+    win.show()
+
+    splitter = win.document.add_instance("mmi1x2", {})
+    win.scene.add_instance_item(splitter.id)
+
+    combiner = win.document.add_instance("mmi2x2", {})
+    win.scene.add_instance_item(combiner.id)
+    win.document.set_transform(combiner.id, Transform(x=90.0, y=0.0, rotation=0.0, mirror=False))
+    win.scene.items_by_inst[combiner.id].apply_transform(90.0, 0.0, 0.0, False)
+
+    top = win.document.add_route(splitter.id, "o2", combiner.id, "o2", "strip")
+    win.scene.add_route_item(top.id)
+
+    bottom = win.document.add_route(
+        splitter.id,
+        "o3",
+        combiner.id,
+        "o1",
+        "strip",
+        goal_length_um=140.0 if with_delay else None,
+        auto_match=with_delay,
+    )
+    win.scene.add_route_item(bottom.id)
+
+    win.view.zoom_to_fit()
+    win.view.scale(1.15, 1.15)  # fill the canvas; the meander gives it vertical extent
+    win.scene.clearSelection()
+    return win, splitter, combiner, top, bottom
+
+
+def tutorial_mzi_components() -> None:
+    win = MainWindow()
+    win.resize(1280, 560)
+    win.show()
+    splitter = win.document.add_instance("mmi1x2", {})
+    win.scene.add_instance_item(splitter.id)
+    combiner = win.document.add_instance("mmi2x2", {})
+    win.scene.add_instance_item(combiner.id)
+    win.document.set_transform(combiner.id, Transform(x=90.0, y=0.0, rotation=0.0, mirror=False))
+    win.scene.items_by_inst[combiner.id].apply_transform(90.0, 0.0, 0.0, False)
+    win.view.zoom_to_fit()
+    win.view.scale(1.1, 1.1)
+    win.scene.clearSelection()
+    save(win, "tutorial_mzi_components")
+
+
+def tutorial_mzi_routed() -> None:
+    win, _s, _c, _t, _b = _mzi_window(with_delay=True)
+    save(win, "tutorial_mzi_routed")
+
+
+def tutorial_mzi_delay_readout() -> None:
+    win, _s, _c, _top, bottom = _mzi_window(with_delay=True)
+    win.scene.route_items[bottom.id].setSelected(True)
+    win._show_route_readout()
+    save(win, "tutorial_mzi_delay_readout")
+
+
+def tutorial_routing_feedback() -> None:
+    """The routing hover-highlight + rubber-band preview track after the first
+    port is picked."""
+    from PySide6.QtCore import QPointF
+
+    win = MainWindow()
+    win.resize(1000, 600)
+    win.show()
+    a = win.document.add_instance("mmi1x2", {})
+    win.scene.add_instance_item(a.id)
+    b = win.document.add_instance("bend_euler", {})
+    win.scene.add_instance_item(b.id)
+    win.document.set_transform(b.id, Transform(x=45.0, y=-8.0, rotation=0.0, mirror=False))
+    win.scene.items_by_inst[b.id].apply_transform(45.0, -8.0, 0.0, False)
+    win.view.zoom_to_fit()
+    win.view.scale(0.8, 0.8)
+    win.scene.clearSelection()
+    win.route_action.setChecked(True)
+    # Pick the splitter's o2, then hover near the bend's o1 so both the
+    # highlight and the preview track are showing.
+    win._on_port_clicked(a.id, "o2")
+    o1 = win.view._port_scene_pos(b.id, "o1")
+    win.view._update_hover_port(o1)
+    win.view._update_route_preview(o1)
+    save(win, "tutorial_routing_feedback")
+    win.route_action.setChecked(False)
+
+
 if __name__ == "__main__":
+    tutorial_mzi_components()
+    tutorial_mzi_routed()
+    tutorial_mzi_delay_readout()
+    tutorial_routing_feedback()
     main_overview()
     palette_with_hover_preview()
     transform_overlay()

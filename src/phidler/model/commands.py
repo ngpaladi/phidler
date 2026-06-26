@@ -5,6 +5,7 @@ from typing import Any
 from PySide6.QtGui import QUndoCommand
 
 from .document import LayoutDocument, Transform
+from .placed_instance import ArraySpec
 
 
 class AddInstanceCommand(QUndoCommand):
@@ -156,6 +157,38 @@ class EditParamsCommand(QUndoCommand):
         self.scene.resync_geometry(self.inst_id)
 
 
+class SetArrayCommand(QUndoCommand):
+    """Turn an instance into (or out of) a rectangular array. resync_geometry
+    re-pulls the now-tiled polygons, so the canvas updates the same way a
+    parameter edit does."""
+
+    def __init__(
+        self,
+        document: LayoutDocument,
+        scene,
+        inst_id: int,
+        old_array: ArraySpec,
+        new_array: ArraySpec,
+        text: str | None = None,
+    ) -> None:
+        super().__init__(text or "Edit array")
+        self.document = document
+        self.scene = scene
+        self.inst_id = inst_id
+        self.old_array = old_array
+        self.new_array = new_array
+
+    def redo(self) -> None:
+        self._apply(self.new_array)
+
+    def undo(self) -> None:
+        self._apply(self.old_array)
+
+    def _apply(self, array: ArraySpec) -> None:
+        self.document.set_array(self.inst_id, array)
+        self.scene.resync_geometry(self.inst_id)
+
+
 class AddRouteCommand(QUndoCommand):
     """Routing is deterministic given the same ports/cross_section, so redo
     after an undo just re-runs add_route rather than trying to restore the
@@ -171,6 +204,8 @@ class AddRouteCommand(QUndoCommand):
         inst_b_id: int,
         port_b: str,
         cross_section: str = "strip",
+        goal_length_um: float | None = None,
+        auto_match: bool = False,
         text: str | None = None,
     ) -> None:
         super().__init__(text or "Add route")
@@ -181,6 +216,9 @@ class AddRouteCommand(QUndoCommand):
         self.inst_b_id = inst_b_id
         self.port_b = port_b
         self.cross_section = cross_section
+        self.goal_length_um = goal_length_um
+        self.auto_match = auto_match
+        self._meander_amplitude_um: float | None = None  # captured so redo rebuilds the same geometry
         self.route_id: int | None = None
         self.error: Exception | None = None
 
@@ -193,12 +231,21 @@ class AddRouteCommand(QUndoCommand):
         self.error = None
         try:
             route = self.document.add_route(
-                self.inst_a_id, self.port_a, self.inst_b_id, self.port_b, self.cross_section, route_id=self.route_id
+                self.inst_a_id,
+                self.port_a,
+                self.inst_b_id,
+                self.port_b,
+                self.cross_section,
+                route_id=self.route_id,
+                goal_length_um=self.goal_length_um,
+                auto_match=self.auto_match,
+                meander_amplitude_um=self._meander_amplitude_um,
             )
         except Exception as exc:  # surfaced to the caller via .error, not re-raised (see note above)
             self.error = exc
             return
         self.route_id = route.id
+        self._meander_amplitude_um = route.meander_amplitude_um  # reuse on the next redo for determinism
         self.scene.add_route_item(self.route_id)
 
     def undo(self) -> None:

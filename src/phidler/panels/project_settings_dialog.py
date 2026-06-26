@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -61,7 +62,7 @@ class ProjectSettingsDialog(QDialog):
         form.addRow("Core thickness", self.thickness_spin)
 
         self.clad_thickness_spin = QDoubleSpinBox()
-        self.clad_thickness_spin.setRange(0.001, 100.0)
+        self.clad_thickness_spin.setRange(0.001, 10_000.0)
         self.clad_thickness_spin.setDecimals(3)
         self.clad_thickness_spin.setSuffix(" µm")
         self.clad_thickness_spin.setValue(initial.clad_thickness_um)
@@ -69,9 +70,23 @@ class ProjectSettingsDialog(QDialog):
             "A generic default, not sourced from any specific foundry process. "
             "Doesn't affect the suggested-width estimate above (which assumes "
             "semi-infinite cladding) — it's the vertical simulation domain extent "
-            "used by FDTD Simulation's mode solver and propagation runs."
+            "used by FDTD Simulation's mode solver and propagation runs, unless "
+            "'Assume infinite cladding depth' is checked below."
         )
         form.addRow("Cladding thickness", self.clad_thickness_spin)
+
+        self.clad_infinite_check = QCheckBox("Assume infinite cladding depth")
+        self.clad_infinite_check.setChecked(initial.clad_infinite)
+        self.clad_infinite_check.setToolTip(
+            "Ignore the cladding thickness above and use an effectively "
+            "semi-infinite cladding for the FDTD mode solver and propagation "
+            "runs, so the guided mode decays fully before reaching the domain "
+            "boundary. Costs more vertical grid; use it to check confinement "
+            "without picking a specific cladding thickness."
+        )
+        self.clad_infinite_check.toggled.connect(self._on_clad_infinite_toggled)
+        form.addRow("", self.clad_infinite_check)
+        self._on_clad_infinite_toggled(self.clad_infinite_check.isChecked())
 
         self.wavelength_spin = QDoubleSpinBox()
         self.wavelength_spin.setRange(0.1, 20.0)
@@ -126,6 +141,11 @@ class ProjectSettingsDialog(QDialog):
             f"~{suggested * 1000:.0f} nm (single-mode cutoff ~{cutoff * 1000:.0f} nm) — see note below"
         )
 
+    def _on_clad_infinite_toggled(self, checked: bool) -> None:
+        # The thickness value is ignored while infinite mode is on — grey it
+        # out so that's visible rather than silently overridden.
+        self.clad_thickness_spin.setEnabled(not checked)
+
     def result_settings(self) -> ProjectSettings:
         return ProjectSettings(
             platform_name=self.platform_combo.currentText(),
@@ -133,6 +153,7 @@ class ProjectSettingsDialog(QDialog):
             clad_index=self.clad_index_spin.value(),
             thickness_um=self.thickness_spin.value(),
             clad_thickness_um=self.clad_thickness_spin.value(),
+            clad_infinite=self.clad_infinite_check.isChecked(),
             wavelength_um=self.wavelength_spin.value(),
             cross_section=self.cross_section_combo.currentText(),
         )

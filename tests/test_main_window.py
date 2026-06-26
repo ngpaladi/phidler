@@ -14,23 +14,23 @@ def test_place_select_rotate_mirror_through_main_window(qapp):
     t = win.document.get_transform(inst_id)
     assert math.isclose(t.rotation, 90.0)
 
-    win._mirror_selected()
+    win._flip_selected("v")
     t = win.document.get_transform(inst_id)
-    assert t.mirror is True
+    assert (t.rotation, t.mirror) != (90.0, False)  # the flip changed the orientation
 
-    win.undo_stack.undo()  # undo mirror
+    win.undo_stack.undo()  # undo flip
     win.undo_stack.undo()  # undo rotate
     t = win.document.get_transform(inst_id)
     assert math.isclose(t.rotation, 0.0)
     assert t.mirror is False
 
 
-def test_rotate_and_mirror_preserve_scale(qapp):
-    """Transform.mag defaults to 1.0, so _rotate_selected/_mirror_selected
-    constructing a new Transform without explicitly copying mag=old_t.mag
-    would silently reset any applied scale back to 100% on every rotate or
-    mirror — exactly the kind of "new dataclass field, old code that
-    doesn't know about it" bug this test exists to catch."""
+def test_rotate_and_flip_preserve_scale(qapp):
+    """Transform.mag defaults to 1.0, so _rotate_selected/_flip_selected
+    constructing a new Transform without explicitly copying mag would silently
+    reset any applied scale back to 100% on every rotate or flip — exactly the
+    kind of "new dataclass field, old code that doesn't know about it" bug this
+    test exists to catch."""
     from phidler.model.document import Transform
 
     win = MainWindow()
@@ -43,7 +43,10 @@ def test_rotate_and_mirror_preserve_scale(qapp):
     win._rotate_selected()
     assert math.isclose(win.document.get_transform(inst_id).mag, 2.0)
 
-    win._mirror_selected()
+    win._flip_selected("h")
+    assert math.isclose(win.document.get_transform(inst_id).mag, 2.0)
+
+    win._flip_selected("v")
     assert math.isclose(win.document.get_transform(inst_id).mag, 2.0)
 
 

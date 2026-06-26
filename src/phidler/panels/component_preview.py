@@ -26,6 +26,20 @@ def render_component_pixmap(name: str) -> QPixmap | None:
     return _cache[name]
 
 
+def has_cached_pixmap(name: str) -> bool:
+    """Whether render_component_pixmap(name) would return without doing the
+    expensive gdsfactory polygon extraction + raster. Lets callers fill an
+    already-rendered thumbnail synchronously while deferring the rest."""
+    return name in _cache
+
+
+def cached_pixmap(name: str) -> QPixmap | None:
+    """The cached pixmap for name, or None if it isn't cached yet *or* was
+    cached as empty (no geometry). Pair with has_cached_pixmap to tell the
+    two apart. Never triggers a render."""
+    return _cache.get(name)
+
+
 def _build_pixmap(name: str) -> QPixmap | None:
     try:
         cell = gf.get_component(name)

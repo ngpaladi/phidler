@@ -60,7 +60,14 @@ def export_python_script(document: LayoutDocument, path: str) -> str:
             kwargs_str = ", ".join(f"{key}={value!r}" for key, value in inst.kwargs.items())
             call = f"gf.get_component({inst.component_spec!r}" + (f", {kwargs_str}" if kwargs_str else "") + ")"
             transform = document.get_transform(inst.id)
-            lines.append(f"{var_name} = top.add_ref({call})")
+            array = inst.array
+            array_str = (
+                f", columns={array.columns!r}, rows={array.rows!r}, "
+                f"column_pitch={array.column_pitch!r}, row_pitch={array.row_pitch!r}"
+                if array.is_array
+                else ""
+            )
+            lines.append(f"{var_name} = top.add_ref({call}{array_str})")
             lines.append(
                 f"{var_name}.dcplx_trans = kdb.DCplxTrans("
                 f"{transform.mag!r}, {transform.rotation!r}, {transform.mirror!r}, {transform.x!r}, {transform.y!r})"

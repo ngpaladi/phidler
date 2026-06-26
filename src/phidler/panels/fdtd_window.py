@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from phidler.canvas.view import C0_UM_PER_FS, UNIT_MODES, LayoutView, nice_ticks
+from phidler.canvas.view import C0_UM_PER_FS, C0_UM_PER_NS, UNIT_MODES, LayoutView, nice_ticks
 from phidler.fdtd_sim import (
     DISCLAIMER,
     FdtdParams,
@@ -140,6 +140,7 @@ def _fs_to_slider(fs: float) -> int:
 # ---------------------------------------------------------------------------
 
 _C0_UM_PER_FS = C0_UM_PER_FS
+_C0_UM_PER_NS = C0_UM_PER_NS
 _UNIT_MODES = UNIT_MODES
 _nice_ticks = nice_ticks
 
@@ -200,8 +201,8 @@ class FieldView(QGraphicsView):
 
         self._pix_item = None                     # QGraphicsPixmapItem | None
         self._overlay_items: list = []
-        self._unit_mode: str = "um"               # "um" | "fs"
-        self._n_eff: float = 1.0                  # phase index for µm→fs conversion
+        self._unit_mode: str = "um"               # "um" | "nm" | "fs" | "ns"
+        self._n_eff: float = 1.0                  # phase index for µm→time conversion
 
         # Placeholder label parented to the viewport widget so it sits inside
         # the scene area rather than over the frame/scrollbars.
@@ -225,32 +226,47 @@ class FieldView(QGraphicsView):
     # -- coordinate units ------------------------------------------------------
 
     def set_unit_mode(self, mode: str) -> None:
-        """Switch axis display units: 'um' (spatial) or 'fs' (time of flight)."""
+        """Switch axis display units: 'um', 'nm', 'fs', or 'ns'."""
         self._unit_mode = mode
         self.viewport().update()
 
     def set_n_eff(self, n: float) -> None:
-        """Set the effective phase index used for µm→fs propagation-time conversion."""
+        """Set the effective phase index used for µm→time propagation-time conversion."""
         self._n_eff = max(n, 1e-6)
-        if self._unit_mode == "fs":
+        if self._unit_mode in ("fs", "ns"):
             self.viewport().update()
 
     def _to_display(self, um: float) -> float:
         """Convert a scene µm coordinate to the current display unit.
 
-        Uses the waveguide effective index so that t = x · n_eff / c₀,
-        i.e. the time it takes a phase front to travel x µm in the medium.
+        Time modes use t = x · n_eff / c₀ (phase propagation through the core).
         """
-        return um * self._n_eff / _C0_UM_PER_FS if self._unit_mode == "fs" else um
+        if self._unit_mode == "nm":
+            return um * 1000.0
+        if self._unit_mode == "fs":
+            return um * self._n_eff / _C0_UM_PER_FS
+        if self._unit_mode == "ns":
+            return um * self._n_eff / _C0_UM_PER_NS
+        return um
 
     def _unit_str(self) -> str:
+        if self._unit_mode == "nm":
+            return "nm"
         if self._unit_mode == "fs":
             return f"fs  (n = {self._n_eff:.3f})"
+        if self._unit_mode == "ns":
+            return f"ns  (n = {self._n_eff:.3f})"
         return "µm"
 
     def _to_scene(self, display_val: float) -> float:
         """Inverse of _to_display: display unit value → scene µm."""
-        return display_val * _C0_UM_PER_FS / self._n_eff if self._unit_mode == "fs" else display_val
+        if self._unit_mode == "nm":
+            return display_val / 1000.0
+        if self._unit_mode == "fs":
+            return display_val * _C0_UM_PER_FS / self._n_eff
+        if self._unit_mode == "ns":
+            return display_val * _C0_UM_PER_NS / self._n_eff
+        return display_val
 
     # -- grid + axis labels ----------------------------------------------------
 
@@ -650,7 +666,7 @@ class FdtdWindow(QMainWindow):
 
     def _on_mode_finished(self, result, elapsed: float) -> None:
         self.mode_solve_button.setEnabled(True)
-        check = mode_confinement(result)
+        check = mode_confinement(result, infinite_clad=self.document.project_settings.clad_infinite)
         n_eff = float(result.n_eff[0])
         self.mode_status_label.setText(
             f"n_eff = {n_eff:.4f}   ({elapsed:.2f} s)\n{check.message}"
@@ -731,9 +747,13 @@ class FdtdWindow(QMainWindow):
         self.run_clad_row = _CladRow(default_n=self.document.project_settings.clad_index)
         form.addRow("Cladding material", self.run_clad_row)
 
-        self.run_clad_thickness_label = QLabel(
-            f"{self.document.project_settings.clad_thickness_um:.3f} µm (Project Settings)"
-        )
+        if self.document.project_settings.clad_infinite:
+            clad_thickness_text = "infinite (Project Settings)"
+        else:
+            clad_thickness_text = (
+                f"{self.document.project_settings.clad_thickness_um:.3f} µm (Project Settings)"
+            )
+        self.run_clad_thickness_label = QLabel(clad_thickness_text)
         form.addRow("Cladding thickness", self.run_clad_thickness_label)
 
         self.run_units_combo = QComboBox()

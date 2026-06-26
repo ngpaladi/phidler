@@ -149,11 +149,21 @@ class ModeProfileParams:
 class ConfinementCheck:
     edge_to_peak_ratio: float
     well_confined: bool  # True if edge_to_peak_ratio is small (mode hasn't hit the domain boundary)
+    infinite_clad: bool = False  # solved with the "assume infinite cladding depth" extent
 
     @property
     def message(self) -> str:
         if self.well_confined:
             return f"Well confined (edge/peak amplitude {self.edge_to_peak_ratio:.1%})"
+        if self.infinite_clad:
+            # The thickness control is ignored in infinite mode, so don't tell
+            # the user to raise it — a leftover edge amplitude here means the
+            # mode is weakly guided (n_eff near the cladding index), not thin.
+            return (
+                f"Mode is weakly guided — non-trivial amplitude remains at the "
+                f"domain edge (edge/peak {self.edge_to_peak_ratio:.1%}) even with "
+                "infinite cladding depth."
+            )
         return (
             f"Cladding may be too thin — mode is truncated at the domain "
             f"edge (edge/peak amplitude {self.edge_to_peak_ratio:.1%}). "
@@ -162,6 +172,24 @@ class ConfinementCheck:
 
 
 _CONFINEMENT_WELL_CONFINED_THRESHOLD = 0.01
+
+# When ProjectSettings.clad_infinite is set, the cladding extent is replaced by
+# this many wavelengths on each side of the core. Six wavelengths is enough for
+# a guided mode's evanescent tail to decay to a negligible amplitude for the
+# index contrasts this app's platforms span (Si, SiN, LN, LT), so the finite
+# domain behaves as semi-infinite without an unbounded z-grid.
+_INFINITE_CLAD_WAVELENGTHS = 6.0
+
+
+def effective_clad_thickness_um(settings: ProjectSettings, wavelength_um: float) -> float:
+    """Cladding half-extent (each side of the core) the solver/sim should use.
+
+    Normally the project's chosen clad_thickness_um. When clad_infinite is set,
+    a wavelength-scaled extent large enough that the mode no longer interacts
+    with the domain boundary — the "assume infinite cladding depth" mode."""
+    if settings.clad_infinite:
+        return _INFINITE_CLAD_WAVELENGTHS * wavelength_um
+    return settings.clad_thickness_um
 
 
 def _layout_bbox_um(document: LayoutDocument):
@@ -184,7 +212,8 @@ def estimate_grid_cell_count(document: LayoutDocument, params: FdtdParams = Fdtd
     padding_m = params.padding_um * 1e-6
     x_extent = (bbox.right - bbox.left) * 1e-6 + 2 * padding_m
     y_extent = (bbox.top - bbox.bottom) * 1e-6 + 2 * padding_m
-    z_extent = settings.thickness_um * 1e-6 + 2 * settings.clad_thickness_um * 1e-6 + 2 * padding_m
+    clad_thickness_um = effective_clad_thickness_um(settings, params.wavelength_um)
+    z_extent = settings.thickness_um * 1e-6 + 2 * clad_thickness_um * 1e-6 + 2 * padding_m
     grid = pf.Grid(size=(x_extent, y_extent, z_extent), cell_size=cell_size_m, pml_layers=(12, 12, 12))
     return int(grid.shape[0]) * int(grid.shape[1]) * int(grid.shape[2])
 
@@ -214,7 +243,7 @@ def build_mode_solver(settings: ProjectSettings, params: ModeProfileParams = Mod
     clad = pf.Medium.from_index(clad_n, name="cladding")
 
     thickness_m = settings.thickness_um * 1e-6
-    clad_thickness_m = settings.clad_thickness_um * 1e-6
+    clad_thickness_m = effective_clad_thickness_um(settings, params.wavelength_um) * 1e-6
     wavelength_m = params.wavelength_um * 1e-6
     cell_size_m = params.cell_size_um * 1e-6
 
@@ -240,7 +269,7 @@ def solve_mode_profile(solver: Any) -> Any:
     return solver.solve()
 
 
-def mode_confinement(result: Any, mode_index: int = 0) -> ConfinementCheck:
+def mode_confinement(result: Any, mode_index: int = 0, infinite_clad: bool = False) -> ConfinementCheck:
     """How close the chosen mode's amplitude gets to the solve domain's
     zero-amplitude boundary — a too-thin cladding forces the mode to decay
     to zero before it naturally would, which shows up as a non-trivial
@@ -251,7 +280,11 @@ def mode_confinement(result: Any, mode_index: int = 0) -> ConfinementCheck:
     edge_amp = max(float(abs(psi[:, 0]).max()), float(abs(psi[:, -1]).max()))
     peak_amp = float(abs(psi).max())
     ratio = edge_amp / peak_amp if peak_amp > 0 else 0.0
-    return ConfinementCheck(edge_to_peak_ratio=ratio, well_confined=ratio < _CONFINEMENT_WELL_CONFINED_THRESHOLD)
+    return ConfinementCheck(
+        edge_to_peak_ratio=ratio,
+        well_confined=ratio < _CONFINEMENT_WELL_CONFINED_THRESHOLD,
+        infinite_clad=infinite_clad,
+    )
 
 
 def build_source(settings: ProjectSettings, spec: SourceSpec) -> Any:
@@ -378,7 +411,7 @@ def build_simulation(document: LayoutDocument, params: FdtdParams = FdtdParams()
     clad_n = params.clad_index if params.clad_index is not None else settings.clad_index
     clad = pf.Medium.from_index(clad_n, name="cladding")
     thickness_m = settings.thickness_um * 1e-6
-    clad_thickness_m = settings.clad_thickness_um * 1e-6
+    clad_thickness_m = effective_clad_thickness_um(settings, params.wavelength_um) * 1e-6
     cell_size_m = params.resolved_cell_size_um() * 1e-6
     padding_m = params.padding_um * 1e-6
 

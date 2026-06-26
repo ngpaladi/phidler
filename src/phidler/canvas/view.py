@@ -19,14 +19,21 @@ from .scene import LayoutScene
 _MIN_SCALE = 0.01
 _MAX_SCALE = 2000.0
 _PORT_SNAP_THRESHOLD_UM = 2.0  # micron-space, independent of zoom level
+# Routing/measure port-click tolerance in *screen pixels*, converted to scene
+# units against the live zoom — a fixed micron radius is sub-pixel when zoomed
+# out, which made port clicks essentially impossible to land.
+_PORT_CLICK_PX = 16.0
 
-# Speed of light in vacuum [µm/fs] — used for spatial↔propagation-time conversion.
-C0_UM_PER_FS: float = 0.299_792_458
+# Speed of light in vacuum — used for spatial↔propagation-time conversion.
+C0_UM_PER_FS: float = 0.299_792_458        # µm/fs
+C0_UM_PER_NS: float = C0_UM_PER_FS * 1e6  # µm/ns  (≈ 299 792 µm/ns)
 
 # Available display-unit modes shared by LayoutView and FieldView.
 UNIT_MODES: list[tuple[str, str]] = [
     ("µm  (spatial)", "um"),
-    ("fs  (propagation time in vacuum)", "fs"),
+    ("nm  (spatial)", "nm"),
+    ("fs  (propagation time)", "fs"),
+    ("ns  (propagation time)", "ns"),
 ]
 
 
@@ -83,8 +90,8 @@ class LayoutView(QGraphicsView):
         self.undo_stack = undo_stack
         self.grid_pitch = 1.0  # microns
         self.snap_enabled = True
-        self._unit_mode: str = "um"   # "um" | "fs"
-        self._n_eff: float = 1.0      # phase index for µm↔fs conversion
+        self._unit_mode: str = "um"   # "um" | "nm" | "fs" | "ns"
+        self._n_eff: float = 1.0      # phase index for µm↔time conversion
         self._panning = False
         self._pan_last_pos = QPointF()
         self._drag_start_transforms: dict[int, Transform] = {}
@@ -94,6 +101,11 @@ class LayoutView(QGraphicsView):
         self._measure_items: list = []  # current annotation's QGraphicsItems
         self.source_mode = False
         self._source_markers: list = []  # accumulates across clicks, unlike measure mode
+        # Routing feedback: a highlight over the port the cursor would snap to,
+        # and a rubber-band track from the first picked port to the cursor.
+        self._route_anchor: QPointF | None = None
+        self._hover_port_item: QGraphicsEllipseItem | None = None
+        self._route_preview_item: QGraphicsLineItem | None = None
 
     # -- placement mode ---------------------------------------------------
 
@@ -113,7 +125,70 @@ class LayoutView(QGraphicsView):
             self.set_source_mode(False)
         self.scene().routing_mode = enabled
         self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
+        if not enabled:
+            self.set_route_anchor(None)
+            self._clear_hover_port()
         self.routing_mode_changed.emit(enabled)
+
+    # -- routing visual feedback ------------------------------------------
+
+    def set_route_anchor(self, scene_pt: QPointF | None) -> None:
+        """Set (or clear) the first-picked port position. While set, a preview
+        track is drawn from it to the cursor; cleared when the route completes
+        or routing mode exits."""
+        self._route_anchor = scene_pt
+        if scene_pt is None and self._route_preview_item is not None:
+            self.scene().removeItem(self._route_preview_item)
+            self._route_preview_item = None
+
+    def _update_hover_port(self, scene_pt: QPointF) -> QPointF | None:
+        """Highlight the port the cursor would snap to (if any) and return its
+        scene position so the preview track can lock onto it too."""
+        hit = self._nearest_port_for_routing(scene_pt)
+        if hit is None:
+            self._clear_hover_port()
+            return None
+        inst_id, name = hit
+        port_pt = self._port_scene_pos(inst_id, name)
+        if port_pt is None:
+            self._clear_hover_port()
+            return None
+        if self._hover_port_item is None:
+            r = 7.0
+            item = QGraphicsEllipseItem(-r, -r, 2 * r, 2 * r)
+            item.setPen(QPen(QColor("#00e0ff"), 2))
+            item.setBrush(QColor(0, 224, 255, 70))
+            item.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)  # constant on-screen size
+            item.setZValue(2500.0)
+            self.scene().addItem(item)
+            self._hover_port_item = item
+        self._hover_port_item.setVisible(True)
+        self._hover_port_item.setPos(port_pt)
+        return port_pt
+
+    def _clear_hover_port(self) -> None:
+        if self._hover_port_item is not None:
+            self._hover_port_item.setVisible(False)
+
+    def _port_scene_pos(self, inst_id: int, name: str) -> QPointF | None:
+        item = self.scene().items_by_inst.get(inst_id)
+        if item is None:
+            return None
+        for port_name, x, y in item._ports:
+            if port_name == name:
+                return item.mapToScene(QPointF(x, y))
+        return None
+
+    def _update_route_preview(self, end_pt: QPointF) -> None:
+        if self._route_anchor is None:
+            return
+        if self._route_preview_item is None:
+            line = QGraphicsLineItem()
+            line.setPen(QPen(QColor("#00e0ff"), 0, Qt.DashLine))
+            line.setZValue(2400.0)
+            self.scene().addItem(line)
+            self._route_preview_item = line
+        self._route_preview_item.setLine(self._route_anchor.x(), self._route_anchor.y(), end_pt.x(), end_pt.y())
 
     # -- measure mode -------------------------------------------------------
 
@@ -195,6 +270,28 @@ class LayoutView(QGraphicsView):
                 if name == port_name:
                     return item.mapToScene(QPointF(x, y))
         return None
+
+    def _port_click_tolerance_scene(self) -> float:
+        """The port-click radius in scene µm for the current zoom — a fixed
+        pixel target divided by the view's scale, so it stays grab-able at
+        every zoom level."""
+        return _PORT_CLICK_PX / max(abs(self.transform().m11()), 1e-9)
+
+    def _nearest_port_for_routing(self, scene_pt: QPointF) -> tuple[int, str] | None:
+        """The (inst_id, port_name) of the port nearest scene_pt within the
+        zoom-aware click tolerance, or None. Drives routing-mode clicks at the
+        view level so they don't depend on hitting a thin item's exact shape."""
+        tol = self._port_click_tolerance_scene()
+        best: tuple[int, str] | None = None
+        best_dist2 = tol * tol
+        for inst_id, item in self.scene().items_by_inst.items():
+            for name, x, y in item._ports:
+                sp = item.mapToScene(QPointF(x, y))
+                dist2 = (sp.x() - scene_pt.x()) ** 2 + (sp.y() - scene_pt.y()) ** 2
+                if dist2 <= best_dist2:
+                    best_dist2 = dist2
+                    best = (inst_id, name)
+        return best
 
     def _handle_measure_click(self, viewport_pos: QPoint) -> None:
         raw_scene_pt = self.mapToScene(viewport_pos)
@@ -290,6 +387,17 @@ class LayoutView(QGraphicsView):
             self._handle_source_click(event.position().toPoint())
             event.accept()
             return
+        if self.scene().routing_mode and event.button() == Qt.LeftButton:
+            # Handle routing clicks here, zoom-aware, rather than relying on a
+            # click landing on an instance item's thin geometry within a fixed
+            # micron radius (impossible when zoomed out). Always accept so a
+            # near-miss doesn't fall through to selection/drag.
+            scene_pt = self.mapToScene(event.position().toPoint())
+            hit = self._nearest_port_for_routing(scene_pt)
+            if hit is not None:
+                self.scene().port_clicked.emit(*hit)
+            event.accept()
+            return
         super().mousePressEvent(event)
         self._drag_start_transforms = {
             item.inst_id: self.scene().document.get_transform(item.inst_id) for item in self.scene().selectedItems()
@@ -305,7 +413,20 @@ class LayoutView(QGraphicsView):
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(delta.y()))
             event.accept()
             return
+        if self.scene().routing_mode:
+            scene_pt = self.mapToScene(QPoint(int(pos.x()), int(pos.y())))
+            snap_pt = self._update_hover_port(scene_pt)
+            self._update_route_preview(snap_pt or scene_pt)
+            super().mouseMoveEvent(event)
+            return
         super().mouseMoveEvent(event)
+        # Live snap: re-apply the same port/grid snap the drop uses, every move,
+        # so the selection visibly snaps mid-drag instead of jumping on release.
+        # Qt anchors each item to its button-down position + total mouse delta,
+        # not to the snapped pos we set here, so re-snapping every frame is
+        # stable and doesn't drift.
+        if self._drag_start_transforms and (event.buttons() & Qt.LeftButton):
+            self._snap_dragged_items()
 
     def report_cursor_position(self, viewport_pos: QPoint) -> None:
         """Pure coordinate transform, split out from mouseMoveEvent so it
@@ -327,27 +448,7 @@ class LayoutView(QGraphicsView):
         super().mouseReleaseEvent(event)
         scene = self.scene()
 
-        if self.snap_enabled:
-            dirty_ids = scene.dirty_instance_ids()
-            offset = self._find_port_snap_offset(dirty_ids)
-            if offset is not None:
-                # Port-to-port match found: shift every dragged item by the
-                # same offset (preserving their arrangement relative to each
-                # other in a multi-select drag) so the matched ports align
-                # exactly, instead of independently grid-snapping each one
-                # (which could round away from that alignment).
-                dx, dy = offset
-                for inst_id in dirty_ids:
-                    item = scene.items_by_inst.get(inst_id)
-                    if item is not None:
-                        pos = item.pos()
-                        item.setPos(pos.x() + dx, pos.y() + dy)
-            else:
-                for inst_id in dirty_ids:
-                    item = scene.items_by_inst.get(inst_id)
-                    if item is not None:
-                        pos = item.pos()
-                        item.setPos(self.snap(pos.x()), self.snap(pos.y()))
+        self._snap_dragged_items()
 
         committed = scene.commit_dirty_transforms()
         if committed:
@@ -366,6 +467,32 @@ class LayoutView(QGraphicsView):
                         self.undo_stack.push(MoveInstanceCommand(scene.document, scene, inst_id, old_t, new_t))
             self._drag_start_transforms = {}
             self.instances_moved.emit(committed)
+
+    def _snap_dragged_items(self) -> None:
+        """Snap the currently-dragged items: align to a nearby port if one is
+        within range (shifting the whole drag group by one offset so their
+        relative arrangement is preserved), else grid-snap each. Used both
+        live during a drag and on release."""
+        if not self.snap_enabled:
+            return
+        scene = self.scene()
+        dirty_ids = scene.dirty_instance_ids()
+        if not dirty_ids:
+            return
+        offset = self._find_port_snap_offset(dirty_ids)
+        if offset is not None:
+            dx, dy = offset
+            for inst_id in dirty_ids:
+                item = scene.items_by_inst.get(inst_id)
+                if item is not None:
+                    pos = item.pos()
+                    item.setPos(pos.x() + dx, pos.y() + dy)
+        else:
+            for inst_id in dirty_ids:
+                item = scene.items_by_inst.get(inst_id)
+                if item is not None:
+                    pos = item.pos()
+                    item.setPos(self.snap(pos.x()), self.snap(pos.y()))
 
     def _find_port_snap_offset(self, dragged_ids: list[int]) -> tuple[float, float] | None:
         """Finds the closest (dragged port, other instance's port) pair
@@ -447,28 +574,50 @@ class LayoutView(QGraphicsView):
     # -- coordinate unit helpers ------------------------------------------
 
     def set_unit_mode(self, mode: str) -> None:
-        """Switch axis labels between 'um' (spatial) and 'fs' (propagation time)."""
+        """Switch axis labels between 'um', 'nm', 'fs', or 'ns'."""
         self._unit_mode = mode
         self.viewport().update()
 
     def set_n_eff(self, n: float) -> None:
-        """Update the effective phase index used for µm↔fs conversion."""
+        """Update the effective phase index used for µm↔time conversion."""
         self._n_eff = max(n, 1e-6)
-        if self._unit_mode == "fs":
+        if self._unit_mode in ("fs", "ns"):
             self.viewport().update()
+
+    @property
+    def n_eff(self) -> float:
+        """The effective phase index currently driving propagation-time display
+        (seeded from the core index, updated by the last FDTD mode solve)."""
+        return self._n_eff
 
     def um_to_display(self, um: float) -> float:
         """Convert a µm scene coordinate to the current display unit value."""
-        return um * self._n_eff / C0_UM_PER_FS if self._unit_mode == "fs" else um
+        if self._unit_mode == "nm":
+            return um * 1000.0
+        if self._unit_mode == "fs":
+            return um * self._n_eff / C0_UM_PER_FS
+        if self._unit_mode == "ns":
+            return um * self._n_eff / C0_UM_PER_NS
+        return um
 
     def display_to_um(self, val: float) -> float:
         """Inverse: display unit value → µm scene coordinate."""
-        return val * C0_UM_PER_FS / self._n_eff if self._unit_mode == "fs" else val
+        if self._unit_mode == "nm":
+            return val / 1000.0
+        if self._unit_mode == "fs":
+            return val * C0_UM_PER_FS / self._n_eff
+        if self._unit_mode == "ns":
+            return val * C0_UM_PER_NS / self._n_eff
+        return val
 
     def unit_str(self) -> str:
         """Short label for the current display unit, including n_eff when relevant."""
+        if self._unit_mode == "nm":
+            return "nm"
         if self._unit_mode == "fs":
             return f"fs (n={self._n_eff:.3f})"
+        if self._unit_mode == "ns":
+            return f"ns (n={self._n_eff:.3f})"
         return "µm"
 
     # -- grid + foreground labels -----------------------------------------

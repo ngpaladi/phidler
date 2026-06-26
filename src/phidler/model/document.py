@@ -7,11 +7,24 @@ import gdsfactory as gf
 import klayout.db as kdb
 
 from .layers import LayerInfo, LayerKey, layer_info_for
-from .placed_instance import PlacedInstance, PlacedRoute
+from .placed_instance import ArraySpec, PlacedInstance, PlacedRoute
 
 Point = tuple[float, float]
 Shape = tuple[list[Point], list[list[Point]]]  # (hull points, [hole points, ...])
 ShapesByLayer = dict[LayerKey, list[Shape]]
+
+# Process-global so array-wrapper cell names never collide across documents
+# (tests build many documents in one process); a fresh name per wrapper also
+# avoids gdsfactory's name-conflict warning when two arrays differ only by
+# pitch/counts.
+_array_wrapper_counter = itertools.count()
+
+# Automatic length-matching meander bounds (µm). The minimum is bend-radius
+# limited — smaller bumps fail to close with euler bends; the search treats
+# anything below it as unrealizable. Tolerance is the convergence target.
+_MEANDER_MIN_AMPLITUDE_UM = 5.0
+_MEANDER_MAX_AMPLITUDE_UM = 5000.0
+_MEANDER_TOLERANCE_UM = 0.5
 
 
 def _shapes_from_polygons(polygons_by_layer, dbu: float, layers: dict[LayerKey, LayerInfo]) -> ShapesByLayer:
@@ -45,6 +58,26 @@ class Transform:
     mag: float = 1.0  # uniform geometric scale; ports/geometry scale with it
 
 
+def flip_transform(transform: "Transform", axis: str) -> "Transform":
+    """Reflect a placement across the screen's horizontal or vertical axis,
+    about the item's own origin (position unchanged).
+
+    axis='h' flips left↔right (x→−x); axis='v' flips top↔bottom (y→−y). The
+    reflection is composed in the world frame (F · current) and re-decomposed
+    by klayout into an equivalent rotation+mirror, so it stays correct for an
+    already-rotated/mirrored item. Verified numerically against DCplxTrans."""
+    flip = kdb.DCplxTrans(1.0, 180.0, True, 0.0, 0.0) if axis == "h" else kdb.DCplxTrans(1.0, 0.0, True, 0.0, 0.0)
+    current = kdb.DCplxTrans(transform.mag, transform.rotation, transform.mirror, transform.x, transform.y)
+    flipped = flip * current
+    return Transform(
+        x=transform.x,
+        y=transform.y,
+        rotation=flipped.angle,
+        mirror=flipped.is_mirror(),
+        mag=flipped.mag,
+    )
+
+
 @dataclass
 class ProjectSettings:
     """Project-level metadata captured by the New Project dialog (material
@@ -64,6 +97,12 @@ class ProjectSettings:
     # cladding) but is the real domain extent for the FDTD/mode-solver
     # vertical stack.
     clad_thickness_um: float = 2.0
+    # When True, the mode solver and FDTD runs ignore clad_thickness_um and
+    # instead use a wavelength-scaled "effectively semi-infinite" cladding
+    # extent (see fdtd_sim.effective_clad_thickness_um), so the guided mode
+    # decays to nothing before reaching the domain boundary regardless of the
+    # finite thickness chosen for a real process.
+    clad_infinite: bool = False
     wavelength_um: float = 1.55
     cross_section: str = "strip"
 
@@ -115,6 +154,30 @@ class LayoutDocument:
 
     # -- instances ---------------------------------------------------------
 
+    def _build_cell(self, component_spec: str, kwargs: dict, array: ArraySpec) -> gf.Component:
+        """The effective cell for an instance: the bare component, or — when
+        arrayed — a wrapper cell holding the columns×rows tiling.
+
+        Building the array inside its own (identity) wrapper, then placing the
+        wrapper as a single reference, means the instance transform rotates the
+        whole array as a unit and the canvas (which renders the wrapper's
+        polygons) is identical to the exported GDS (which references the same
+        wrapper). The anchor element's ports are copied up so routing can still
+        attach to an arrayed instance."""
+        base = gf.get_component(component_spec, **kwargs)
+        if not array.is_array:
+            return base
+        wrapper = gf.Component(f"array_{next(_array_wrapper_counter)}")
+        wrapper.add_ref(
+            base,
+            columns=array.columns,
+            rows=array.rows,
+            column_pitch=array.column_pitch,
+            row_pitch=array.row_pitch,
+        )
+        wrapper.add_ports(base.ports)
+        return wrapper
+
     def add_instance(
         self,
         component_spec: str,
@@ -125,9 +188,11 @@ class LayoutDocument:
         mirror: bool = False,
         mag: float = 1.0,
         inst_id: int | None = None,
+        array: ArraySpec | None = None,
     ) -> PlacedInstance:
         kwargs = dict(kwargs or {})
-        cell = gf.get_component(component_spec, **kwargs)
+        array = array or ArraySpec()
+        cell = self._build_cell(component_spec, kwargs, array)
         ref = self.top.add_ref(cell)
         ref.dcplx_trans = kdb.DCplxTrans(mag, rotation, mirror, x, y)
         inst = PlacedInstance(
@@ -136,6 +201,7 @@ class LayoutDocument:
             kwargs=kwargs,
             cell=cell,
             ref=ref,
+            array=array,
         )
         self.instances[inst.id] = inst
         for layer_key in cell.layers:
@@ -148,7 +214,9 @@ class LayoutDocument:
         return inst
 
     def restore_instance(self, inst: PlacedInstance, transform: Transform) -> None:
-        """Re-insert a previously-removed instance (used by undo)."""
+        """Re-insert a previously-removed instance (used by undo). inst.cell is
+        already the effective (possibly arrayed) cell, so this is a plain
+        single reference."""
         ref = self.top.add_ref(inst.cell)
         ref.dcplx_trans = kdb.DCplxTrans(transform.mag, transform.rotation, transform.mirror, transform.x, transform.y)
         inst.ref = ref
@@ -169,13 +237,31 @@ class LayoutDocument:
         inst = self.instances[inst_id]
         transform = self.get_transform(inst_id)
         kwargs = dict(kwargs)
-        cell = gf.get_component(inst.component_spec, **kwargs)
+        cell = self._build_cell(inst.component_spec, kwargs, inst.array)  # keeps the existing array
         inst.ref.delete()
         ref = self.top.add_ref(cell)
         ref.dcplx_trans = kdb.DCplxTrans(transform.mag, transform.rotation, transform.mirror, transform.x, transform.y)
         inst.cell = cell
         inst.ref = ref
         inst.kwargs = kwargs
+        for layer_key in cell.layers:
+            layer_info_for(tuple(layer_key), self.layers)
+        return inst
+
+    def set_array(self, inst_id: int, array: ArraySpec) -> PlacedInstance:
+        """Re-place an instance as (or back from) an array, preserving its
+        transform. Rebuilds the effective cell (the array wrapper) and its
+        single reference — columns/rows are baked into the wrapper, not a
+        mutable property of an existing reference."""
+        inst = self.instances[inst_id]
+        transform = self.get_transform(inst_id)
+        cell = self._build_cell(inst.component_spec, inst.kwargs, array)
+        inst.ref.delete()
+        ref = self.top.add_ref(cell)
+        ref.dcplx_trans = kdb.DCplxTrans(transform.mag, transform.rotation, transform.mirror, transform.x, transform.y)
+        inst.cell = cell
+        inst.ref = ref
+        inst.array = array
         for layer_key in cell.layers:
             layer_info_for(tuple(layer_key), self.layers)
         return inst
@@ -192,11 +278,24 @@ class LayoutDocument:
         """Shapes in the instance's local (unplaced) coordinate frame. Each
         shape is (hull, holes) — holes must be carried through (not just the
         hull) or the canvas would render a solid fill where the exported GDS
-        actually has a cut-out, e.g. for true annuli built via boolean ops."""
+        actually has a cut-out, e.g. for true annuli built via boolean ops.
+
+        For an arrayed instance inst.cell is the array wrapper, so these are
+        already the full columns×rows tiling — the same cell the GDS export
+        references, keeping the canvas WYSIWYG."""
         return self._shapes_for_cell(self.instances[inst_id].cell)
 
     def _shapes_for_cell(self, cell: gf.Component) -> ShapesByLayer:
         return _shapes_from_polygons(cell.get_polygons(by="tuple"), cell.kcl.dbu, self.layers)
+
+    def get_bbox_extent_for_instance(self, inst_id: int) -> tuple[float, float]:
+        """The *base* component's (width, height) in µm — used to seed a
+        sensible array pitch so the first copy doesn't land on top of the
+        original. Uses the base, not inst.cell, since inst.cell may already be
+        an array wrapper whose bbox is the whole grid."""
+        inst = self.instances[inst_id]
+        bbox = gf.get_component(inst.component_spec, **inst.kwargs).dbbox()
+        return (bbox.width(), bbox.height())
 
     def get_ports_for_instance(self, inst_id: int) -> list[tuple[str, float, float, float, float]]:
         """Local-frame ports as (name, x, y, orientation_deg, width)."""
@@ -236,6 +335,9 @@ class LayoutDocument:
         port_b: str,
         cross_section: str = "strip",
         route_id: int | None = None,
+        goal_length_um: float | None = None,
+        auto_match: bool = False,
+        meander_amplitude_um: float | None = None,
     ) -> PlacedRoute:
         # There's no cascade-delete: removing an instance doesn't remove
         # routes that referenced it, so a route can outlive its endpoint
@@ -250,7 +352,15 @@ class LayoutDocument:
                 raise ValueError(f"Cannot route: instance #{inst_id} no longer exists")
         p1 = self.instances[inst_a_id].ref.ports[port_a]
         p2 = self.instances[inst_b_id].ref.ports[port_b]
-        route = gf.routing.route_single(self.top, p1, p2, cross_section=cross_section)
+
+        solved_amplitude: float | None = None
+        if auto_match and goal_length_um:
+            route, solved_amplitude = self._route_to_goal_length(
+                p1, p2, cross_section, goal_length_um, meander_amplitude_um
+            )
+        else:
+            route = gf.routing.route_single(self.top, p1, p2, cross_section=cross_section)
+
         placed = PlacedRoute(
             id=route_id if route_id is not None else self.next_id(),
             instance_id_a=inst_a_id,
@@ -260,12 +370,106 @@ class LayoutDocument:
             cross_section=cross_section,
             refs=list(route.instances),
             length=route.length,
+            goal_length_um=goal_length_um,
+            auto_match=auto_match,
+            meander_amplitude_um=solved_amplitude,
         )
         self.routes[placed.id] = placed
         for ref in placed.refs:
             for layer_key in self._shapes_for_ref(ref):
                 layer_info_for(layer_key, self.layers)
         return placed
+
+    def _route_length_um(self, route) -> float:
+        return route.length * self.top.kcl.dbu
+
+    def _route_with_meander(self, p1, p2, cross_section: str, amplitude_um: float):
+        """Route p1→p2 with a single perpendicular detour ('bump') of the given
+        amplitude. route_single defaults to euler bends, so the detour is an
+        adiabatic curve (low-loss), per the length-matching requirement.
+        Returns the route, or None if route_single can't realize this bump for
+        the ports' geometry (it returns a degenerate ~0-length route, which we
+        treat as failure)."""
+        dx = p2.dcenter[0] - p1.dcenter[0]
+        dy = p2.dcenter[1] - p1.dcenter[1]
+        if abs(dx) >= abs(dy):  # mostly horizontal: bump in y, traverse in x
+            steps = [{"dy": amplitude_um}, {"dx": (dx / 2) or 1.0}, {"dy": -amplitude_um}]
+        else:  # mostly vertical: bump in x, traverse in y
+            steps = [{"dx": amplitude_um}, {"dy": (dy / 2) or 1.0}, {"dx": -amplitude_um}]
+        try:
+            route = gf.routing.route_single(self.top, p1, p2, cross_section=cross_section, steps=steps)
+        except Exception:
+            return None
+        return route
+
+    def _route_to_goal_length(self, p1, p2, cross_section: str, goal_um: float, amplitude_um: float | None):
+        """Best-effort adiabatic length matching. Returns (route, amplitude).
+
+        Manual mode is the implicit fallback: if no valid meander can reach the
+        goal (degenerate route for this geometry, or goal shorter than the
+        natural route), the natural route is used and amplitude is None — the
+        UI then just reports actual-vs-goal, which is the manual workflow."""
+        natural = gf.routing.route_single(self.top, p1, p2, cross_section=cross_section)
+        natural_len = self._route_length_um(natural)
+
+        # Replay path (project/script reload): an amplitude was already solved,
+        # so rebuild that exact geometry deterministically without searching.
+        if amplitude_um is not None:
+            for ref in natural.instances:
+                ref.delete()
+            route = self._route_with_meander(p1, p2, cross_section, amplitude_um)
+            if route is not None and self._route_length_um(route) >= natural_len * 0.99:
+                return route, amplitude_um
+            # Stored amplitude no longer valid (geometry changed): fall back.
+            return gf.routing.route_single(self.top, p1, p2, cross_section=cross_section), None
+
+        if goal_um <= natural_len:
+            return natural, None  # can't shorten below the natural route
+
+        for ref in natural.instances:
+            ref.delete()
+        amplitude = self._search_meander_amplitude(p1, p2, cross_section, goal_um, natural_len)
+        if amplitude is None:
+            return gf.routing.route_single(self.top, p1, p2, cross_section=cross_section), None
+        route = self._route_with_meander(p1, p2, cross_section, amplitude)
+        if route is None:
+            return gf.routing.route_single(self.top, p1, p2, cross_section=cross_section), None
+        return route, amplitude
+
+    def _search_meander_amplitude(self, p1, p2, cross_section, goal_um, natural_len):
+        """Binary-search the detour amplitude whose route length ≈ goal. Only
+        amplitudes that yield a *valid* route (length ≥ natural) count as
+        samples — route_single silently returns ~0 length for an unrealizable
+        bump, which must never be treated as a real measurement. Returns the
+        best amplitude, or None if even the largest bump can't be realized."""
+        lo, hi = _MEANDER_MIN_AMPLITUDE_UM, _MEANDER_MAX_AMPLITUDE_UM
+
+        def sample(a: float):
+            route = self._route_with_meander(p1, p2, cross_section, a)
+            if route is None:
+                return None
+            length = self._route_length_um(route)
+            for ref in route.instances:
+                ref.delete()
+            return length if length >= natural_len * 0.99 else None
+
+        if sample(hi) is None:  # geometry can't take a meander at all -> manual fallback
+            return None
+        best = hi
+        for _ in range(28):
+            mid = (lo + hi) / 2
+            length = sample(mid)
+            if length is None:  # amplitude too small to realize: search higher
+                lo = mid
+                continue
+            best = mid
+            if abs(length - goal_um) <= _MEANDER_TOLERANCE_UM:
+                return mid
+            if length < goal_um:
+                lo = mid
+            else:
+                hi = mid
+        return best
 
     def remove_route(self, route_id: int) -> PlacedRoute:
         route = self.routes.pop(route_id)

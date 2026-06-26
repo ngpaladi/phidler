@@ -3,7 +3,7 @@ import types
 
 import pytest
 from PySide6.QtCore import QCoreApplication
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMenu, QMessageBox, QToolBar
 
 from phidler.fdtd_sim import FdtdParams, SourceSpec
 from phidler.main_window import MainWindow
@@ -315,9 +315,12 @@ def test_frame_advance_wraps_around_at_the_end(qapp):
 # -- MainWindow wiring --------------------------------------------------------- #
 
 
-def test_main_window_has_simulate_menu_action(qapp):
+def test_main_window_has_simulate_toolbar_button(qapp):
     win = MainWindow()
-    assert win.fdtd_window_action.text() == "FDTD Simulation…"
+    assert win.fdtd_window_action.text() == "Simulate"
+    # It's a toolbar action now, not under a Simulate menu.
+    assert win.fdtd_window_action in win.findChild(QToolBar).actions()
+    assert all(m.title() != "&Simulate" for m in win.menuBar().findChildren(QMenu))
 
 
 def test_main_window_opens_fdtd_window_lazily_and_reuses_it(qapp):

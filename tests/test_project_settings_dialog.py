@@ -74,3 +74,25 @@ def test_result_settings_reflects_current_field_values(qapp):
     assert math.isclose(settings.wavelength_um, 1.31)
     assert math.isclose(settings.clad_thickness_um, 3.5)
     assert settings.cross_section == "nitride"
+
+
+def test_infinite_cladding_checkbox_round_trips_and_greys_out_thickness(qapp):
+    dialog = ProjectSettingsDialog()
+    assert dialog.clad_infinite_check.isChecked() is False
+    assert dialog.clad_thickness_spin.isEnabled() is True
+
+    dialog.clad_infinite_check.setChecked(True)
+    # The thickness value is ignored in infinite mode, so it greys out.
+    assert dialog.clad_thickness_spin.isEnabled() is False
+    assert dialog.result_settings().clad_infinite is True
+
+    dialog.clad_infinite_check.setChecked(False)
+    assert dialog.clad_thickness_spin.isEnabled() is True
+    assert dialog.result_settings().clad_infinite is False
+
+
+def test_dialog_seeded_with_infinite_cladding_disables_thickness(qapp):
+    existing = ProjectSettings(clad_infinite=True)
+    dialog = ProjectSettingsDialog(initial=existing)
+    assert dialog.clad_infinite_check.isChecked() is True
+    assert dialog.clad_thickness_spin.isEnabled() is False

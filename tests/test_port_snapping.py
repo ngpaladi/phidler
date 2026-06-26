@@ -49,6 +49,34 @@ def test_dragging_a_port_near_another_snaps_to_exact_alignment(qapp):
     assert math.isclose(o1[1], 0.0, abs_tol=1e-6)
 
 
+def test_snap_is_applied_live_during_the_drag_not_only_on_release(qapp):
+    """Dragging B so its o1 comes within range of A's o2 should snap visibly
+    mid-drag: after the move event but before release, B's item is already
+    parked at the aligned position, not still tracking the raw cursor."""
+    doc = LayoutDocument()
+    scene = LayoutScene(doc)
+    a = doc.add_instance("straight", {"length": 10.0, "width": 0.5})
+    scene.add_instance_item(a.id)
+    b = doc.add_instance("straight", {"length": 10.0, "width": 0.5}, x=50.0, y=50.0)
+    item_b = scene.add_instance_item(b.id)
+
+    view = LayoutView(scene)
+    view.resize(400, 400)
+    view.show()
+
+    press_pt = QPointF(55.0, 50.0)
+    near_pt = QPointF(55.0 - 39.5, 50.0 - 49.7)  # o1 would land at (10.5, 0.3): within snap of A's o2 (10, 0)
+    QTest.mousePress(view.viewport(), Qt.LeftButton, Qt.NoModifier, view.mapFromScene(press_pt))
+    QTest.mouseMove(view.viewport(), view.mapFromScene(near_pt))
+
+    # No release yet: o1 (local (0,0), so == item pos at rotation 0) is already
+    # snapped exactly onto A's o2 at (10, 0).
+    assert math.isclose(item_b.pos().x(), 10.0, abs_tol=1e-6)
+    assert math.isclose(item_b.pos().y(), 0.0, abs_tol=1e-6)
+
+    QTest.mouseRelease(view.viewport(), Qt.LeftButton, Qt.NoModifier, view.mapFromScene(near_pt))
+
+
 def test_dragging_far_from_any_port_falls_back_to_grid_snap(qapp):
     doc = LayoutDocument()
     scene = LayoutScene(doc)

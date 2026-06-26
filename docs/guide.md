@@ -65,9 +65,10 @@ automatically.
   **Edit > Select All** (`Ctrl+A`).
 - **Move**: drag a selected item. Dragging a port close to another
   instance's port snaps them into exact alignment; otherwise the move
-  snaps to the grid.
-- **Rotate / Mirror**: `R` / `M`, or use the on-canvas transform overlay
-  (see below).
+  snaps to the grid. Snapping is applied live as you drag, not just on drop.
+- **Rotate / Flip**: `R` rotates 90°; `H` and `V` flip the selection
+  horizontally / vertically (about either screen axis). You can also use the
+  on-canvas transform overlay (see below).
 - **Delete / Copy / Paste**: `Delete`, `Ctrl+C`, `Ctrl+V`.
 - **Undo / Redo**: `Ctrl+Z` / `Ctrl+Shift+Z`.
 - **Pan**: middle-mouse-drag. **Zoom**: scroll wheel, or View > Zoom to
