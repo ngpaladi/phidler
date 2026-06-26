@@ -41,11 +41,18 @@ def test_window_has_two_tabs(qapp):
 
 
 def test_gpu_and_numba_checkboxes_feed_into_params(qapp):
+    from phidler.fdtd_sim import gpu_available, numba_available
+
     win = MainWindow()
     fdtd_win = FdtdWindow(win.document, win.view)
     # Off by default — the plain NumPy engine, no optional deps required.
     params = fdtd_win._current_params()
     assert params.use_gpu is False and params.use_numba is False
+
+    # The checkbox is enabled only when its backend is actually importable, so
+    # a request can't silently no-op on the CPU.
+    assert fdtd_win.run_gpu_check.isEnabled() == gpu_available()
+    assert fdtd_win.run_numba_check.isEnabled() == numba_available()
 
     fdtd_win.run_gpu_check.setChecked(True)
     fdtd_win.run_numba_check.setChecked(True)

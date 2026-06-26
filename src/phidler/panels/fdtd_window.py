@@ -47,8 +47,10 @@ from phidler.fdtd_sim import (
     build_simulation,
     estimate_grid_cell_count,
     estimate_run_seconds,
+    gpu_available,
     mode_confinement,
     nearest_z_index,
+    numba_available,
     photon_energy_ev_from_wavelength_um,
     run_simulation,
     solve_mode_profile,
@@ -786,10 +788,27 @@ class FdtdWindow(QMainWindow):
         accel_widget = QWidget()
         accel_layout = QHBoxLayout(accel_widget)
         accel_layout.setContentsMargins(0, 0, 0, 0)
+        # GPU/Numba are disabled unless their backend is actually importable —
+        # photonfdtd silently ignores the request otherwise (it ANDs use_gpu
+        # with availability), so a stray check would quietly run on the CPU.
         self.run_gpu_check = QCheckBox("GPU")
-        self.run_gpu_check.setToolTip("Run on the GPU via photonfdtd (needs a CUDA-capable torch install).")
+        if gpu_available():
+            self.run_gpu_check.setToolTip("Run on the GPU via photonfdtd's CuPy backend.")
+        else:
+            self.run_gpu_check.setEnabled(False)
+            self.run_gpu_check.setToolTip(
+                "GPU acceleration needs CuPy and a CUDA-capable NVIDIA GPU "
+                "(pip install cupy-cuda12x) — not available in this environment."
+            )
         self.run_numba_check = QCheckBox("Numba")
-        self.run_numba_check.setToolTip("JIT-compile the update loop with Numba (needs the numba package).")
+        if numba_available():
+            self.run_numba_check.setToolTip("JIT-compile the update loop with Numba.")
+        else:
+            self.run_numba_check.setEnabled(False)
+            self.run_numba_check.setToolTip(
+                "Numba acceleration needs the numba package (pip install numba) — "
+                "not installed in this environment."
+            )
         accel_layout.addWidget(self.run_gpu_check)
         accel_layout.addWidget(self.run_numba_check)
         accel_layout.addStretch(1)

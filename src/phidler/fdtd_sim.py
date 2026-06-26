@@ -57,6 +57,30 @@ def _import_photonfdtd():
     return pf
 
 
+def gpu_available() -> bool:
+    """Whether photonfdtd's GPU backend can actually run here — it uses CuPy,
+    so this is True only when CuPy imports. photonfdtd silently falls back to
+    NumPy when it can't (use_gpu is AND'd with availability), so without this
+    check a requested GPU run would quietly execute on the CPU. (CuPy importing
+    doesn't by itself guarantee a working CUDA device, but it's the same signal
+    photonfdtd keys off.)"""
+    try:
+        import cupy  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def numba_available() -> bool:
+    """Whether photonfdtd's Numba JIT backend can run here (numba importable).
+    Same silent-fallback caveat as gpu_available()."""
+    try:
+        import numba  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def wavelength_um_from_photon_energy_ev(energy_ev: float) -> float:
     """E = hc/lambda -> lambda = hc/E."""
     if energy_ev <= 0:
