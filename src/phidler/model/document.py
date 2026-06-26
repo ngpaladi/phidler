@@ -674,6 +674,43 @@ class LayoutDocument:
             ref.delete()
         return route
 
+    def routes_for_instance(self, inst_id: int) -> list[int]:
+        """Ids of every route with this instance as an endpoint — the routes
+        that need re-routing when the instance moves."""
+        return [
+            rid
+            for rid, r in self.routes.items()
+            if r.instance_id_a == inst_id or r.instance_id_b == inst_id
+        ]
+
+    def rebuild_route(self, route_id: int):
+        """Re-route an existing route between its endpoints' *current* port
+        positions, keeping its id and recipe (cross-section, length goal,
+        diagonal, obstacle avoidance) — used after a component moves so the
+        track follows. Re-runs the full routing decision (a moved component may
+        now block, or stop blocking, the path; a length goal re-searches its
+        meander for the new separation). Drops the route if an endpoint
+        instance no longer exists. Returns the rebuilt PlacedRoute or None."""
+        old = self.routes.get(route_id)
+        if old is None:
+            return None
+        if old.instance_id_a not in self.instances or old.instance_id_b not in self.instances:
+            self.remove_route(route_id)
+            return None
+        for ref in old.refs:
+            ref.delete()
+        return self.add_route(
+            old.instance_id_a,
+            old.port_name_a,
+            old.instance_id_b,
+            old.port_name_b,
+            old.cross_section,
+            route_id=route_id,
+            goal_length_um=old.goal_length_um,
+            auto_match=old.auto_match,
+            diagonal=old.diagonal,
+        )
+
     def get_shapes_for_route(self, route_id: int) -> ShapesByLayer:
         """Shapes already in absolute (top-cell) coordinates — routes are
         rendered without any extra Qt-side transform, unlike instances."""

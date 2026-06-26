@@ -116,6 +116,14 @@ class MoveInstanceCommand(QUndoCommand):
             item.mirror = transform.mirror
             item.mag = transform.mag
 
+        # Re-route any tracks attached to this instance so they follow it to its
+        # new position (covers drag, rotate, flip, and their undo/redo, which all
+        # go through this command).
+        for route_id in self.document.routes_for_instance(self.inst_id):
+            self.scene.remove_route_item(route_id)
+            if self.document.rebuild_route(route_id) is not None:
+                self.scene.add_route_item(route_id)
+
 
 class EditParamsCommand(QUndoCommand):
     def __init__(
