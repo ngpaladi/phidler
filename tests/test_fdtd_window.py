@@ -60,6 +60,27 @@ def test_gpu_and_numba_checkboxes_feed_into_params(qapp):
     assert params.use_gpu is True and params.use_numba is True
 
 
+def test_gpu_run_executes_synchronously_not_in_a_worker_thread(qapp):
+    """cupy's CUDA context can't survive a Qt worker thread (crash/hang at
+    teardown), so a GPU-flagged run executes on the main thread — no worker
+    QThread, and the result is ready by the time _on_run_clicked returns.
+    (photonfdtd falls back to NumPy on the main thread when cupy is absent, so
+    this holds with or without a GPU.)"""
+    win = MainWindow()
+    inst = win.document.add_instance("straight", {"length": 2.0, "width": 0.5})
+    win.scene.add_instance_item(inst.id)
+    fdtd_win = FdtdWindow(win.document, win.view)
+    fdtd_win.run_cell_size_spin.setValue(0.15)  # tiny grid: stays under the warning threshold
+    fdtd_win.run_time_spin.setValue(4.0)
+    fdtd_win.run_gpu_check.setChecked(True)  # setChecked works even if the box is disabled
+    fdtd_win._on_source_placement_requested(0.0, 0.0)
+
+    fdtd_win._on_run_clicked()
+
+    assert fdtd_win._fdtd_thread is None  # no background worker for a GPU run
+    assert fdtd_win._last_result is not None  # finished synchronously
+
+
 def test_window_prefills_wavelength_from_project_settings(qapp):
     win = MainWindow()
     win.document.project_settings.wavelength_um = 1.31

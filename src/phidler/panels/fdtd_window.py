@@ -613,6 +613,28 @@ class FdtdWindow(QMainWindow):
 
         self.resize(700, 820)
 
+    def closeEvent(self, event) -> None:
+        # The worker QThreads are parented to this window, so closing it while a
+        # solve/run is still in flight would destroy a running thread — Qt aborts
+        # the process ("QThread: Destroyed while thread is still running"), and a
+        # GPU run mid-CUDA-call core-dumps. Disconnect the workers' result signals
+        # first (so finished/failed don't fire callbacks against a window that's
+        # tearing down), then let any active run finish. The compute loop isn't
+        # interruptible, so wait() blocks until it returns — fast for a GPU run;
+        # the run-time estimate already warns before slow CPU runs.
+        for worker, thread in ((self._fdtd_worker, self._fdtd_thread), (self._mode_worker, self._mode_thread)):
+            if thread is None or not thread.isRunning():
+                continue
+            if worker is not None:
+                for sig in (worker.finished, worker.failed):
+                    try:
+                        sig.disconnect()
+                    except (RuntimeError, TypeError):
+                        pass
+            thread.quit()
+            thread.wait()
+        super().closeEvent(event)
+
     # -- mode profile tab ------------------------------------------------------
 
     def _build_mode_tab(self) -> QWidget:
@@ -1025,6 +1047,28 @@ class FdtdWindow(QMainWindow):
         self.run_button.setEnabled(False)
         self.run_status_label.setText("Running…")
         self._field_image_initialized = False
+
+        if params.use_gpu:
+            # cupy's CUDA context, created inside a Qt worker thread, crashes /
+            # hangs the process at teardown. GPU runs are fast (~1 s), so run
+            # synchronously on the main thread instead — the UI blocks briefly,
+            # which is a fine trade for not core-dumping.
+            from PySide6.QtWidgets import QApplication
+
+            self.run_status_label.repaint()
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                t0 = time.time()
+                sim = build_simulation(self.document, params)
+                result = run_simulation(sim)
+                elapsed = time.time() - t0
+            except Exception as exc:
+                QApplication.restoreOverrideCursor()
+                self._on_fdtd_failed(str(exc))
+                return
+            QApplication.restoreOverrideCursor()
+            self._on_fdtd_finished(sim, result, elapsed)
+            return
 
         self._fdtd_thread = QThread(self)
         self._fdtd_worker = FdtdWorker(self.document, params)
