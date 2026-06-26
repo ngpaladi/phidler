@@ -13,7 +13,7 @@ dev = [
     "pytest>=8.0.0",
 ]
 docs = [
-    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5",
 ]
 # photonfdtd isn't published on PyPI yet (sibling project, not a Phidler
 # package) — install it from its own checkout first

@@ -60,19 +60,29 @@ def crop_bottom(name: str, fraction: float) -> None:
 
 
 def main_overview() -> None:
+    # A clean Mach-Zehnder interferometer: an mmi1x2 splitter, an mmi2x2
+    # combiner, a straight reference arm and a length-matched delay arm that
+    # meanders cleanly *below* it (no crossing waveguides).
     win = MainWindow()
-    win.resize(1500, 950)
+    win.resize(1500, 820)
     win.show()
 
-    a = win.document.add_instance("ring_single", {"radius": 8.0, "gap": 0.3})
-    win.scene.add_instance_item(a.id)
+    splitter = win.document.add_instance("mmi1x2", {})
+    win.scene.add_instance_item(splitter.id)
+    combiner = win.document.add_instance("mmi2x2", {})
+    win.scene.add_instance_item(combiner.id)
+    win.document.set_transform(combiner.id, Transform(x=90.0, y=0.0, rotation=0.0, mirror=False))
+    win.scene.items_by_inst[combiner.id].apply_transform(90.0, 0.0, 0.0, False)
 
-    b = win.document.add_instance("mmi1x2", {})
-    win.scene.add_instance_item(b.id)
-    win.document.set_transform(b.id, Transform(x=22.0, y=-2.0, rotation=0.0, mirror=False))
+    top = win.document.add_route(splitter.id, "o2", combiner.id, "o2", "strip")
+    win.scene.add_route_item(top.id)
+    bottom = win.document.add_route(
+        splitter.id, "o3", combiner.id, "o1", "strip", goal_length_um=140.0, auto_match=True
+    )
+    win.scene.add_route_item(bottom.id)
 
     win.view.zoom_to_fit()
-    win.view.scale(0.85, 0.85)  # fitInView goes edge-to-edge; back off a bit
+    win.view.scale(0.82, 0.82)  # fitInView goes edge-to-edge; back off a bit
     win.scene.clearSelection()
     save(win, "main_overview")
 
