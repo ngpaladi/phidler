@@ -66,9 +66,25 @@ _TABLE_COLUMNS = [
     "Photon count",
     "Core width (µm)",
     "Script (kind=scripted)",
+    "β = v/c (cherenkov)",
+    "Track dir ° (cherenkov)",
+    "Track µm (cherenkov)",
     "",
 ]
-_COL_X, _COL_Y, _COL_KIND, _COL_WAVELENGTH, _COL_ENERGY, _COL_PHOTON_COUNT, _COL_CORE_WIDTH, _COL_SCRIPT, _COL_REMOVE = range(9)
+(
+    _COL_X,
+    _COL_Y,
+    _COL_KIND,
+    _COL_WAVELENGTH,
+    _COL_ENERGY,
+    _COL_PHOTON_COUNT,
+    _COL_CORE_WIDTH,
+    _COL_SCRIPT,
+    _COL_BETA,
+    _COL_TRACK_DIR,
+    _COL_TRACK_LEN,
+    _COL_REMOVE,
+) = range(12)
 
 # ---------------------------------------------------------------------------
 # Colormaps: 256-entry uint8 (N, 3) tables built by piecewise-linear interp.
@@ -99,6 +115,11 @@ _RDBU = _build_cmap([
     (0.750, 0.573, 0.773, 0.871),
     (1.000, 0.263, 0.576, 0.765),
 ])
+
+# Circuit-element outline color, drawn over the field in both FDTD views. Cyan
+# reads clearly against both the viridis mode profile and the red/white/blue
+# diverging propagation field (and matches the design canvas's routing accent).
+_OUTLINE_COLOR = "#00e0ff"
 
 # ---------------------------------------------------------------------------
 # Cladding materials dropdown
@@ -406,11 +427,11 @@ class FieldView(QGraphicsView):
     def add_polygon_overlay(
         self,
         hull: list[tuple[float, float]],
-        pen_color: str = "#333333",
+        pen_color: str = _OUTLINE_COLOR,
     ) -> None:
         poly = QPolygonF([QPointF(x, y) for x, y in hull])
         item = self.scene().addPolygon(poly, QPen(QColor(pen_color), 0), QBrush(Qt.NoBrush))
-        item.setZValue(0)
+        item.setZValue(6)  # above the field image, below source markers
         self._overlay_items.append(item)
 
     def add_source_marker(self, x: float, y: float) -> None:
@@ -424,10 +445,10 @@ class FieldView(QGraphicsView):
         self._overlay_items.append(item)
 
     def add_rect_overlay(
-        self, x: float, y: float, w: float, h: float, pen_color: str = "#ffffff"
+        self, x: float, y: float, w: float, h: float, pen_color: str = _OUTLINE_COLOR
     ) -> None:
         item = self.scene().addRect(x, y, w, h, QPen(QColor(pen_color), 0), QBrush(Qt.NoBrush))
-        item.setZValue(5)
+        item.setZValue(6)
         self._overlay_items.append(item)
 
     # -- viewport helpers ------------------------------------------------------
@@ -689,7 +710,7 @@ class FdtdWindow(QMainWindow):
 
         cw = self.mode_core_width_spin.value()
         ct = self.document.project_settings.thickness_um
-        self.mode_view.add_rect_overlay(-cw / 2, -ct / 2, cw, ct, pen_color="#ffffff")
+        self.mode_view.add_rect_overlay(-cw / 2, -ct / 2, cw, ct)  # core outline, accent color
 
         self.mode_view.fit_to_image()
 
@@ -841,7 +862,7 @@ class FdtdWindow(QMainWindow):
         self.source_table.setItem(row, _COL_Y, QTableWidgetItem(f"{y:.4f}"))
 
         kind_combo = QComboBox()
-        kind_combo.addItems(["dipole", "single_photon", "scripted"])
+        kind_combo.addItems(["dipole", "single_photon", "scripted", "cherenkov"])
         self.source_table.setCellWidget(row, _COL_KIND, kind_combo)
 
         wavelength_um = self.run_wavelength_spin.value()
@@ -852,6 +873,9 @@ class FdtdWindow(QMainWindow):
         self.source_table.setItem(row, _COL_PHOTON_COUNT, QTableWidgetItem("1"))
         self.source_table.setItem(row, _COL_CORE_WIDTH, QTableWidgetItem("0.5"))
         self.source_table.setItem(row, _COL_SCRIPT, QTableWidgetItem(""))
+        self.source_table.setItem(row, _COL_BETA, QTableWidgetItem("0.8"))
+        self.source_table.setItem(row, _COL_TRACK_DIR, QTableWidgetItem("0.0"))
+        self.source_table.setItem(row, _COL_TRACK_LEN, QTableWidgetItem("5.0"))
 
         remove_button = QPushButton("Remove")
         remove_button.clicked.connect(lambda checked=False, m=marker: self._on_remove_source_row(m))
@@ -912,10 +936,18 @@ class FdtdWindow(QMainWindow):
                 self.source_table.item(row, _COL_SCRIPT).text()
                 if kind == "scripted" else None
             )
+            cherenkov_kwargs = {}
+            if kind == "cherenkov":
+                cherenkov_kwargs = dict(
+                    velocity_beta=float(self.source_table.item(row, _COL_BETA).text()),
+                    direction_deg=float(self.source_table.item(row, _COL_TRACK_DIR).text()),
+                    cherenkov_length_um=float(self.source_table.item(row, _COL_TRACK_LEN).text()),
+                )
             specs.append(SourceSpec(
                 x_um=x_um, y_um=y_um, kind=kind,
                 wavelength_um=wavelength_um, photon_count=photon_count,
                 core_width_um=core_width_um, script=script,
+                **cherenkov_kwargs,
             ))
         return tuple(specs)
 

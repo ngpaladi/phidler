@@ -155,8 +155,14 @@ def fdtd_propagation() -> None:
     from phidler.panels.fdtd_window import FdtdWindow
 
     win = MainWindow()
+    win.resize(900, 600)
+    win.show()
     a = win.document.add_instance("straight", {"length": 3.0, "width": 0.5})
     win.scene.add_instance_item(a.id)
+    # The propagation view copies the design canvas's viewport, so zoom the
+    # design view onto the waveguide first or the field renders far off-screen.
+    win.view.zoom_to_fit()
+    win.view.scale(0.5, 0.5)
 
     fdtd_win = FdtdWindow(win.document, win.view)
     fdtd_win.resize(750, 950)
@@ -168,6 +174,8 @@ def fdtd_propagation() -> None:
     fdtd_win._on_run_clicked()
     _pump_events(app, lambda: fdtd_win._fdtd_thread is not None and not fdtd_win._fdtd_thread.isRunning())
     fdtd_win.frame_slider.setValue(fdtd_win.frame_slider.maximum())
+    app.processEvents()
+    fdtd_win.run_view.fit_to_image()  # frame the field + element outlines tightly
     app.processEvents()
     save(fdtd_win, "fdtd_propagation")
 

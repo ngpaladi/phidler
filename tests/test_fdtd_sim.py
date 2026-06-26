@@ -306,6 +306,44 @@ def test_build_source_single_photon_builds_a_mode_injected_source(qapp):
     assert source.n_eff > 1.0
 
 
+def test_build_source_cherenkov_is_a_track_of_time_staggered_dipoles(qapp):
+    spec = SourceSpec(
+        x_um=0.0,
+        y_um=0.0,
+        kind="cherenkov",
+        velocity_beta=0.8,
+        direction_deg=0.0,
+        cherenkov_length_um=5.0,
+        cherenkov_segments=6,
+    )
+    dipoles = build_source(_SOI_SETTINGS, spec)
+    assert isinstance(dipoles, list) and len(dipoles) == 6
+    # March along +x, with monotonically increasing fire delays (transit time).
+    xs = [round(d.position[0] * 1e6, 3) for d in dipoles]
+    delays = [d.waveform.delay for d in dipoles]
+    assert xs == sorted(xs) and xs[0] == 0.0 and abs(xs[-1] - 5.0) < 1e-6
+    assert all(delays[i] < delays[i + 1] for i in range(len(delays) - 1))
+    # delay to 1µm at β=0.8 is 1e-6 / (0.8·c).
+    from phidler.fdtd_sim import _C0
+
+    assert math.isclose(delays[1], 1e-6 / (0.8 * _C0), rel_tol=1e-6)
+
+
+def test_build_source_cherenkov_requires_positive_beta(qapp):
+    spec = SourceSpec(x_um=0.0, y_um=0.0, kind="cherenkov", velocity_beta=0.0)
+    with pytest.raises(ValueError, match="velocity_beta"):
+        build_source(_SOI_SETTINGS, spec)
+
+
+def test_build_simulation_expands_a_cherenkov_track_into_many_sources(qapp):
+    import dataclasses
+
+    doc = _tiny_document()
+    spec = SourceSpec(x_um=-0.5, y_um=0.0, kind="cherenkov", cherenkov_segments=8, cherenkov_length_um=1.0)
+    sim = build_simulation(doc, dataclasses.replace(_FAST_PARAMS, sources=(spec,)))
+    assert len(sim.sources) >= 8  # the track's dipoles were each added
+
+
 def test_build_source_unknown_kind_raises(qapp):
     spec = SourceSpec(x_um=0.0, y_um=0.0, kind="bogus", wavelength_um=1.55)
     with pytest.raises(ValueError, match="unknown source kind"):

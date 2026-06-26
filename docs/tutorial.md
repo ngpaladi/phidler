@@ -183,19 +183,34 @@ guides a single, well-confined mode. Open the **FDTD simulation** window from th
 **Simulate** button in the toolbar.
 
 The **Vertical Mode Profile** tab solves the waveguide cross-section and shows
-the mode and its effective index. A well-confined mode sits comfortably inside
-the core; if the cladding is too thin the solver warns that the mode is
-truncating against the domain edge. (If you want to model an unbounded stack,
-the Project Settings "assume infinite cladding depth" option sizes the cladding
-generously so confinement is never artificially limited.)
+the mode and its effective index. The **core is outlined in cyan** over the
+field, so you can see at a glance how the mode sits relative to the waveguide.
+A well-confined mode sits comfortably inside that outline; if the cladding is
+too thin the solver warns that the mode is truncating against the domain edge.
+(If you want to model an unbounded stack, the Project Settings "assume infinite
+cladding depth" option sizes the cladding generously so confinement is never
+artificially limited.)
 
-![FDTD vertical mode profile](screenshots/fdtd_mode_profile.png)
+![FDTD vertical mode profile, with the core outlined in cyan](screenshots/fdtd_mode_profile.png)
 
 The **Propagation** tab runs a true 3-D FDTD time-domain simulation: place a
-source, hit Compute, and watch the field animate down the guide. This is the
-ground-truth check that light flows the way your layout promises.
+source, hit Compute, and watch the field animate down the guide. Here too the
+**circuit elements are outlined in cyan** on top of the field, so you can read
+where light is relative to your structures rather than guessing.
 
-![FDTD propagation movie](screenshots/fdtd_propagation.png)
+![FDTD propagation movie with the waveguide outlined over the field](screenshots/fdtd_propagation.png)
+
+You choose the excitation per source in the source table's **Kind** column:
+
+- **dipole** — a plain oscillating point source; always available.
+- **single photon** — launches the locally-solved guided mode (a mode-matched
+  source).
+- **scripted** — drives the source with your own Python waveform expression.
+- **cherenkov** — models a charged particle crossing the domain faster than
+  light's local phase velocity, laid down as a track of time-staggered dipoles
+  (transit time = distance / βc). Their superposition forms the Cherenkov shock
+  cone — set the particle speed (β = v/c), track direction, and track length in
+  the source row.
 
 > The effective index your mode solve produces is fed back into the propagation
 > **time** readouts and rulers, so after solving, the femtosecond numbers on

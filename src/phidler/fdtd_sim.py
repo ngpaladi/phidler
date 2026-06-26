@@ -82,16 +82,28 @@ class SourceSpec:
     core_width_um; raises if it's missing rather than guessing a width.
     `kind="scripted"` ignores wavelength_um/photon_count/core_width_um and
     instead evaluates `script` (a Python expression of `t`, in seconds) as
-    the source's time-domain waveform — needs `script`."""
+    the source's time-domain waveform — needs `script`.
+
+    `kind="cherenkov"` models a charged particle crossing the domain faster
+    than light's local phase velocity: a line of point dipoles along a path,
+    each fired with a delay equal to the particle's transit time to that
+    point (distance / (beta·c)). Their superposition forms the Cherenkov
+    shock cone, opening at cos(theta)=1/(beta·n). Uses velocity_beta (v/c),
+    direction_deg, and cherenkov_length_um for the path; cherenkov_segments
+    sets how finely the path is sampled."""
 
     x_um: float
     y_um: float
-    kind: str = "dipole"  # "dipole" | "single_photon" | "scripted"
+    kind: str = "dipole"  # "dipole" | "single_photon" | "scripted" | "cherenkov"
     wavelength_um: float = 1.55
     photon_count: int = 1
     core_width_um: float | None = None
     fwhm_fs: float = 3.0
     script: str | None = None
+    velocity_beta: float = 0.8  # particle speed as a fraction of c (Cherenkov needs beta·n > 1)
+    direction_deg: float = 0.0  # particle travel direction in the XY plane
+    cherenkov_length_um: float = 5.0  # length of the particle track
+    cherenkov_segments: int = 24  # point dipoles sampled along the track
 
 
 class ScriptedWaveform:
@@ -330,6 +342,25 @@ def build_source(settings: ProjectSettings, spec: SourceSpec) -> Any:
     freq0 = _C0 / (spec.wavelength_um * 1e-6)
     waveform = pf.GaussianPulse(freq0=freq0, fwhm=spec.fwhm_fs * 1e-15)
 
+    if spec.kind == "cherenkov":
+        if spec.velocity_beta <= 0:
+            raise ValueError("cherenkov sources need a positive velocity_beta (v/c)")
+        v = spec.velocity_beta * _C0  # particle speed (m/s)
+        angle = math.radians(spec.direction_deg)
+        ux, uy = math.cos(angle), math.sin(angle)
+        n_seg = max(spec.cherenkov_segments, 2)
+        span_m = spec.cherenkov_length_um * 1e-6
+        step_m = span_m / (n_seg - 1)
+        fwhm_s = spec.fwhm_fs * 1e-15
+        dipoles = []
+        for i in range(n_seg):
+            s = i * step_m  # arc length from the track start
+            pos = (spec.x_um * 1e-6 + ux * s, spec.y_um * 1e-6 + uy * s, 0.0)
+            # Each point fires when the particle reaches it: delay = s / v.
+            pulse = pf.GaussianPulse(freq0=freq0, fwhm=fwhm_s, delay=s / v)
+            dipoles.append(pf.PointDipole(position=pos, component="Ez", waveform=pulse))
+        return dipoles
+
     if spec.kind == "dipole":
         return pf.PointDipole(
             position=(spec.x_um * 1e-6, spec.y_um * 1e-6, 0.0),
@@ -440,7 +471,10 @@ def build_simulation(document: LayoutDocument, params: FdtdParams = FdtdParams()
     if not sources:
         sources = (SourceSpec(x_um=bbox.left, y_um=(bbox.top + bbox.bottom) / 2, wavelength_um=params.wavelength_um, fwhm_fs=params.pulse_fwhm_fs),)
     for spec in sources:
-        sim.add_source(build_source(settings, spec))
+        built = build_source(settings, spec)
+        # A cherenkov spec expands into a whole track of point dipoles.
+        for src in built if isinstance(built, list) else [built]:
+            sim.add_source(src)
 
     sim.add_monitor(pf.FieldMonitor(name="field", components=("Ez", "Ey"), interval=params.monitor_interval))
 

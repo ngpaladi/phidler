@@ -244,8 +244,8 @@ replacement for the normal undo-tracked UI actions.
 
 ## FDTD simulation
 
-**Simulate > FDTD Simulation…** opens a separate window that runs a real
-local FDTD solve against your actual placed layout, using `photonfdtd` —
+The **Simulate** button in the toolbar opens a separate window that runs a
+real local FDTD solve against your actual placed layout, using `photonfdtd` —
 a separate, optional dependency not published on PyPI. If it's not
 installed, you'll see a message explaining what to install instead of a
 crash. The window has two tabs: a fast **Vertical Mode Profile** solver,
@@ -260,8 +260,8 @@ cross-section in well under a second:
 1. Enter the **Core width**, **Wavelength**, and (optionally) more than
    one mode to solve for.
 2. Click **Solve**. The plot shows the mode's intensity confined within
-   the core (the white outline), decaying into the cladding above and
-   below.
+   the core (outlined in cyan over the field), decaying into the cladding
+   above and below.
 3. The status line reports the effective index and whether the mode is
    **well confined** or whether the **cladding may be too thin** — if
    your cladding (set in **File > Project Settings…**) isn't thick
@@ -299,14 +299,23 @@ plays the result back as a movie:
      restricted sandbox, since this is already a single-user desktop
      tool. Wavelength/Energy/Photon count/Core width are ignored for
      this kind.
+   - **cherenkov** — models a charged particle crossing the domain faster
+     than light's local phase velocity. It is laid down as a track of
+     point dipoles, each fired with a delay equal to the particle's
+     transit time to that point (distance / βc), whose superposition
+     forms the Cherenkov shock cone. Set the particle speed **β = v/c**,
+     the **track direction**, and the **track length** in the source row
+     (Cherenkov radiation requires β·n > 1, i.e. faster than the medium's
+     phase velocity).
 4. Set **Cell size** and **Run time**, then click **Run Simulation**. If
    the estimated run time is more than a few seconds, you'll be asked to
    confirm first — true 3D propagation is genuinely more expensive than
    a quick preview, and this estimate is calibrated against real
    measured runs, not guessed.
 5. Once it finishes, use the **Play** button and the slider underneath
-   to scrub through the field evolving over time, overlaid on an outline
-   of your actual chip layout — looping back to the start automatically.
+   to scrub through the field evolving over time, overlaid on a cyan
+   outline of your actual chip layout — looping back to the start
+   automatically.
 
 ![Propagation result: red/blue field pattern radiating from a point source and coupling into a waveguide, overlaid on its outline, with the time slider and Play button below the source table](screenshots/fdtd_propagation.png)
 
