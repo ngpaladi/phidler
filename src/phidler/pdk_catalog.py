@@ -30,6 +30,16 @@ CORE_CATEGORIES = [
 
 CUSTOM_CATEGORY = "custom"
 
+# Components that pass every structural filter but don't build cleanly as a
+# standalone placement: spiral_racetrack_fixed_length runs its own internal
+# route_bundle, which collides and floods the log with routing errors and a
+# cascade of kfactory cell-name conflicts every time it's built. Excluded so
+# placing from the palette (and the catalog placement test) stays quiet and
+# the geometry is never half-routed.
+_EXCLUDED_COMPONENTS = {
+    "spiral_racetrack_fixed_length",
+}
+
 _CATEGORY_DISPLAY_NAMES = {
     "waveguides": "Waveguides",
     "bends": "Bends",
@@ -129,6 +139,8 @@ def build_catalog() -> dict[str, list[ComponentSpec]]:
     catalog: dict[str, list[ComponentSpec]] = {}
     for name in dir(gf.components):
         if name.startswith("_") or name not in registered_names:
+            continue
+        if name in _EXCLUDED_COMPONENTS:
             continue
         factory = getattr(gf.components, name)
         if not callable(factory) or inspect.isclass(factory) or inspect.ismodule(factory):

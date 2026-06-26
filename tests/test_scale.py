@@ -63,6 +63,16 @@ def test_select_all_and_delete_at_scale_is_undoable(qapp):
     assert len(win.scene.items_by_inst) == 50
 
 
+def test_known_broken_components_are_excluded_from_the_catalog(qapp):
+    """spiral_racetrack_fixed_length passes every structural filter but its own
+    internal route_bundle collides, flooding the log with routing errors and
+    kfactory name conflicts. It's excluded by name so the palette and the
+    placement test stay quiet."""
+    names = {spec.name for specs in build_catalog().values() for spec in specs}
+    assert "spiral_racetrack_fixed_length" not in names
+    assert "spiral_racetrack" in names  # the well-behaved siblings stay
+
+
 def test_entire_catalog_is_placeable(qapp):
     """The 120-sample test above is fast and representative, but it already
     caught two distinct classes of broken catalog entries that a smaller
