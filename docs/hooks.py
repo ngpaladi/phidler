@@ -39,7 +39,11 @@ def on_pre_build(config, **kwargs) -> None:
         module.regenerate_all()
         log.info("Regenerated documentation screenshots")
     except Exception as exc:  # noqa: BLE001 — never fail the docs build over screenshots
-        log.warning(
+        # info, not warning: this is the expected path in CI (the docs workflow
+        # installs only mkdocs, not phidler/PySide6), and `mkdocs build --strict`
+        # aborts on any WARNING logged under the mkdocs logger. The committed
+        # screenshots are the fallback.
+        log.info(
             "Skipped screenshot regeneration (%s: %s) — using the committed images. "
             "Run via ./run.sh so Qt's library path is set, with the FDTD extras installed.",
             type(exc).__name__,
