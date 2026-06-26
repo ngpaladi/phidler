@@ -376,6 +376,15 @@ class LayoutDocument:
         p2 = self.instances[inst_b_id].ref.ports[port_b]
 
         solved_amplitude: float | None = None
+        # Components the route should not cross (everything except its own two
+        # endpoints), and whether the straight path between the ports runs into
+        # any of them.
+        obstacles = self._obstacle_bboxes({inst_a_id, inst_b_id})
+        blocked = any(
+            self._segment_hits_box(p1.dcenter[0], p1.dcenter[1], p2.dcenter[0], p2.dcenter[1], box)
+            for box in obstacles
+        )
+
         # A supplied amplitude (project reload or Python-script import) rebuilds
         # that exact meander deterministically; a goal without an amplitude
         # searches for one. Length matching always uses the manhattan meander,
@@ -385,8 +394,23 @@ class LayoutDocument:
                 p1, p2, cross_section, goal_length_um, meander_amplitude_um
             )
             refs, length_dbu = list(route.instances), route.length
-        elif diagonal:
+        elif diagonal and not blocked:
+            # Clear straight shot — take the short diagonal path.
             refs, length_dbu = self._route_diagonal(p1, p2, cross_section)
+        elif blocked:
+            # A component is in the way: try a manhattan detour around it, but
+            # only keep it if it genuinely clears *every* obstacle (a single
+            # bump can dodge one component into another). Otherwise fall back to
+            # a plain direct route — never "avoided A by crossing B".
+            detour = self._route_around(p1, p2, cross_section, obstacles)
+            if detour is not None and not self._route_hits_boxes(detour[0], obstacles):
+                refs, length_dbu = detour
+            else:
+                if detour is not None:
+                    for ref in detour[0]:
+                        ref.delete()
+                route = gf.routing.route_single(self.top, p1, p2, cross_section=cross_section)
+                refs, length_dbu = list(route.instances), route.length
         else:
             route = gf.routing.route_single(self.top, p1, p2, cross_section=cross_section)
             refs, length_dbu = list(route.instances), route.length
@@ -413,6 +437,111 @@ class LayoutDocument:
 
     def _route_length_um(self, route) -> float:
         return route.length * self.top.kcl.dbu
+
+    _OBSTACLE_MARGIN_UM = 2.0  # keep routes this far clear of other components
+    _DETOUR_MIN_AMP_UM = 20.0  # min perpendicular bump a default euler-bend route can realize
+
+    def _obstacle_bboxes(self, exclude_inst_ids: set[int]) -> list:
+        """Bounding boxes (in µm, with a small clearance margin) of every placed
+        instance except the route's own two endpoints — the components a route
+        should avoid crossing."""
+        import klayout.db as kdb
+
+        boxes = []
+        m = self._OBSTACLE_MARGIN_UM
+        for inst_id, placed in self.instances.items():
+            if inst_id in exclude_inst_ids:
+                continue
+            b = placed.ref.dbbox()
+            boxes.append(kdb.DBox(b.left - m, b.bottom - m, b.right + m, b.top + m))
+        return boxes
+
+    @staticmethod
+    def _segment_hits_box(x1: float, y1: float, x2: float, y2: float, box) -> bool:
+        """Liang–Barsky: does the segment (x1,y1)-(x2,y2) cross the box? Used as
+        a cheap proxy for 'would a direct route pass through this component'."""
+        dx, dy = x2 - x1, y2 - y1
+        t0, t1 = 0.0, 1.0
+        for p, q in ((-dx, x1 - box.left), (dx, box.right - x1), (-dy, y1 - box.bottom), (dy, box.top - y1)):
+            if p == 0:
+                if q < 0:
+                    return False
+            else:
+                t = q / p
+                if p < 0:
+                    if t > t1:
+                        return False
+                    t0 = max(t0, t)
+                else:
+                    if t < t0:
+                        return False
+                    t1 = min(t1, t)
+        return t0 <= t1
+
+    def _route_hits_boxes(self, refs, boxes: list) -> bool:
+        """Does the built route's actual geometry intersect any of the boxes?
+        The verify-after guard for the detour heuristic: a single bump can
+        dodge one component and run straight through another, so the finished
+        route is checked against every obstacle and thrown away if it still
+        hits one."""
+        import klayout.db as kdb
+
+        dbu = self.top.kcl.dbu
+        region = kdb.Region()
+        for ref in refs:
+            for shapes in self._shapes_for_ref(ref).values():
+                for hull, _holes in shapes:
+                    region.insert(kdb.Polygon([kdb.Point(round(x / dbu), round(y / dbu)) for x, y in hull]))
+        for b in boxes:
+            ibox = kdb.Box(round(b.left / dbu), round(b.bottom / dbu), round(b.right / dbu), round(b.top / dbu))
+            if not (region & kdb.Region(ibox)).is_empty():
+                return True
+        return False
+
+    def _route_around(self, p1, p2, cross_section: str, obstacles: list):
+        """Best-effort manhattan detour around the components blocking the
+        straight path: a single perpendicular bump sized to clear them, then
+        traverse, then bump back. Returns (refs, length_in_dbu) or None if no
+        bump can be realized. This is a heuristic, not a router — the caller
+        verifies the result with _route_hits_boxes and discards it if it still
+        crosses something."""
+        x1, y1 = p1.dcenter[0], p1.dcenter[1]
+        x2, y2 = p2.dcenter[0], p2.dcenter[1]
+        blockers = [b for b in obstacles if self._segment_hits_box(x1, y1, x2, y2, b)]
+        if not blockers:
+            return None
+        margin = self._OBSTACLE_MARGIN_UM
+        floor = self._DETOUR_MIN_AMP_UM  # euler bends need room; smaller bumps don't realize
+        # The bump must span the obstacles' extent along the route axis (advance
+        # up to just before them, go around, come back just after) — a bump that
+        # rises and falls in the wrong place clears nothing.
+        if abs(x2 - x1) >= abs(y2 - y1):  # horizontal route: detour in y
+            line_y = (y1 + y2) / 2
+            up = max(b.top for b in blockers) - line_y + margin
+            down = line_y - min(b.bottom for b in blockers) + margin
+            amp = max(up, floor) if up <= down else -max(down, floor)
+            left = min(b.left for b in blockers) - floor
+            right = max(b.right for b in blockers) + floor
+            x_near, x_far = (left, right) if x2 >= x1 else (right, left)
+            steps = [{"x": x_near, "y": line_y}, {"x": x_near, "y": line_y + amp},
+                     {"x": x_far, "y": line_y + amp}, {"x": x_far, "y": line_y}]
+        else:  # vertical route: detour in x
+            line_x = (x1 + x2) / 2
+            right = max(b.right for b in blockers) - line_x + margin
+            left = line_x - min(b.left for b in blockers) + margin
+            amp = max(right, floor) if right <= left else -max(left, floor)
+            bottom = min(b.bottom for b in blockers) - floor
+            top = max(b.top for b in blockers) + floor
+            y_near, y_far = (bottom, top) if y2 >= y1 else (top, bottom)
+            steps = [{"x": line_x, "y": y_near}, {"x": line_x + amp, "y": y_near},
+                     {"x": line_x + amp, "y": y_far}, {"x": line_x, "y": y_far}]
+        try:
+            route = gf.routing.route_single(self.top, p1, p2, cross_section=cross_section, steps=steps)
+            if not route.instances:
+                return None
+            return list(route.instances), route.length
+        except Exception:
+            return None
 
     def _route_diagonal(self, p1, p2, cross_section: str):
         """Route p1→p2 directly with all-angle (diagonal) euler bends, so it

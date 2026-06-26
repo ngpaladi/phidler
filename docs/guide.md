@@ -146,13 +146,19 @@ visibility or change a layer's color with the checkbox and color swatch.
 4. Routes are selectable and deletable like any other item, and fully
    undoable.
 
-By default routes are **manhattan** (horizontal/vertical segments joined by
-90° euler bends), which can U-turn when the two ports face the same way. Tick
-**Diagonal** in the toolbar to route directly with **all-angle** euler bends
-instead, so the route takes the short diagonal path. If a particular pair of
-ports can't be routed all-angle (e.g. they're too close for the bend radius),
-it falls back to a manhattan route automatically. (Diagonal is ignored when a
+**Diagonal** routing (on by default in the toolbar) sends a route along the
+short diagonal path with all-angle euler bends, instead of a manhattan
+L/U-turn. Untick it for manhattan-only routes. (Diagonal is ignored when a
 length goal is set — those use the manhattan meander.)
+
+**Component avoidance**: when a component sits on the straight path between the
+two ports, the route automatically detours around it rather than crossing
+through it. This is best-effort — a single detour around the obstacles in the
+way; if it can't cleanly clear everything (several components boxing the route
+in, or one right at a port), it falls back to a direct route rather than
+weaving through. gdsfactory has no general obstacle router, so think of it as
+"gets out of the way of the obvious blocker", not guaranteed avoidance on a
+dense layout.
 
 <img src="screenshots/routing_example.png" width="700" alt="Routing: a straight waveguide connected to a bend via an auto-routed euler path, with the Route button active in the toolbar">
 
