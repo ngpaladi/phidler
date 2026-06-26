@@ -73,6 +73,35 @@ def test_auto_matched_route_reload_is_deterministic(qapp, tmp_path):
     assert math.isclose(_len_um(doc2, reloaded), original_len, abs_tol=1e-3)
 
 
+def test_auto_matched_route_round_trips_through_python_script(qapp, tmp_path):
+    """The Python-script export must reproduce the meandered (length-matched)
+    geometry, not a shorter natural route — it emits route_single steps, which
+    the importer reads back into the same meander."""
+    from phidler.export_script import export_python_script
+    from phidler.import_script import load_python_script
+
+    doc = LayoutDocument()
+    scene = LayoutScene(doc)
+    a, b = _two_straights_in_a_line(doc)
+    scene.add_instance_item(a.id)
+    scene.add_instance_item(b.id)
+    route = doc.add_route(a.id, "o2", b.id, "o1", "strip", goal_length_um=200.0, auto_match=True)
+    scene.add_route_item(route.id)
+    matched_len = _len_um(doc, route)
+    assert route.meander_amplitude_um is not None
+
+    script = tmp_path / "design.py"
+    text = export_python_script(doc, str(script))
+    assert "steps=" in text  # the meander detour is emitted, not just a bare route_single
+
+    doc2 = LayoutDocument()
+    scene2 = LayoutScene(doc2)
+    load_python_script(str(script), doc2, scene2)
+    reloaded = next(iter(doc2.routes.values()))
+    assert reloaded.meander_amplitude_um is not None
+    assert math.isclose(_len_um(doc2, reloaded), matched_len, abs_tol=1.0)  # geometry preserved
+
+
 def test_goal_length_time_units_convert_via_n_eff(qapp):
     from phidler.canvas.view import C0_UM_PER_FS
     from phidler.main_window import MainWindow

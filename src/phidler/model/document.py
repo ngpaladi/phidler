@@ -27,6 +27,18 @@ _MEANDER_MAX_AMPLITUDE_UM = 5000.0
 _MEANDER_TOLERANCE_UM = 0.5
 
 
+def _meander_steps(p1, p2, amplitude_um: float) -> list[dict]:
+    """route_single `steps` for a single perpendicular detour of the given
+    amplitude between two ports: bump perpendicular to the dominant separation
+    axis, traverse halfway, bump back. Pure (no document state) so the exporter
+    can reproduce the exact detour from stored amplitude + live port positions."""
+    dx = p2.dcenter[0] - p1.dcenter[0]
+    dy = p2.dcenter[1] - p1.dcenter[1]
+    if abs(dx) >= abs(dy):  # mostly horizontal: bump in y, traverse in x
+        return [{"dy": amplitude_um}, {"dx": (dx / 2) or 1.0}, {"dy": -amplitude_um}]
+    return [{"dx": amplitude_um}, {"dy": (dy / 2) or 1.0}, {"dx": -amplitude_um}]
+
+
 def _shapes_from_polygons(polygons_by_layer, dbu: float, layers: dict[LayerKey, LayerInfo]) -> ShapesByLayer:
     result: ShapesByLayer = {}
     for layer_key, polys in polygons_by_layer.items():
@@ -354,7 +366,10 @@ class LayoutDocument:
         p2 = self.instances[inst_b_id].ref.ports[port_b]
 
         solved_amplitude: float | None = None
-        if auto_match and goal_length_um:
+        # A supplied amplitude (project reload or Python-script import) rebuilds
+        # that exact meander deterministically; a goal without an amplitude
+        # searches for one.
+        if meander_amplitude_um is not None or (auto_match and goal_length_um):
             route, solved_amplitude = self._route_to_goal_length(
                 p1, p2, cross_section, goal_length_um, meander_amplitude_um
             )
@@ -390,17 +405,22 @@ class LayoutDocument:
         Returns the route, or None if route_single can't realize this bump for
         the ports' geometry (it returns a degenerate ~0-length route, which we
         treat as failure)."""
-        dx = p2.dcenter[0] - p1.dcenter[0]
-        dy = p2.dcenter[1] - p1.dcenter[1]
-        if abs(dx) >= abs(dy):  # mostly horizontal: bump in y, traverse in x
-            steps = [{"dy": amplitude_um}, {"dx": (dx / 2) or 1.0}, {"dy": -amplitude_um}]
-        else:  # mostly vertical: bump in x, traverse in y
-            steps = [{"dx": amplitude_um}, {"dy": (dy / 2) or 1.0}, {"dx": -amplitude_um}]
+        steps = _meander_steps(p1, p2, amplitude_um)
         try:
             route = gf.routing.route_single(self.top, p1, p2, cross_section=cross_section, steps=steps)
         except Exception:
             return None
         return route
+
+    def meander_steps_for_route(self, route: PlacedRoute) -> list[dict] | None:
+        """The route_single `steps` that reproduce an auto-matched route's
+        meander, or None for a route with no meander. Lets the Python-script
+        exporter emit the same detour instead of a (shorter) natural route."""
+        if route.meander_amplitude_um is None:
+            return None
+        p1 = self.instances[route.instance_id_a].ref.ports[route.port_name_a]
+        p2 = self.instances[route.instance_id_b].ref.ports[route.port_name_b]
+        return _meander_steps(p1, p2, route.meander_amplitude_um)
 
     def _route_to_goal_length(self, p1, p2, cross_section: str, goal_um: float, amplitude_um: float | None):
         """Best-effort adiabatic length matching. Returns (route, amplitude).

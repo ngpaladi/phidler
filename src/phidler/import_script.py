@@ -52,6 +52,20 @@ def _is_add_ref_get_component(node: ast.expr) -> bool:
     )
 
 
+def _meander_amplitude_from_steps(node: ast.expr) -> float | None:
+    """Recover the meander amplitude from a route_single `steps` list literal:
+    the first step's single dx/dy magnitude (see document._meander_steps)."""
+    if not isinstance(node, ast.List) or not node.elts:
+        return None
+    first = node.elts[0]
+    if not isinstance(first, ast.Dict) or not first.values:
+        return None
+    try:
+        return abs(_literal(first.values[0], "route steps amplitude"))
+    except ScriptParseError:
+        return None
+
+
 def _is_route_single_call(node: ast.expr) -> bool:
     if not (
         isinstance(node, ast.Call)
@@ -191,11 +205,21 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
                 a_var, port_a = _port_ref(call.args[1])
                 b_var, port_b = _port_ref(call.args[2])
                 cross_section = "strip"
+                meander_amplitude_um = None
                 for kw in call.keywords:
                     if kw.arg == "cross_section":
                         cross_section = _literal(kw.value, "route cross_section")
+                    elif kw.arg == "steps":
+                        meander_amplitude_um = _meander_amplitude_from_steps(kw.value)
                 pending_routes.append(
-                    {"a_var": a_var, "port_a": port_a, "b_var": b_var, "port_b": port_b, "cross_section": cross_section}
+                    {
+                        "a_var": a_var,
+                        "port_a": port_a,
+                        "b_var": b_var,
+                        "port_b": port_b,
+                        "cross_section": cross_section,
+                        "meander_amplitude_um": meander_amplitude_um,
+                    }
                 )
                 continue
         raise ScriptParseError(
@@ -245,7 +269,16 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
         b_id = var_to_id.get(route["b_var"])
         if a_id is None or b_id is None:
             raise ScriptParseError(f"route_single(...) references an instance variable that was never created")
-        placed = document.add_route(a_id, route["port_a"], b_id, route["port_b"], route["cross_section"])
+        amplitude = route.get("meander_amplitude_um")
+        placed = document.add_route(
+            a_id,
+            route["port_a"],
+            b_id,
+            route["port_b"],
+            route["cross_section"],
+            auto_match=amplitude is not None,
+            meander_amplitude_um=amplitude,
+        )
         scene.add_route_item(placed.id)
         max_id = max(max_id, placed.id)
 

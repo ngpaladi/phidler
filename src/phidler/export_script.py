@@ -82,9 +82,16 @@ def export_python_script(document: LayoutDocument, path: str) -> str:
             if a_var is None or b_var is None:
                 lines.append(f"# skipped route #{route.id}: an endpoint instance no longer exists")
                 continue
+            # Auto-matched routes carry a meander; emit its steps so the
+            # standalone script reproduces the length-matched geometry rather
+            # than a shorter natural route.
+            steps = document.meander_steps_for_route(route)
+            steps_arg = f", steps={steps!r}" if steps else ""
+            if route.goal_length_um:
+                lines.append(f"# route #{route.id} goal length: {route.goal_length_um:.4f} µm")
             lines.append(
                 f"gf.routing.route_single(top, {a_var}.ports[{route.port_name_a!r}], "
-                f"{b_var}.ports[{route.port_name_b!r}], cross_section={route.cross_section!r})"
+                f"{b_var}.ports[{route.port_name_b!r}], cross_section={route.cross_section!r}{steps_arg})"
             )
         lines.append("")
 
