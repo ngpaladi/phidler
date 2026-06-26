@@ -137,6 +137,12 @@ class FdtdParams:
     # Override the project's cladding index (e.g. from a UI dropdown).
     # None means use document.project_settings.clad_index.
     clad_index: float | None = None
+    # Optional acceleration backends passed through to photonfdtd. Both need
+    # their own extra dependency (a CUDA-capable torch for GPU, numba for the
+    # JIT path); leaving them False keeps the plain NumPy engine. A run with an
+    # unavailable backend surfaces photonfdtd's own error via the worker.
+    use_gpu: bool = False
+    use_numba: bool = False
 
     def resolved_cell_size_um(self) -> float:
         return self.cell_size_um if self.cell_size_um is not None else self.wavelength_um / 20
@@ -465,6 +471,8 @@ def build_simulation(document: LayoutDocument, params: FdtdParams = FdtdParams()
         cell_size=cell_size_m,
         padding=(padding_m, padding_m, padding_m),
         run_time=params.resolved_run_time_fs() * 1e-15,
+        use_gpu=params.use_gpu,
+        use_numba=params.use_numba,
     )
 
     sources = params.sources

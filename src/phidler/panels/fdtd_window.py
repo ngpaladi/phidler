@@ -17,6 +17,7 @@ from PySide6.QtGui import (
     QTransform,
 )
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -782,6 +783,18 @@ class FdtdWindow(QMainWindow):
             self.run_units_combo.addItem(label)
         form.addRow("Axis units", self.run_units_combo)
 
+        accel_widget = QWidget()
+        accel_layout = QHBoxLayout(accel_widget)
+        accel_layout.setContentsMargins(0, 0, 0, 0)
+        self.run_gpu_check = QCheckBox("GPU")
+        self.run_gpu_check.setToolTip("Run on the GPU via photonfdtd (needs a CUDA-capable torch install).")
+        self.run_numba_check = QCheckBox("Numba")
+        self.run_numba_check.setToolTip("JIT-compile the update loop with Numba (needs the numba package).")
+        accel_layout.addWidget(self.run_gpu_check)
+        accel_layout.addWidget(self.run_numba_check)
+        accel_layout.addStretch(1)
+        form.addRow("Acceleration", accel_widget)
+
         layout.addLayout(form)
 
         self.place_source_button = QPushButton("Place Source on Canvas")
@@ -960,6 +973,8 @@ class FdtdWindow(QMainWindow):
             run_time_fs=self.run_time_spin.value(),
             sources=self._collect_source_specs(),
             clad_index=self.run_clad_row.clad_index(),
+            use_gpu=self.run_gpu_check.isChecked(),
+            use_numba=self.run_numba_check.isChecked(),
         )
 
     def _on_run_clicked(self) -> None:

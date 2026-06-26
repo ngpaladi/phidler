@@ -17,6 +17,7 @@ or, equivalently, from an already-activated venv with LD_LIBRARY_PATH set:
     QT_QPA_PLATFORM=offscreen python docs/capture_screenshots.py
 """
 
+import os
 from pathlib import Path
 
 from phidler.app import activate_pdk
@@ -25,7 +26,10 @@ activate_pdk()
 
 from PySide6.QtWidgets import QApplication
 
-app = QApplication([])
+# Reuse an existing QApplication when imported (e.g. from the mkdocs build hook,
+# or a second invocation under `mkdocs serve`); only create one when run as a
+# standalone script. Constructing a second QApplication raises.
+app = QApplication.instance() or QApplication([])
 
 from phidler.main_window import MainWindow
 from phidler.model.document import Transform
@@ -259,6 +263,10 @@ def properties_panel_example() -> None:
     win.scene.add_instance_item(inst.id)
     win.scene.items_by_inst[inst.id].setSelected(True)
     win.scene.selectionChanged.emit()
+    # The panel scrolls (small minimum size), so grab it at a height that shows
+    # the whole form rather than its collapsed minimum.
+    win.properties_panel.resize(300, 560)
+    app.processEvents()
     save(win.properties_panel, "properties_panel_example")
 
 
@@ -373,7 +381,9 @@ def tutorial_routing_feedback() -> None:
     win.route_action.setChecked(False)
 
 
-if __name__ == "__main__":
+def regenerate_all() -> None:
+    """Rebuild every embedded screenshot. Called by the standalone script and
+    by the mkdocs pre-build hook (docs/hooks.py)."""
     tutorial_mzi_components()
     tutorial_mzi_routed()
     tutorial_mzi_delay_readout()
@@ -391,3 +401,7 @@ if __name__ == "__main__":
     properties_panel_example()
     console_session()
     print("done")
+
+
+if __name__ == "__main__":
+    regenerate_all()

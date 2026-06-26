@@ -54,6 +54,23 @@ def test_selecting_instance_populates_properties_panel(qapp):
     assert "length" in win.properties_panel._fields
 
 
+def test_properties_panel_minimum_height_stays_small_when_populated(qapp):
+    """The panel scrolls, so selecting a component (which adds Transform +
+    Array groups + many parameter rows) must not balloon its *minimum* size —
+    otherwise the dock can't shrink and QMainWindow reflows, hiding the Console
+    dock and shifting the canvas."""
+    win = MainWindow()
+    empty_min = win.properties_panel.minimumSizeHint().height()
+
+    inst = win.document.add_instance("mmi1x2", {})
+    win.scene.add_instance_item(inst.id)
+    win.scene.items_by_inst[inst.id].setSelected(True)
+
+    populated_min = win.properties_panel.minimumSizeHint().height()
+    assert populated_min == empty_min  # scroll area pins the minimum regardless of content
+    assert populated_min < 200  # comfortably smaller than the old ~780px
+
+
 def test_editing_property_pushes_undoable_command(qapp):
     win = MainWindow()
     win._place_straight_waveguide()

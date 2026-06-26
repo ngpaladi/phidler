@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -52,7 +53,15 @@ class PropertiesPanel(QWidget):
         self._fields: dict[str, QWidget] = {}
         self._bbox_extent: tuple[float, float] = (0.0, 0.0)
 
-        layout = QVBoxLayout(self)
+        # All the form content lives inside a scroll area. Without it, the
+        # panel's *minimum* size hint grows with the selected component's
+        # parameter count (Transform + Array groups + N param rows ≈ 780px for
+        # an MMI), and since a dock can't shrink below its minimum, selecting a
+        # component forced QMainWindow to reflow — stealing height from the
+        # bottom Console dock (it vanished) and resizing the canvas (placement
+        # appeared to jump). Scrolling keeps the panel's minimum small.
+        content = QWidget()
+        layout = QVBoxLayout(content)
         self.title_label = QLabel("No selection")
         layout.addWidget(self.title_label)
 
@@ -100,6 +109,14 @@ class PropertiesPanel(QWidget):
         self.apply_button.clicked.connect(self._on_apply)
         layout.addWidget(self.apply_button)
         layout.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setWidget(content)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
 
         self.setEnabled(False)
 

@@ -12,6 +12,9 @@ nav:
   - User Guide: guide.md
   - Development: development.md
 
+hooks:
+  - docs/hooks.py
+
 markdown_extensions:
   - tables
   - fenced_code

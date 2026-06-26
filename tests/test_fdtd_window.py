@@ -40,6 +40,19 @@ def test_window_has_two_tabs(qapp):
     assert fdtd_win.centralWidget().tabText(1) == "Propagation (FDTD)"
 
 
+def test_gpu_and_numba_checkboxes_feed_into_params(qapp):
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    # Off by default — the plain NumPy engine, no optional deps required.
+    params = fdtd_win._current_params()
+    assert params.use_gpu is False and params.use_numba is False
+
+    fdtd_win.run_gpu_check.setChecked(True)
+    fdtd_win.run_numba_check.setChecked(True)
+    params = fdtd_win._current_params()
+    assert params.use_gpu is True and params.use_numba is True
+
+
 def test_window_prefills_wavelength_from_project_settings(qapp):
     win = MainWindow()
     win.document.project_settings.wavelength_um = 1.31
