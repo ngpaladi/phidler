@@ -78,6 +78,7 @@ class LayoutView(QGraphicsView):
     source_placement_requested = Signal(float, float)  # scene x, y in microns
     context_menu_requested = Signal(QPoint)  # viewport-pixel position
     cursor_position_changed = Signal(float, float)  # scene x, y in microns
+    route_pick_cancelled = Signal()  # Esc dropped a half-finished route's start port
 
     def __init__(self, scene: LayoutScene, parent=None, undo_stack: QUndoStack | None = None) -> None:
         super().__init__(scene, parent)
@@ -329,24 +330,38 @@ class LayoutView(QGraphicsView):
 
         self._measure_items = [line, label]
 
+    def cancel_current_action(self) -> bool:
+        """Back out of whatever interactive action is in progress, most-transient
+        first. Routing is two-stage: the first call drops a half-finished
+        route (the picked start port) but stays in routing mode; the next call
+        exits routing mode. Returns whether anything was cancelled.
+
+        Shared by the canvas's own Esc key (keyPressEvent) and a window-level
+        Esc shortcut, so cancelling works no matter which widget has focus —
+        e.g. right after arming a placement from the palette."""
+        if self.armed_component is not None:
+            self.cancel_placement()
+            return True
+        if self.scene().routing_mode:
+            if self._route_anchor is not None:
+                self.set_route_anchor(None)  # drop the picked start port, stay in routing mode
+                self._clear_hover_port()
+                self.route_pick_cancelled.emit()
+                return True
+            self.set_routing_mode(False)
+            return True
+        if self.measure_mode:
+            self.set_measure_mode(False)
+            return True
+        if self.source_mode:
+            self.set_source_mode(False)
+            return True
+        return False
+
     def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key_Escape:
-            if self.armed_component is not None:
-                self.cancel_placement()
-                event.accept()
-                return
-            if self.scene().routing_mode:
-                self.set_routing_mode(False)
-                event.accept()
-                return
-            if self.measure_mode:
-                self.set_measure_mode(False)
-                event.accept()
-                return
-            if self.source_mode:
-                self.set_source_mode(False)
-                event.accept()
-                return
+        if event.key() == Qt.Key_Escape and self.cancel_current_action():
+            event.accept()
+            return
         super().keyPressEvent(event)
 
     def contextMenuEvent(self, event) -> None:

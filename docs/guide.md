@@ -70,6 +70,11 @@ automatically.
   horizontally / vertically (about either screen axis). You can also use the
   on-canvas transform overlay (see below).
 - **Delete / Copy / Paste**: `Delete`, `Ctrl+C`, `Ctrl+V`.
+- **Cancel with `Esc`**: backs out of whatever you're in the middle of —
+  an armed placement, the measure or source tool, or a route. `Esc` works no
+  matter which panel has focus (you don't have to click the canvas first).
+  Routing is two-stage: the first `Esc` drops a half-finished route (the start
+  port you picked), and a second `Esc` exits routing mode.
 - **Undo / Redo**: `Ctrl+Z` / `Ctrl+Shift+Z`.
 - **Pan**: middle-mouse-drag. **Zoom**: scroll wheel, or View > Zoom to
   Fit / Zoom to Selection (`Ctrl+0` / `Ctrl+Shift+0`).

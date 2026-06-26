@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import gdsfactory as gf
 from PySide6.QtCore import QPoint, QPointF, QRectF, QTimer, Qt
-from PySide6.QtGui import QAction, QKeySequence, QUndoStack
+from PySide6.QtGui import QAction, QKeySequence, QShortcut, QUndoStack
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -88,8 +88,17 @@ class MainWindow(QMainWindow):
         self.view.measure_mode_changed.connect(self._on_measure_mode_changed)
         self.view.measurement_taken.connect(self._on_measurement_taken)
         self.view.cursor_position_changed.connect(self._on_cursor_position_changed)
+        self.view.route_pick_cancelled.connect(self._on_route_pick_cancelled)
         self.scene.selectionChanged.connect(self._on_selection_changed)
         self.scene.port_clicked.connect(self._on_port_clicked)
+
+        # Esc cancels whatever interactive action is in progress, from anywhere
+        # in the window — not only when the canvas has keyboard focus (e.g. just
+        # after clicking a palette component to arm a placement, the palette
+        # still holds focus). The canvas's own keyPressEvent calls the same
+        # method when it is the focused widget.
+        self._cancel_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self._cancel_shortcut.activated.connect(self.view.cancel_current_action)
 
         self._build_palette_panel()
         self._build_properties_panel()
@@ -290,7 +299,10 @@ class MainWindow(QMainWindow):
 
         self.route_action = toolbar.addAction("Route")
         self.route_action.setCheckable(True)
-        self.route_action.setToolTip("Click a port, then click another port to route between them (Esc to exit)")
+        self.route_action.setToolTip(
+            "Click a port, then click another port to route between them. "
+            "Esc cancels a half-finished route; Esc again exits routing."
+        )
         self.route_action.toggled.connect(self.view.set_routing_mode)
 
         self.measure_action = toolbar.addAction("Measure")
@@ -568,6 +580,12 @@ class MainWindow(QMainWindow):
 
     def _on_snap_enabled_changed(self, enabled: bool) -> None:
         self.view.snap_enabled = enabled
+
+    def _on_route_pick_cancelled(self) -> None:
+        """The view dropped a half-finished route (first Esc); clear our pending
+        start port to match and hint that a second Esc exits routing mode."""
+        self._pending_route_port = None
+        self.statusBar().showMessage("Route cancelled — pick a start port (Esc again to exit routing)", 3000)
 
     def _on_port_clicked(self, inst_id: int, port_name: str) -> None:
         if self._pending_route_port is None:

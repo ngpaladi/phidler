@@ -89,6 +89,38 @@ def test_port_click_tolerance_is_zoom_aware(qapp):
     assert win.view._nearest_port_for_routing(QPointF(500.0, 500.0)) is None
 
 
+def test_escape_cancels_an_armed_placement(qapp):
+    """Esc backs out of a placement armed from the palette — the same cancel
+    the focus-independent window shortcut drives."""
+    win = MainWindow()
+    win.view.arm_placement("straight")
+    assert win.view.armed_component == "straight"
+    assert win.view.cancel_current_action() is True
+    assert win.view.armed_component is None
+
+
+def test_escape_is_two_stage_for_routing(qapp):
+    """First Esc drops the half-finished route (the picked start port) but
+    stays in routing mode; a second Esc exits routing mode."""
+    win = MainWindow()
+    win.view.resize(400, 400)
+    win.view.show()
+    a_id, b_id = _place_two_straights(win)
+    win.route_action.setChecked(True)
+    win._on_port_clicked(a_id, "o2")
+    assert win._pending_route_port == (a_id, "o2")
+    assert win.view._route_anchor is not None
+
+    win.view.cancel_current_action()  # first Esc
+    assert win._pending_route_port is None
+    assert win.view._route_anchor is None
+    assert win.scene.routing_mode is True  # still routing — only the pick was dropped
+
+    win.view.cancel_current_action()  # second Esc
+    assert win.scene.routing_mode is False
+    assert win.route_action.isChecked() is False
+
+
 def test_escape_exits_routing_mode_and_unchecks_toolbar_button(qapp):
     win = MainWindow()
     win.view.resize(400, 400)
