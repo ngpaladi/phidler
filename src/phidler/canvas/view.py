@@ -96,6 +96,7 @@ class LayoutView(QGraphicsView):
         self._panning = False
         self._pan_last_pos = QPointF()
         self._drag_start_transforms: dict[int, Transform] = {}
+        self._dimmed_route_ids: set[int] = set()  # routes faded during a drag (recomputed on drop)
         self.armed_component: str | None = None
         self.measure_mode = False
         self._measure_first_point: QPointF | None = None
@@ -441,6 +442,7 @@ class LayoutView(QGraphicsView):
         # not to the snapped pos we set here, so re-snapping every frame is
         # stable and doesn't drift.
         if self._drag_start_transforms and (event.buttons() & Qt.LeftButton):
+            self._dim_connected_routes()  # fade attached tracks so the stale path reads as "will update"
             self._snap_dragged_items()
 
     def report_cursor_position(self, viewport_pos: QPoint) -> None:
@@ -482,6 +484,35 @@ class LayoutView(QGraphicsView):
                         self.undo_stack.push(MoveInstanceCommand(scene.document, scene, inst_id, old_t, new_t))
             self._drag_start_transforms = {}
             self.instances_moved.emit(committed)
+
+        # Rerouted tracks come back as fresh (full-opacity) items; restore any
+        # faded route that wasn't rebuilt (e.g. the drag ended where it started).
+        self._restore_dimmed_routes()
+
+    def _dim_connected_routes(self) -> None:
+        """Fade the scene items of routes attached to the dragged instances, so
+        their now-stale path reads as 'will be recomputed on drop' rather than a
+        frozen UI. Idempotent: only fades routes not already faded this drag."""
+        scene = self.scene()
+        document = getattr(scene, "document", None)
+        if document is None:
+            return
+        for inst_id in self._drag_start_transforms:
+            for route_id in document.routes_for_instance(inst_id):
+                if route_id in self._dimmed_route_ids:
+                    continue
+                item = scene.route_items.get(route_id)
+                if item is not None:
+                    item.setOpacity(0.3)
+                    self._dimmed_route_ids.add(route_id)
+
+    def _restore_dimmed_routes(self) -> None:
+        scene = self.scene()
+        for route_id in self._dimmed_route_ids:
+            item = scene.route_items.get(route_id)
+            if item is not None:
+                item.setOpacity(1.0)
+        self._dimmed_route_ids.clear()
 
     def _snap_dragged_items(self) -> None:
         """Snap the currently-dragged items: align to a nearby port if one is

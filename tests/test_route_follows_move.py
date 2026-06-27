@@ -53,3 +53,28 @@ def test_unrelated_move_leaves_routes_alone(qapp):
 
     undo.push(MoveInstanceCommand(doc, scene, c.id, doc.get_transform(c.id), Transform(x=40.0, y=50.0, rotation=0.0, mirror=False)))
     assert abs(_route_max_x(doc, route.id) - before) < 1.0  # untouched
+
+
+def test_connected_routes_fade_during_drag_and_restore_after(qapp):
+    """While a component is dragged its attached track is stale (it only
+    re-routes on drop), so it's faded to signal 'will update' — not frozen —
+    then restored when the drag ends."""
+    from phidler.main_window import MainWindow
+
+    win = MainWindow()
+    a = win.document.add_instance("straight", {"length": 10.0, "width": 0.5}, x=0.0, y=0.0)
+    win.scene.add_instance_item(a.id)
+    b = win.document.add_instance("straight", {"length": 10.0, "width": 0.5}, x=80.0, y=0.0)
+    win.scene.add_instance_item(b.id)
+    route = win.document.add_route(a.id, "o2", b.id, "o1", "strip")
+    win.scene.add_route_item(route.id)
+    assert win.scene.route_items[route.id].opacity() == 1.0
+
+    win.view._drag_start_transforms = {b.id: win.document.get_transform(b.id)}
+    win.view._dim_connected_routes()
+    assert win.scene.route_items[route.id].opacity() < 1.0  # faded mid-drag
+    assert route.id in win.view._dimmed_route_ids
+
+    win.view._restore_dimmed_routes()
+    assert win.scene.route_items[route.id].opacity() == 1.0  # restored on drop
+    assert not win.view._dimmed_route_ids
