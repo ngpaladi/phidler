@@ -41,6 +41,23 @@ def test_subprocess_run_matches_in_process(qapp):
     assert sim_stub.grid.shape[0] == sub.shape[1]
 
 
+def test_subprocess_applies_the_region(qapp):
+    """region_um survives serialization into the child (job JSON -> list -> tuple)
+    and actually shrinks the gridded domain there."""
+    from phidler.fdtd_sim import estimate_grid_cell_count
+
+    doc = LayoutDocument()
+    doc.add_instance("straight", {"length": 20.0, "width": 0.5}, x=0.0, y=0.0)
+    doc.add_instance("mmi1x2", {}, x=200.0, y=150.0)  # far away -> huge full grid
+    params = FdtdParams(cell_size_um=0.1, use_numba=True, sources=(SourceSpec(x_um=-8.0, y_um=0.0),))
+    region = (-15.0, -6.0, 15.0, 6.0)
+
+    sim_stub, _, _ = run_in_subprocess(doc, params, region_um=region)
+    roi_cells = sim_stub.grid.shape[0] * sim_stub.grid.shape[1] * sim_stub.grid.shape[2]
+    assert roi_cells == estimate_grid_cell_count(doc, params, region_um=region)  # region took effect in child
+    assert roi_cells < estimate_grid_cell_count(doc, params) / 10  # far smaller than the full layout
+
+
 def test_subprocess_reports_the_backend_actually_used(qapp):
     """The child reports the backend it really ran on (not what was requested),
     so a silent CPU fallback in the child is visible rather than just slow."""

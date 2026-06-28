@@ -605,6 +605,7 @@ class FdtdWindow(QMainWindow):
         self._syncing_run_time = False
         self._last_sim = None
         self._last_result = None
+        self._region_um = None  # set per-run from "simulate selection only"
         self._last_params: FdtdParams | None = None
         self._field_image_initialized = False
 
@@ -1178,10 +1179,15 @@ class FdtdWindow(QMainWindow):
             for src in self._last_params.sources:
                 self.run_view.add_source_marker(src.x_um, src.y_um)
 
-        # Render first frame then initialise viewport
+        # Render first frame then initialise viewport. For a region run, frame
+        # the simulated region (the field image) — copying the design canvas's
+        # viewport would show the whole chip with the ROI field as a tiny sliver.
         self.frame_slider.setValue(0)
         self._draw_frame(0)
-        self.run_view.copy_viewport_from(self.view)
+        if getattr(self, "_region_um", None) is not None:
+            self.run_view.fit_to_image()
+        else:
+            self.run_view.copy_viewport_from(self.view)
 
     def _on_fdtd_failed(self, message: str) -> None:
         self.run_button.setEnabled(True)
