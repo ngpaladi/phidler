@@ -1,6 +1,7 @@
 """FDTD simulation window — native Qt rendering, no matplotlib dependency."""
 from __future__ import annotations
 
+import dataclasses
 import math
 import time
 
@@ -17,9 +18,11 @@ from PySide6.QtGui import (
     QTransform,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGraphicsScene,
     QGraphicsView,
@@ -147,8 +150,15 @@ _CLADDING_MATERIALS: list[tuple[str, float | None]] = [
 # ---------------------------------------------------------------------------
 
 _RT_MIN_FS = 10.0
-_RT_MAX_FS = 1_000.0
+_RT_MAX_FS = 100_000.0  # slider reaches 100 ps; the spin box goes higher still
 _RT_STEPS = 200
+
+# Cap on recorded movie frames: a long run has hundreds of thousands of
+# timesteps, and recording every few would store (and play back) an unusable
+# number of frames — so the monitor interval is stretched to keep frames near
+# this count regardless of run length.
+_MAX_MOVIE_FRAMES = 300
+_BASE_PLAY_INTERVAL_MS = 100  # frame period at 1× playback speed (10 fps)
 
 
 def _slider_to_fs(v: int) -> float:
@@ -606,6 +616,7 @@ class FdtdWindow(QMainWindow):
         self._last_sim = None
         self._last_result = None
         self._region_um = None  # set per-run from "simulate selection only"
+        self._field_origin_um = (0.0, 0.0)  # absolute centre of the field image
         self._last_params: FdtdParams | None = None
         self._field_image_initialized = False
 
@@ -791,7 +802,7 @@ class FdtdWindow(QMainWindow):
 
         self.run_time_spin = QDoubleSpinBox()
         self.run_time_spin.setDecimals(1)
-        self.run_time_spin.setRange(1.0, 100_000.0)
+        self.run_time_spin.setRange(1.0, 1_000_000.0)  # up to 1 ns for very long runs
         self.run_time_spin.setSuffix(" fs")
         default_rt = default_params.resolved_run_time_fs()
         self.run_time_spin.setValue(default_rt)
@@ -901,6 +912,19 @@ class FdtdWindow(QMainWindow):
         self.frame_slider.setEnabled(False)
         self.frame_slider.valueChanged.connect(self._on_slider_changed)
         playback_row.addWidget(self.frame_slider)
+
+        playback_row.addWidget(QLabel("Speed"))
+        self.play_speed_combo = QComboBox()
+        for label, mult in (("0.25×", 0.25), ("0.5×", 0.5), ("1×", 1.0), ("2×", 2.0), ("4×", 4.0)):
+            self.play_speed_combo.addItem(label, mult)
+        self.play_speed_combo.setCurrentIndex(2)  # 1×
+        self.play_speed_combo.currentIndexChanged.connect(self._on_play_speed_changed)
+        playback_row.addWidget(self.play_speed_combo)
+
+        self.save_gif_button = QPushButton("Save GIF…")
+        self.save_gif_button.setEnabled(False)
+        self.save_gif_button.clicked.connect(self._on_save_gif)
+        playback_row.addWidget(self.save_gif_button)
         layout.addLayout(playback_row)
 
         self.run_view = FieldView()
@@ -1100,6 +1124,14 @@ class FdtdWindow(QMainWindow):
         dt = courant / (299_792_458.0 * (3 ** 0.5) / cell_size_m)
         n_steps = int(params.resolved_run_time_fs() * 1e-15 / dt) + 1
 
+        # Stretch the monitor interval on long runs so the movie stays ~a few
+        # hundred frames instead of one per few steps (which would be unusable
+        # and eat memory). Short runs keep the fine default interval.
+        interval = max(params.monitor_interval, math.ceil(n_steps / _MAX_MOVIE_FRAMES))
+        if interval != params.monitor_interval:
+            params = dataclasses.replace(params, monitor_interval=interval)
+            self._last_params = params
+
         grid = (cell_count, 1, 1)
         memory_gb = estimate_memory_gb(cell_count)
         selected = "gpu" if params.use_gpu else ("numba" if params.use_numba else "numpy")
@@ -1168,6 +1200,18 @@ class FdtdWindow(QMainWindow):
         self.frame_slider.setEnabled(n_frames > 1)
         self.frame_slider.setRange(0, max(n_frames - 1, 0))
         self.play_button.setEnabled(n_frames > 1)
+        self.save_gif_button.setEnabled(n_frames > 0)
+
+        # from_gdsfactory centres the FDTD domain on the (region or layout) bbox
+        # centre, so grid.coords come back centred on 0 while the chip outline and
+        # source markers are in absolute layout coords. Record that centre so the
+        # field image can be shifted back into absolute coords and line up.
+        if self._region_um is not None:
+            left, bottom, right, top = self._region_um
+        else:
+            bb = self.document.top.bbox()
+            left, bottom, right, top = bb.left, bb.bottom, bb.right, bb.top
+        self._field_origin_um = ((left + right) / 2.0, (bottom + top) / 2.0)
 
         # Draw chip outlines and source markers (once per run)
         self.run_view.clear_overlays()
@@ -1198,8 +1242,16 @@ class FdtdWindow(QMainWindow):
     def _on_slider_changed(self, value: int) -> None:
         self._draw_frame(value)
 
+    def _play_interval_ms(self) -> int:
+        speed = self.play_speed_combo.currentData() or 1.0
+        return max(10, round(_BASE_PLAY_INTERVAL_MS / speed))
+
+    def _on_play_speed_changed(self, _index: int) -> None:
+        self._play_timer.setInterval(self._play_interval_ms())
+
     def _on_play_toggled(self, checked: bool) -> None:
         if checked:
+            self._play_timer.setInterval(self._play_interval_ms())
             self._play_timer.start()
             self.play_button.setText("Pause")
         else:
@@ -1210,6 +1262,53 @@ class FdtdWindow(QMainWindow):
         n_frames = self.frame_slider.maximum() + 1
         self.frame_slider.setValue((self.frame_slider.value() + 1) % max(n_frames, 1))
 
+    def _on_save_gif(self) -> None:
+        if self._last_result is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Save GIF", "simulation.gif", "GIF (*.gif)")
+        if not path:
+            return
+        if not path.lower().endswith(".gif"):
+            path += ".gif"
+        try:
+            n = self._export_gif(path)
+        except Exception as exc:  # PIL missing, disk error, etc.
+            QMessageBox.critical(self, "Save GIF failed", str(exc))
+            return
+        self.run_status_label.setText(f"Saved {n}-frame GIF to {path}")
+
+    def _export_gif(self, path: str) -> int:
+        """Render every frame of the current result (field + chip overlay, as
+        shown) into an animated GIF, played at the current Speed. Returns the
+        frame count."""
+        arr = self._last_result.fields["field"]["Ez"]
+        n_frames = int(arr.shape[0])
+        restore = self.frame_slider.value()
+        frames = []
+        for i in range(n_frames):
+            self._draw_frame(i)
+            QApplication.processEvents()  # let the view repaint before grabbing
+            frames.append(self._qpixmap_to_pil(self.run_view.grab()))
+        self._draw_frame(restore)
+
+        frames[0].save(
+            path,
+            save_all=True,
+            append_images=frames[1:],
+            duration=self._play_interval_ms(),  # ms per frame, matches playback speed
+            loop=0,
+        )
+        return n_frames
+
+    @staticmethod
+    def _qpixmap_to_pil(pixmap):
+        from PIL import Image
+
+        image = pixmap.toImage().convertToFormat(QImage.Format_RGBA8888)
+        width, height = image.width(), image.height()
+        buffer = bytes(image.constBits())[: width * height * 4]
+        return Image.frombytes("RGBA", (width, height), buffer).convert("RGB")
+
     def _draw_frame(self, frame_index: int) -> None:
         if self._last_result is None or self._last_sim is None:
             return
@@ -1219,8 +1318,11 @@ class FdtdWindow(QMainWindow):
         z_idx = 0 if arr.shape[3] == 1 else nearest_z_index(self._last_sim.grid, 0.0)
         frame = arr[frame_index, :, :, z_idx]          # (Nx, Ny)
 
-        x_coords = self._last_sim.grid.coords[0] * 1e6
-        y_coords = self._last_sim.grid.coords[1] * 1e6
+        # Shift the centred grid coords back to absolute layout coords so the
+        # field image registers with the chip outline (see _on_fdtd_finished).
+        origin_x, origin_y = getattr(self, "_field_origin_um", (0.0, 0.0))
+        x_coords = self._last_sim.grid.coords[0] * 1e6 + origin_x
+        y_coords = self._last_sim.grid.coords[1] * 1e6 + origin_y
         extent = (
             float(x_coords[0]), float(x_coords[-1]),
             float(y_coords[0]), float(y_coords[-1]),

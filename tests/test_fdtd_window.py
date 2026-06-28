@@ -122,6 +122,66 @@ def test_simulate_selection_only_builds_a_region_from_the_selection(qapp):
     assert estimate_grid_cell_count(win.document, p, region_um=region) < estimate_grid_cell_count(win.document, p) / 10
 
 
+def test_field_image_is_placed_in_absolute_layout_coords(qapp):
+    # from_gdsfactory centres the grid on 0, but the chip outline is in absolute
+    # coords — so the field image must be shifted by the layout centre to line up.
+    from phidler.fdtd_sim import FdtdParams, SourceSpec, build_simulation, run_simulation
+
+    win = MainWindow()
+    win.document.add_instance("straight", {"length": 40.0, "width": 0.5}, x=50.0, y=20.0)
+    fdtd_win = FdtdWindow(win.document, win.view)
+    bb = win.document.top.bbox()
+
+    params = FdtdParams(cell_size_um=0.1, use_numba=True, sources=(SourceSpec(x_um=55.0, y_um=20.0),))
+    sim = build_simulation(win.document, params)
+    result = run_simulation(sim)
+    fdtd_win._last_params = params
+    fdtd_win._region_um = None
+    fdtd_win._on_fdtd_finished(sim, result, 1.0)
+
+    cx, cy = fdtd_win._field_origin_um
+    assert cx == pytest.approx((bb.left + bb.right) / 2)  # not 0 — the layout centre
+    assert cy == pytest.approx((bb.bottom + bb.top) / 2)
+
+
+def test_playback_speed_sets_the_frame_interval(qapp):
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+
+    fdtd_win.play_speed_combo.setCurrentIndex(2)  # 1×
+    assert fdtd_win._play_interval_ms() == 100
+    fdtd_win.play_speed_combo.setCurrentIndex(4)  # 4×
+    assert fdtd_win._play_interval_ms() == 25
+    fdtd_win.play_speed_combo.setCurrentIndex(0)  # 0.25×
+    assert fdtd_win._play_interval_ms() == 400
+
+
+def test_export_gif_writes_an_animated_gif(qapp, tmp_path):
+    from PIL import Image
+
+    from phidler.fdtd_sim import FdtdParams, SourceSpec, build_simulation, run_simulation
+
+    win = MainWindow()
+    win.document.add_instance("straight", {"length": 10.0, "width": 0.5})
+    fdtd_win = FdtdWindow(win.document, win.view)
+    fdtd_win.run_view.resize(160, 90)  # grab() needs a real size
+
+    params = FdtdParams(cell_size_um=0.1, run_time_fs=20.0, use_numba=True, sources=(SourceSpec(x_um=-4.0, y_um=0.0),))
+    sim = build_simulation(win.document, params)
+    result = run_simulation(sim)
+    fdtd_win._last_params = params
+    fdtd_win._region_um = None
+    fdtd_win._on_fdtd_finished(sim, result, 1.0)
+    assert fdtd_win.save_gif_button.isEnabled()
+
+    path = tmp_path / "sim.gif"
+    n = fdtd_win._export_gif(str(path))
+    assert n == result.fields["field"]["Ez"].shape[0]
+    assert path.exists()
+    img = Image.open(str(path))
+    assert img.format == "GIF" and img.is_animated  # a real animation
+
+
 def test_window_prefills_wavelength_from_project_settings(qapp):
     win = MainWindow()
     win.document.project_settings.wavelength_um = 1.31
