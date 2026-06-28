@@ -326,11 +326,16 @@ plays the result back as a movie:
    the estimated run time is more than a few seconds, you'll be asked to
    confirm first — true 3D propagation is genuinely more expensive than
    a quick preview, and this estimate is calibrated against real
-   measured runs, not guessed.
+   measured runs, not guessed. Run time goes up to 100 ps on the slider
+   (1 ns if you type it into the box) for watching light propagate over a
+   long distance; however long the run, the movie is kept to a few hundred
+   frames so it stays playable.
 5. Once it finishes, use the **Play** button and the slider underneath
    to scrub through the field evolving over time, overlaid on a cyan
    outline of your actual chip layout — looping back to the start
-   automatically.
+   automatically. **Speed** sets the playback rate (0.25×–4×), and
+   **Save GIF…** writes the whole animation — field plus chip outline, exactly
+   as shown — to an animated GIF at the current speed.
 
 ![Propagation result: red/blue field pattern radiating from a point source and coupling into a waveguide, overlaid on its outline, with the time slider and Play button below the source table](screenshots/fdtd_propagation.png)
 
