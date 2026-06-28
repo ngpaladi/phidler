@@ -39,3 +39,21 @@ def test_subprocess_run_matches_in_process(qapp):
     # the stub exposes just what the display reads
     assert len(sim_stub.grid.coords) == 3
     assert sim_stub.grid.shape[0] == sub.shape[1]
+
+
+def test_subprocess_reports_the_backend_actually_used(qapp):
+    """The child reports the backend it really ran on (not what was requested),
+    so a silent CPU fallback in the child is visible rather than just slow."""
+    from phidler.fdtd_sim import gpu_available, numba_available
+
+    doc = LayoutDocument()
+    doc.add_instance("straight", {"length": 8.0, "width": 0.5})
+    src = (SourceSpec(x_um=-5.0, y_um=0.0),)
+
+    if numba_available():
+        sim_stub, _, _ = run_in_subprocess(doc, FdtdParams(cell_size_um=0.1, use_numba=True, sources=src))
+        assert sim_stub.use_numba is True and sim_stub.use_gpu is False
+
+    if gpu_available():
+        sim_stub, _, _ = run_in_subprocess(doc, FdtdParams(cell_size_um=0.1, use_gpu=True, sources=src))
+        assert sim_stub.use_gpu is True  # GPU actually engaged in the child, not a quiet fallback

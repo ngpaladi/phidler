@@ -1054,7 +1054,8 @@ class FdtdWindow(QMainWindow):
             reply = QMessageBox.question(
                 self, "Large simulation",
                 f"This grid has about {cell_count:,} cells and is estimated to take "
-                f"roughly {estimated_seconds:.0f} s (NumPy backend, no GPU). Continue?",
+                f"roughly {estimated_seconds:.0f} s on the plain CPU engine (the default "
+                f"Numba and GPU backends are faster). Continue?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -1088,8 +1089,16 @@ class FdtdWindow(QMainWindow):
         arr = result.fields["field"]["Ez"]
         n_frames = arr.shape[0]
         gx, gy, gz = (int(s) for s in sim.grid.shape)  # full sim grid (the movie keeps only z=0)
+        # Report the backend that actually ran (not what was requested) — a GPU
+        # request can quietly fall back to CPU, which this makes visible.
+        if getattr(sim, "use_gpu", False):
+            backend = "GPU"
+        elif getattr(sim, "use_numba", False):
+            backend = "Numba"
+        else:
+            backend = "CPU"
         self.run_status_label.setText(
-            f"Done in {elapsed:.2f} s — {n_frames} frames, grid {gx}×{gy}×{gz}"
+            f"Done on {backend} in {elapsed:.2f} s — {n_frames} frames, grid {gx}×{gy}×{gz}"
         )
 
         self.frame_slider.setEnabled(n_frames > 1)

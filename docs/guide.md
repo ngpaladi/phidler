@@ -343,9 +343,12 @@ Propagation runs use a few accelerators so they don't crawl:
   plain NumPy engine — and runs in the background, so the window stays
   responsive. The very first run compiles the kernel and is slower; that's
   cached to disk, so every run after is fast.
-- **GPU** (CuPy) is far faster still but is left off by default: it runs on the
-  main thread and briefly freezes the UI for the length of the run. Tick it when
-  you want maximum speed and don't mind the pause.
+- **GPU** (CuPy) is far faster still and is left off by default mainly because
+  of its ~1 s startup, which only pays off on larger runs. It runs in a
+  separate process now (its own CUDA context), so — unlike before — it no longer
+  freezes the UI or risks crashing the app; the worker just waits on the child.
+  The status line reports which backend actually ran (**"Done on GPU…"** vs
+  **"…on Numba…"**), so a GPU request that quietly fell back to CPU is visible.
 - The propagation domain keeps only as much **cladding** as the mode's
   evanescent field actually needs (a few decay lengths, scaled by your
   platform's index contrast), rather than the full cladding the mode solver

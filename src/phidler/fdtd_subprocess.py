@@ -78,7 +78,14 @@ def run_in_subprocess(document, params: FdtdParams) -> tuple[Any, Any, float]:
                 coords=[data["x"], data["y"], data["z"]],
                 shape=tuple(int(s) for s in data["shape"]),
             )
-            sim_stub = SimpleNamespace(grid=grid)
+            # The child reports the backend it *actually* used, not what was
+            # requested: cupy may be importable in the parent but fall back to
+            # CPU in the child, which would otherwise be an invisible slowdown.
+            sim_stub = SimpleNamespace(
+                grid=grid,
+                use_gpu=bool(data["use_gpu"]),
+                use_numba=bool(data["use_numba"]),
+            )
             result_stub = SimpleNamespace(fields={"field": {"Ez": data["ez"]}})
         return sim_stub, result_stub, elapsed
 
@@ -141,6 +148,11 @@ def _run_job(job_path: str) -> None:
         y=np.asarray(coords[1]),
         z=np.asarray(coords[2]),
         shape=np.asarray([int(s) for s in sim.grid.shape]),
+        # The backend the Simulation resolved to (use_gpu is AND-ed with cupy
+        # availability *in this process*), so the parent can tell the user
+        # whether GPU actually engaged or quietly fell back to CPU.
+        use_gpu=bool(getattr(sim, "use_gpu", False)),
+        use_numba=bool(getattr(sim, "use_numba", False)),
     )
 
 
