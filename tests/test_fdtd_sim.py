@@ -210,7 +210,7 @@ def test_estimate_run_seconds_scales_with_cells_and_steps():
 
 def test_fdtd_params_resolves_defaults_relative_to_wavelength_and_pulse_width():
     params = FdtdParams(wavelength_um=1.55, pulse_fwhm_fs=3.0)
-    assert params.resolved_cell_size_um() == pytest.approx(1.55 / 20)
+    assert params.resolved_cell_size_um() == pytest.approx(1.55 / 15)
     assert params.resolved_run_time_fs() == pytest.approx(3.0 * 8)
 
 

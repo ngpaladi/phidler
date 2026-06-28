@@ -166,7 +166,7 @@ class ScriptedWaveform:
 @dataclass(frozen=True)
 class FdtdParams:
     wavelength_um: float = 1.55
-    cell_size_um: float | None = None  # defaults to wavelength_um / 20
+    cell_size_um: float | None = None  # defaults to wavelength_um / 15
     run_time_fs: float | None = None  # defaults to a few pulse widths
     padding_um: float = 0.5
     pulse_fwhm_fs: float = 3.0
@@ -190,7 +190,10 @@ class FdtdParams:
     precision: str = "float32"
 
     def resolved_cell_size_um(self) -> float:
-        return self.cell_size_um if self.cell_size_um is not None else self.wavelength_um / 20
+        # λ/15 is a deliberately coarse default — fewer cells (so faster, less
+        # memory) for the qualitative field movie this tool produces. λ/20 is
+        # finer/standard; the Cell size control lets a run go either way.
+        return self.cell_size_um if self.cell_size_um is not None else self.wavelength_um / 15
 
     def resolved_run_time_fs(self) -> float:
         return self.run_time_fs if self.run_time_fs is not None else self.pulse_fwhm_fs * 8
