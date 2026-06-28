@@ -356,9 +356,30 @@ Propagation runs use a few accelerators so they don't crawl:
   to the top-down field you see. (Runs are also single-precision by default.)
 - The recorded **field movie** keeps only the one component and the one
   horizontal plane (mid-core, z=0) the playback actually shows, not the whole 3D
-  volume — typically ~90× less memory, so large layouts that used to run out of
-  memory now fit. The plane shown is mid-core height, where the guided mode is
-  strongest.
+  volume — typically ~90× less memory. The plane shown is mid-core height, where
+  the guided mode is strongest.
+
+#### Running out of memory on a big layout
+
+The *solve* itself (the field arrays it steps in time) scales with the number of
+grid cells — about 100 bytes per cell — and on one machine that's the only thing
+that determines peak memory, so the whole-chip grid is what runs you out of
+memory. Two things help:
+
+- The **"Large simulation" dialog** now estimates the run before it starts: the
+  grid's predicted **memory** (the number that OOMs) and the run **time** on each
+  backend (Numba / GPU / plain NumPy). Read it — it tells you if a run won't fit.
+- **Simulate selected components only** (the *Region* checkbox): select the
+  device(s) you care about on the canvas, and the FDTD domain shrinks to just
+  their bounding box (plus your sources). On a sprawling layout that's the
+  difference between tens of GB and a couple — gigabytes → fits. It grids whole
+  components, so it never cuts a device in half, but light leaving the region is
+  absorbed at the edge, so use it for a **local** look at a device, not a
+  through-circuit measurement. The memory/time estimate reflects the smaller
+  region too.
+
+If even a region is too big, a coarser **cell size** is the other lever (fewer
+cells in every dimension), at some cost in accuracy.
 
 **Read the disclaimer in the window.** Both tabs run a real solve against
 your geometry, not a mockup — but treat the results as a qualitative
