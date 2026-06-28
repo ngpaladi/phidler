@@ -555,10 +555,20 @@ class FdtdWorker(QObject):
 
     def run(self) -> None:
         try:
-            t0 = time.time()
-            sim = build_simulation(self.document, self.params)
-            result = run_simulation(sim)
-            elapsed = time.time() - t0
+            if self.params.use_gpu:
+                # The GPU (CuPy) backend can't tear down in a worker thread
+                # without crashing, and freezes the UI on the main thread — so
+                # run it in a child process and just wait on it here. CuPy lives
+                # in the child (clean teardown), this thread only blocks on the
+                # subprocess, so the UI stays responsive.
+                from phidler.fdtd_subprocess import run_in_subprocess
+
+                sim, result, elapsed = run_in_subprocess(self.document, self.params)
+            else:
+                t0 = time.time()
+                sim = build_simulation(self.document, self.params)
+                result = run_simulation(sim)
+                elapsed = time.time() - t0
         except Exception as exc:
             self.failed.emit(str(exc))
             return
@@ -1052,31 +1062,14 @@ class FdtdWindow(QMainWindow):
                 return
 
         self.run_button.setEnabled(False)
-        self.run_status_label.setText("Running…")
+        # GPU runs spawn a child process and pay its ~1 s startup, so say so —
+        # otherwise the extra second reads as the app hanging.
+        self.run_status_label.setText("Running on GPU…" if params.use_gpu else "Running…")
         self._field_image_initialized = False
 
-        if params.use_gpu:
-            # cupy's CUDA context, created inside a Qt worker thread, crashes /
-            # hangs the process at teardown. GPU runs are fast (~1 s), so run
-            # synchronously on the main thread instead — the UI blocks briefly,
-            # which is a fine trade for not core-dumping.
-            from PySide6.QtWidgets import QApplication
-
-            self.run_status_label.repaint()
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            try:
-                t0 = time.time()
-                sim = build_simulation(self.document, params)
-                result = run_simulation(sim)
-                elapsed = time.time() - t0
-            except Exception as exc:
-                QApplication.restoreOverrideCursor()
-                self._on_fdtd_failed(str(exc))
-                return
-            QApplication.restoreOverrideCursor()
-            self._on_fdtd_finished(sim, result, elapsed)
-            return
-
+        # Both backends run in a worker thread now: the non-GPU path computes
+        # there directly; the GPU path waits there on a child process (see
+        # FdtdWorker.run). Either way the UI stays live.
         self._fdtd_thread = QThread(self)
         self._fdtd_worker = FdtdWorker(self.document, params)
         self._fdtd_worker.moveToThread(self._fdtd_thread)

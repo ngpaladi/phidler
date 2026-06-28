@@ -62,22 +62,18 @@ def test_gpu_and_numba_checkboxes_feed_into_params(qapp):
     assert params.use_gpu is True and params.use_numba is True
 
 
-def test_gpu_run_executes_synchronously_not_in_a_worker_thread(qapp):
-    """cupy's CUDA context can't survive a Qt worker thread (crash/hang at
-    teardown), so a GPU-flagged run executes on the main thread — no worker
-    QThread, and the result is ready by the time _on_run_clicked returns.
+def test_gpu_run_goes_through_the_worker_thread_via_subprocess(qapp):
+    """A GPU-flagged run no longer blocks the main thread: it spawns a child
+    process (own CUDA context, clean teardown) that the worker thread waits on,
+    so the UI stays live. So a worker QThread *is* started and the result
+    arrives asynchronously — the opposite of the old main-thread behaviour.
 
-    Skipped when CuPy is actually installed: this runs a real FDTD solve, and a
-    real CUDA run inside the shared pytest process leaves device state that
-    destabilises later tests. With CuPy absent (CI, most dev machines) the GPU
-    flag falls back to NumPy on the main thread, which exercises the same
-    synchronous branch this test checks."""
-    import pytest
+    CuPy's CUDA now lives in the child, isolated from the pytest process, so
+    this is safe to run whether or not CuPy is installed (the child falls back
+    to the CPU engine when CuPy is absent)."""
+    import time
 
-    from phidler.fdtd_sim import gpu_available
-
-    if gpu_available():
-        pytest.skip("CuPy present — a real CUDA run in the test process would destabilise the suite")
+    from PySide6.QtTest import QTest
 
     win = MainWindow()
     inst = win.document.add_instance("straight", {"length": 2.0, "width": 0.5})
@@ -90,8 +86,14 @@ def test_gpu_run_executes_synchronously_not_in_a_worker_thread(qapp):
 
     fdtd_win._on_run_clicked()
 
-    assert fdtd_win._fdtd_thread is None  # no background worker for a GPU run
-    assert fdtd_win._last_result is not None  # finished synchronously
+    assert fdtd_win._fdtd_thread is not None  # async worker, not a main-thread block
+    assert fdtd_win._last_result is None  # not ready synchronously
+
+    deadline = time.time() + 60
+    while fdtd_win._last_result is None and time.time() < deadline:
+        QTest.qWait(50)
+    assert fdtd_win._last_result is not None  # the child finished and shipped its result back
+    assert fdtd_win._last_result.fields["field"]["Ez"].shape[3] == 1  # the mid-core plane
 
 
 def test_window_prefills_wavelength_from_project_settings(qapp):
