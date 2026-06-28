@@ -824,7 +824,14 @@ class FdtdWindow(QMainWindow):
             )
         self.run_numba_check = QCheckBox("Numba")
         if numba_available():
-            self.run_numba_check.setToolTip("JIT-compile the update loop with Numba.")
+            # On by default: ~5x over plain NumPy and, unlike GPU, runs in the
+            # worker thread so the UI doesn't freeze. (First-ever run JIT-compiles
+            # the kernel — cached to disk, so only that one run is slow.)
+            self.run_numba_check.setChecked(True)
+            self.run_numba_check.setToolTip(
+                "JIT-compile the update loop with Numba (~5x faster than NumPy, "
+                "runs in the background). First run compiles and is slower; cached after."
+            )
         else:
             self.run_numba_check.setEnabled(False)
             self.run_numba_check.setToolTip(

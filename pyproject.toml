@@ -23,6 +23,11 @@ docs = [
 fdtd = [
     "photonfdtd>=0.2.0",
     "matplotlib>=3.7",
+    # Numba JIT-compiles photonfdtd's field-update kernel (parallel, cached to
+    # disk) — ~5x faster than the plain NumPy engine and, unlike the CuPy GPU
+    # backend, runs in the worker thread so the UI stays responsive. Enabled by
+    # default when importable.
+    "numba>=0.59",
 ]
 
 [build-system]

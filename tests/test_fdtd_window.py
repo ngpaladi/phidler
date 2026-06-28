@@ -45,9 +45,11 @@ def test_gpu_and_numba_checkboxes_feed_into_params(qapp):
 
     win = MainWindow()
     fdtd_win = FdtdWindow(win.document, win.view)
-    # Off by default — the plain NumPy engine, no optional deps required.
+    # GPU is off by default (its main-thread run can briefly freeze the UI), but
+    # Numba is on by default when available — worker-thread, ~5x over NumPy.
     params = fdtd_win._current_params()
-    assert params.use_gpu is False and params.use_numba is False
+    assert params.use_gpu is False
+    assert params.use_numba is numba_available()
 
     # The checkbox is enabled only when its backend is actually importable, so
     # a request can't silently no-op on the CPU.

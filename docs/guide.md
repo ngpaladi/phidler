@@ -334,6 +334,24 @@ plays the result back as a movie:
 
 ![Propagation result: red/blue field pattern radiating from a point source and coupling into a waveguide, overlaid on its outline, with the time slider and Play button below the source table](screenshots/fdtd_propagation.png)
 
+#### Speed
+
+Propagation runs use a few accelerators so they don't crawl:
+
+- **Numba** (the **Acceleration** row) is on by default when installed. It
+  JIT-compiles photonfdtd's field-update kernel — roughly 5× faster than the
+  plain NumPy engine — and runs in the background, so the window stays
+  responsive. The very first run compiles the kernel and is slower; that's
+  cached to disk, so every run after is fast.
+- **GPU** (CuPy) is far faster still but is left off by default: it runs on the
+  main thread and briefly freezes the UI for the length of the run. Tick it when
+  you want maximum speed and don't mind the pause.
+- The propagation domain keeps only as much **cladding** as the mode's
+  evanescent field actually needs (a few decay lengths, scaled by your
+  platform's index contrast), rather than the full cladding the mode solver
+  uses — that's a thinner z-stack and a much smaller, faster run, with no change
+  to the top-down field you see. (Runs are also single-precision by default.)
+
 **Read the disclaimer in the window.** Both tabs run a real solve against
 your geometry, not a mockup — but treat the results as a qualitative
 look at how light spreads through your structure, not a calibrated

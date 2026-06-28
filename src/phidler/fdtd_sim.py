@@ -241,19 +241,38 @@ def effective_clad_thickness_um(settings: ProjectSettings, wavelength_um: float)
     return settings.clad_thickness_um
 
 
-# Cap on the cladding the 3D *propagation* domain uses on each side of the core.
+# How much cladding the 3D *propagation* domain keeps on each side of the core.
 # The mode solver may want a very thick (even "infinite", ~6λ) cladding so the
-# mode doesn't truncate, but FDTD propagation only needs enough to capture the
-# evanescent field — using the mode-solver value would blow the z grid up (and,
-# with it, runtime and the recorded field movie). A couple of microns is plenty
-# at telecom wavelengths.
-_FDTD_CLAD_CAP_UM = 2.0
+# mode doesn't truncate, but FDTD propagation only needs enough to hold the
+# evanescent field — every extra micron of cladding is dead z-grid that costs
+# runtime and recorded-movie memory for nothing. So the domain keeps just a few
+# evanescent decay lengths of cladding (which scales with the index contrast:
+# tightly-confined high-contrast platforms like Si need far less than weakly-
+# guided ones), clamped to a floor and a hard ceiling. Verified empirically: the
+# displayed in-plane (z=0) field is unchanged from the old fixed 2µm down to
+# 0.5µm for both Si and SiN.
+_FDTD_CLAD_CAP_UM = 2.0  # hard ceiling, regardless of contrast
+_FDTD_CLAD_MIN_UM = 0.5  # floor — never thinner than this
+_FDTD_CLAD_DECAY_LENGTHS = 6.0  # keep this many evanescent decay lengths of cladding
 
 
 def fdtd_clad_thickness_um(settings: ProjectSettings, wavelength_um: float) -> float:
-    """Cladding half-extent for the 3D FDTD propagation domain — the mode
-    solver's extent, capped so the z grid stays small (see _FDTD_CLAD_CAP_UM)."""
-    return min(effective_clad_thickness_um(settings, wavelength_um), _FDTD_CLAD_CAP_UM)
+    """Cladding half-extent for the 3D FDTD propagation domain: a few evanescent
+    decay lengths (set by the core/cladding index contrast), clamped to
+    [_FDTD_CLAD_MIN_UM, _FDTD_CLAD_CAP_UM] and never more than the mode solver's
+    extent. Much thinner than the mode-solver cladding for high-contrast
+    platforms, which keeps the z grid (and the run) small.
+
+    Note: a cherenkov source's dipole track spans this domain, so a thinner
+    domain also shortens that track — fine for the qualitative field movie, but
+    why the cladding controls still feed the (full-extent) mode solver."""
+    full = effective_clad_thickness_um(settings, wavelength_um)
+    if settings.core_index > settings.clad_index:
+        decay_um = wavelength_um / (2 * math.pi * math.sqrt(settings.core_index**2 - settings.clad_index**2))
+        needed = _FDTD_CLAD_DECAY_LENGTHS * decay_um
+    else:
+        needed = _FDTD_CLAD_CAP_UM
+    return min(full, max(needed, _FDTD_CLAD_MIN_UM), _FDTD_CLAD_CAP_UM)
 
 
 def _layout_bbox_um(document: LayoutDocument):

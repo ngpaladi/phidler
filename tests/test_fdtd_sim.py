@@ -58,7 +58,10 @@ def test_build_simulation_is_true_3d_not_collapsed(qapp):
     assert sim.grid.shape[2] > 1
 
 
-def test_build_simulation_clad_thickness_changes_the_z_extent(qapp):
+def test_fdtd_propagation_z_is_just_enough_not_the_full_cladding_setting(qapp):
+    # The FDTD propagation domain keeps only a few evanescent decay lengths of
+    # cladding (for speed), so a much thicker cladding *setting* — which the mode
+    # solver still honors for confinement — does not bloat the FDTD z-grid.
     doc_thin = _tiny_document()
     doc_thin.project_settings.clad_thickness_um = 0.5
     doc_thick = _tiny_document()
@@ -66,7 +69,7 @@ def test_build_simulation_clad_thickness_changes_the_z_extent(qapp):
 
     sim_thin = build_simulation(doc_thin, _FAST_PARAMS)
     sim_thick = build_simulation(doc_thick, _FAST_PARAMS)
-    assert sim_thick.grid.size[2] > sim_thin.grid.size[2]
+    assert sim_thick.grid.size[2] == pytest.approx(sim_thin.grid.size[2])
 
 
 def test_build_simulation_resolves_lateral_cladding_at_core_height(qapp):
@@ -238,7 +241,11 @@ def test_infinite_cladding_rescues_a_too_thin_setting_in_the_mode_solver(qapp):
     assert check.well_confined is True
 
 
-def test_infinite_cladding_enlarges_the_fdtd_z_extent(qapp):
+def test_infinite_cladding_does_not_enlarge_the_fdtd_propagation_z(qapp):
+    # Infinite-cladding is a mode-solver concept (solve on a big domain so the
+    # mode doesn't truncate — see the mode-solver test above). The FDTD
+    # propagation domain stays thin regardless, so turning it on doesn't blow up
+    # the run.
     doc_finite = _tiny_document()
     doc_finite.project_settings.clad_thickness_um = 0.5
     doc_infinite = _tiny_document()
@@ -247,17 +254,17 @@ def test_infinite_cladding_enlarges_the_fdtd_z_extent(qapp):
 
     sim_finite = build_simulation(doc_finite, _FAST_PARAMS)
     sim_infinite = build_simulation(doc_infinite, _FAST_PARAMS)
-    assert sim_infinite.grid.size[2] > sim_finite.grid.size[2]
+    assert sim_infinite.grid.size[2] == pytest.approx(sim_finite.grid.size[2])
 
 
-def test_infinite_cladding_grid_estimate_grows_too(qapp):
+def test_infinite_cladding_does_not_grow_the_fdtd_grid_estimate(qapp):
     doc_finite = _tiny_document()
     doc_finite.project_settings.clad_thickness_um = 0.5
     doc_infinite = _tiny_document()
     doc_infinite.project_settings.clad_thickness_um = 0.5
     doc_infinite.project_settings.clad_infinite = True
 
-    assert estimate_grid_cell_count(doc_infinite, _FAST_PARAMS) > estimate_grid_cell_count(
+    assert estimate_grid_cell_count(doc_infinite, _FAST_PARAMS) == estimate_grid_cell_count(
         doc_finite, _FAST_PARAMS
     )
 
