@@ -564,7 +564,16 @@ def build_simulation(document: LayoutDocument, params: FdtdParams = FdtdParams()
         for src in built if isinstance(built, list) else [built]:
             sim.add_source(src)
 
-    sim.add_monitor(pf.FieldMonitor(name="field", components=("Ez", "Ey"), interval=params.monitor_interval))
+    # Record only what the field movie actually shows: the Ez component on the
+    # single mid-core (z=0) plane. The display only ever reads Ez at z=0, so
+    # recording Ey too and the whole z-volume was pure waste — this keeps the
+    # stored movie ~(2 components x z-cell-count) smaller, which is what makes a
+    # large run fit in memory (and shrinks the GPU host transfer to nothing).
+    # z=0 is mid-core height: from_gdsfactory centres the stack, so the core
+    # sits symmetrically across z=0 and the guided mode peaks there.
+    sim.add_monitor(
+        pf.FieldMonitor(name="field", components=("Ez",), interval=params.monitor_interval, plane_z=0.0)
+    )
 
     return sim
 

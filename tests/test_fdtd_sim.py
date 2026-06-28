@@ -131,8 +131,32 @@ def test_run_simulation_produces_a_nonempty_field_array_of_the_expected_shape(qa
     assert arr.shape[0] > 0  # at least one snapshot
     assert arr.shape[1] == sim.grid.shape[0]
     assert arr.shape[2] == sim.grid.shape[1]
-    assert arr.shape[3] == sim.grid.shape[2]
+    # The monitor records only the single mid-core (z=0) plane — the only plane
+    # the movie shows — so the z axis is size-1, not the full grid depth.
+    assert arr.shape[3] == 1
     assert (arr != 0).any()  # the source actually excited something
+
+
+def test_field_movie_records_only_the_mid_core_plane_and_only_Ez(qapp):
+    # The displayed movie is Ez at z=0 (mid-core); recording the whole volume or
+    # Ey is wasted memory, so the monitor keeps just that one plane / component.
+    import numpy as np
+
+    import photonfdtd as pf
+
+    doc = _tiny_document()
+    sim = build_simulation(doc, _FAST_PARAMS)
+    result = run_simulation(sim)
+    assert set(result.fields["field"]) == {"Ez"}  # Ey not recorded
+    assert result.fields["field"]["Ez"].shape[3] == 1  # single z-plane
+
+    # That one plane is the same data a full-volume recording would show at z=0.
+    sim_full = build_simulation(doc, _FAST_PARAMS)
+    sim_full.monitors.clear()
+    sim_full.add_monitor(pf.FieldMonitor(name="field", components=("Ez",), interval=_FAST_PARAMS.monitor_interval))
+    full = run_simulation(sim_full).fields["field"]["Ez"]
+    zc = nearest_z_index(sim_full.grid, 0.0)
+    assert np.allclose(result.fields["field"]["Ez"][:, :, :, 0], full[:, :, :, zc])
 
 
 def test_estimate_grid_cell_count_matches_the_actual_built_grid(qapp):

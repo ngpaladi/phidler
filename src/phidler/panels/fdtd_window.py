@@ -1094,9 +1094,9 @@ class FdtdWindow(QMainWindow):
 
         arr = result.fields["field"]["Ez"]
         n_frames = arr.shape[0]
+        gx, gy, gz = (int(s) for s in sim.grid.shape)  # full sim grid (the movie keeps only z=0)
         self.run_status_label.setText(
-            f"Done in {elapsed:.2f} s — {n_frames} frames, "
-            f"grid {arr.shape[1]}×{arr.shape[2]}×{arr.shape[3]}"
+            f"Done in {elapsed:.2f} s — {n_frames} frames, grid {gx}×{gy}×{gz}"
         )
 
         self.frame_slider.setEnabled(n_frames > 1)
@@ -1143,7 +1143,9 @@ class FdtdWindow(QMainWindow):
         if self._last_result is None or self._last_sim is None:
             return
         arr = self._last_result.fields["field"]["Ez"]
-        z_idx = nearest_z_index(self._last_sim.grid, 0.0)
+        # The monitor records only the mid-core (z=0) plane, so the z axis is
+        # size-1; locate the plane for a full-volume result (older saves/tests).
+        z_idx = 0 if arr.shape[3] == 1 else nearest_z_index(self._last_sim.grid, 0.0)
         frame = arr[frame_index, :, :, z_idx]          # (Nx, Ny)
 
         x_coords = self._last_sim.grid.coords[0] * 1e6
