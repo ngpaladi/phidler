@@ -207,6 +207,7 @@ def test_selecting_instance_populates_transform_fields(qapp):
 
 def test_editing_transform_fields_and_applying_pushes_undoable_command(qapp):
     win = MainWindow()
+    win._on_cursor_position_changed(0.0, 0.0)  # place deterministically at the origin
     win._place_straight_waveguide()
     inst_id = next(iter(win.document.instances))
     win.scene.items_by_inst[inst_id].setSelected(True)

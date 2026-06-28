@@ -10,6 +10,7 @@ def _place_two_straights(win):
     turn, so route_single has actual bend/straight segments to insert
     (head-to-head ports with zero gap route to nothing — verified separately
     against gdsfactory directly)."""
+    win._on_cursor_position_changed(0.0, 0.0)  # place A deterministically at the origin
     win._place_straight_waveguide()
     a_id = next(iter(win.document.instances))
     win._place_straight_waveguide()

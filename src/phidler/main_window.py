@@ -82,12 +82,14 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
         self.cursor_pos_label = QLabel("")
         self.statusBar().addPermanentWidget(self.cursor_pos_label)
+        self._last_canvas_pos_um: tuple[float, float] | None = None  # last cursor pos over the canvas
         self.view.instances_moved.connect(self._on_instances_moved)
         self.view.placement_requested.connect(self._on_placement_requested)
         self.view.routing_mode_changed.connect(self._on_routing_mode_changed)
         self.view.measure_mode_changed.connect(self._on_measure_mode_changed)
         self.view.measurement_taken.connect(self._on_measurement_taken)
         self.view.cursor_position_changed.connect(self._on_cursor_position_changed)
+        self.view.placement_armed_changed.connect(self._on_placement_armed_changed)
         self.view.route_pick_cancelled.connect(self._on_route_pick_cancelled)
         self.scene.selectionChanged.connect(self._on_selection_changed)
         self.scene.port_clicked.connect(self._on_port_clicked)
@@ -528,10 +530,22 @@ class MainWindow(QMainWindow):
         self.view.context_menu_requested.connect(self._show_canvas_context_menu)
 
     def _on_cursor_position_changed(self, x: float, y: float) -> None:
+        self._last_canvas_pos_um = (x, y)  # so toolbar/quick placements land where you're looking
         x_d = self.view.um_to_display(x)
         y_d = self.view.um_to_display(y)
         unit = self.view.unit_str()
         self.cursor_pos_label.setText(f"X: {x_d:.3f} {unit}   Y: {y_d:.3f} {unit}")
+
+    def _placement_point_um(self) -> tuple[float, float]:
+        """Where a direct (non-armed) placement should drop a component: the
+        cursor's last position over the canvas if it has one, else the centre of
+        the visible area — never the origin, which is usually off-screen."""
+        if self._last_canvas_pos_um is not None:
+            x, y = self._last_canvas_pos_um
+        else:
+            center = self.view.mapToScene(self.view.viewport().rect().center())
+            x, y = center.x(), center.y()
+        return self.view.snap(x), self.view.snap(y)
 
     def _on_unit_mode_changed(self, idx: int) -> None:
         mode = UNIT_MODES[idx][1]
@@ -544,8 +558,18 @@ class MainWindow(QMainWindow):
     # -- actions --------------------------------------------------------------
 
     def _place_straight_waveguide(self) -> None:
-        command = AddInstanceCommand(self.document, self.scene, "straight", {"length": 10.0, "width": 0.5})
+        x, y = self._placement_point_um()
+        command = AddInstanceCommand(self.document, self.scene, "straight", {"length": 10.0, "width": 0.5}, x=x, y=y)
         self._push_add_instance(command, "straight")
+
+    def _on_placement_armed_changed(self, armed: bool) -> None:
+        # A single palette click already arms placement; surface that clearly so
+        # it doesn't look like nothing happened (and prompt a needless double
+        # click), and tell the user the next step.
+        if armed and self.view.armed_component is not None:
+            self.statusBar().showMessage(
+                f"Click on the canvas to place {self.view.armed_component} (Esc to cancel)"
+            )
 
     def _on_placement_requested(self, component_spec: str, x: float, y: float) -> None:
         command = AddInstanceCommand(self.document, self.scene, component_spec, {}, x=x, y=y)
