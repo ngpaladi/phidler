@@ -46,6 +46,7 @@ from phidler.fdtd_sim import (
     build_mode_solver,
     build_simulation,
     estimate_grid_cell_count,
+    estimate_memory_gb,
     estimate_run_seconds,
     gpu_available,
     mode_confinement,
@@ -59,6 +60,7 @@ from phidler.fdtd_sim import (
 from phidler.model.document import LayoutDocument, shapes_for_cell
 
 _RUN_TIME_WARNING_SECONDS = 5.0
+_MEMORY_WARNING_GB = 4.0  # warn before a run whose solve working set is this large
 
 _TABLE_COLUMNS = [
     "X (µm)",
@@ -1048,14 +1050,27 @@ class FdtdWindow(QMainWindow):
         courant = 0.99
         dt = courant / (299_792_458.0 * (3 ** 0.5) / cell_size_m)
         n_steps = int(params.resolved_run_time_fs() * 1e-15 / dt) + 1
-        estimated_seconds = estimate_run_seconds((cell_count, 1, 1), n_steps)
 
-        if estimated_seconds > _RUN_TIME_WARNING_SECONDS:
+        grid = (cell_count, 1, 1)
+        memory_gb = estimate_memory_gb(cell_count)
+        selected = "gpu" if params.use_gpu else ("numba" if params.use_numba else "numpy")
+        selected_seconds = estimate_run_seconds(grid, n_steps, backend=selected)
+
+        if selected_seconds > _RUN_TIME_WARNING_SECONDS or memory_gb > _MEMORY_WARNING_GB:
+            t_numba = estimate_run_seconds(grid, n_steps, "numba")
+            t_gpu = estimate_run_seconds(grid, n_steps, "gpu")
+            t_numpy = estimate_run_seconds(grid, n_steps, "numpy")
+            mark = {"numba": "Numba", "gpu": "GPU", "numpy": "plain NumPy"}[selected]
             reply = QMessageBox.question(
                 self, "Large simulation",
-                f"This grid has about {cell_count:,} cells and is estimated to take "
-                f"roughly {estimated_seconds:.0f} s on the plain CPU engine (the default "
-                f"Numba and GPU backends are faster). Continue?",
+                f"This grid has about {cell_count:,} cells and needs roughly "
+                f"{memory_gb:.1f} GB of memory — large grids can run out of memory "
+                f"(try a coarser cell size, or simulate a smaller region).\n\n"
+                f"Estimated run time:\n"
+                f"    Numba (CPU):  ~{t_numba:.0f} s\n"
+                f"    GPU:  ~{t_gpu:.0f} s\n"
+                f"    plain NumPy:  ~{t_numpy:.0f} s\n\n"
+                f"You have {mark} selected. Continue?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )

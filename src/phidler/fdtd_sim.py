@@ -33,6 +33,19 @@ DISCLAIMER = (
 # time depends on the machine.
 _SECONDS_PER_CELL_STEP = 6e-8
 
+# Speedup of each backend over the plain-NumPy baseline above, measured on dev
+# hardware (a 5.2M-cell run: NumPy 32.6s, Numba 6.0s, GPU 2.4s compute). GPU
+# also pays a fixed subprocess startup. All rough — they only feed the
+# pre-flight warning, never correctness.
+_BACKEND_SPEEDUP = {"numpy": 1.0, "numba": 5.5, "gpu": 13.5}
+_GPU_STARTUP_SECONDS = 1.0
+
+# Peak working-set memory per grid cell for the solve (6 field components + eps
+# + update coefficients + CPML + rasterisation/temporaries, all float32).
+# Measured from peak RSS slope: ~93 B/cell across 1.1M->6.4M cells; rounded up.
+# This is what makes a big grid run out of memory, so it's worth showing.
+_SOLVE_BYTES_PER_CELL = 100
+
 PLANCK_H = 6.62607015e-34  # J*s, exact (SI 2019)
 EV_TO_JOULE = 1.602176634e-19  # exact (SI 2019)
 _C0 = 299792458.0  # m/s, exact
@@ -301,12 +314,23 @@ def estimate_grid_cell_count(document: LayoutDocument, params: FdtdParams = Fdtd
     return int(grid.shape[0]) * int(grid.shape[1]) * int(grid.shape[2])
 
 
-def estimate_run_seconds(grid_shape: tuple[int, int, int], n_steps: int) -> float:
+def estimate_run_seconds(grid_shape: tuple[int, int, int], n_steps: int, backend: str = "numpy") -> float:
     """Rough, empirically-calibrated estimate (see _SECONDS_PER_CELL_STEP's
     docstring) — not a guarantee, just enough to warn before a run that
-    would otherwise look like a frozen app."""
+    would otherwise look like a frozen app. `backend` is one of "numpy",
+    "numba", "gpu"; GPU also includes its fixed subprocess startup."""
     total_cells = int(grid_shape[0]) * int(grid_shape[1]) * int(grid_shape[2])
-    return total_cells * int(n_steps) * _SECONDS_PER_CELL_STEP
+    seconds = total_cells * int(n_steps) * _SECONDS_PER_CELL_STEP / _BACKEND_SPEEDUP.get(backend, 1.0)
+    if backend == "gpu":
+        seconds += _GPU_STARTUP_SECONDS
+    return seconds
+
+
+def estimate_memory_gb(cell_count: int) -> float:
+    """Rough peak working-set memory (GB) the solve needs for a grid of this
+    many cells — the thing that makes a big grid run out of memory. Scales with
+    cells (see _SOLVE_BYTES_PER_CELL); independent of timesteps."""
+    return int(cell_count) * _SOLVE_BYTES_PER_CELL / 1e9
 
 
 def build_mode_solver(settings: ProjectSettings, params: ModeProfileParams = ModeProfileParams()) -> Any:
