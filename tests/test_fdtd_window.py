@@ -96,6 +96,32 @@ def test_gpu_run_goes_through_the_worker_thread_via_subprocess(qapp):
     assert fdtd_win._last_result.fields["field"]["Ez"].shape[3] == 1  # the mid-core plane
 
 
+def test_simulate_selection_only_builds_a_region_from_the_selection(qapp):
+    from phidler.model.document import Transform
+
+    win = MainWindow()
+    a = win.document.add_instance("straight", {"length": 30.0, "width": 0.5})
+    win.scene.add_instance_item(a.id)
+    b = win.document.add_instance("mmi1x2", {})
+    win.scene.add_instance_item(b.id)
+    win.document.set_transform(b.id, Transform(x=200.0, y=120.0, rotation=0.0, mirror=False))
+    win.scene.items_by_inst[b.id].apply_transform(200.0, 120.0, 0.0, False)
+    fdtd_win = FdtdWindow(win.document, win.view)
+
+    assert fdtd_win._selected_region_um() is None  # nothing selected yet
+
+    win.scene.items_by_inst[a.id].setSelected(True)  # select just the straight
+    region = fdtd_win._selected_region_um()
+    left, bottom, right, top = region
+    assert right - left < 40 and top - bottom < 10  # the straight's box, not the whole sprawl
+    assert left < 0 and bottom < 0  # includes the margin
+
+    from phidler.fdtd_sim import FdtdParams, estimate_grid_cell_count
+
+    p = FdtdParams(cell_size_um=0.06)
+    assert estimate_grid_cell_count(win.document, p, region_um=region) < estimate_grid_cell_count(win.document, p) / 10
+
+
 def test_window_prefills_wavelength_from_project_settings(qapp):
     win = MainWindow()
     win.document.project_settings.wavelength_um = 1.31

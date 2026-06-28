@@ -40,11 +40,13 @@ def _params_from_dict(d: dict) -> FdtdParams:
     return FdtdParams(sources=sources, **d)
 
 
-def run_in_subprocess(document, params: FdtdParams) -> tuple[Any, Any, float]:
+def run_in_subprocess(document, params: FdtdParams, region_um=None) -> tuple[Any, Any, float]:
     """Build and run the simulation in a child process, returning
     ``(sim_stub, result_stub, elapsed)`` shaped exactly like the in-process
     path so the caller is none the wiser: ``sim_stub.grid.coords`` / ``.shape``
     and ``result_stub.fields['field']['Ez']`` are all the display reads.
+    ``region_um`` (left, bottom, right, top in µm) restricts the simulated xy
+    window, the same as build_simulation.
 
     Raises RuntimeError (with the child's error message) if the child fails.
     """
@@ -59,6 +61,7 @@ def run_in_subprocess(document, params: FdtdParams) -> tuple[Any, Any, float]:
         job_path.write_text(json.dumps({
             "project": str(project_path),
             "params": _params_to_dict(params),
+            "region_um": list(region_um) if region_um is not None else None,
             "out": str(out_path),
         }))
 
@@ -136,8 +139,10 @@ def _run_job(job_path: str) -> None:
     document = LayoutDocument()
     load_project(job["project"], document, _NullScene())
     params = _params_from_dict(job["params"])
+    region = job.get("region_um")
+    region_um = tuple(region) if region is not None else None
 
-    sim = build_simulation(document, params)
+    sim = build_simulation(document, params, region_um=region_um)
     result = run_simulation(sim)
 
     coords = sim.grid.coords

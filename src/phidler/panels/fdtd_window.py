@@ -61,6 +61,7 @@ from phidler.model.document import LayoutDocument, shapes_for_cell
 
 _RUN_TIME_WARNING_SECONDS = 5.0
 _MEMORY_WARNING_GB = 4.0  # warn before a run whose solve working set is this large
+_REGION_MARGIN_UM = 2.0  # breathing room added around a "selection only" region
 
 _TABLE_COLUMNS = [
     "X (µm)",
@@ -550,10 +551,11 @@ class FdtdWorker(QObject):
     finished = Signal(object, object, float)  # Simulation, Result, elapsed_seconds
     failed = Signal(str)
 
-    def __init__(self, document: LayoutDocument, params: FdtdParams) -> None:
+    def __init__(self, document: LayoutDocument, params: FdtdParams, region_um=None) -> None:
         super().__init__()
         self.document = document
         self.params = params
+        self.region_um = region_um
 
     def run(self) -> None:
         try:
@@ -565,10 +567,10 @@ class FdtdWorker(QObject):
                 # subprocess, so the UI stays responsive.
                 from phidler.fdtd_subprocess import run_in_subprocess
 
-                sim, result, elapsed = run_in_subprocess(self.document, self.params)
+                sim, result, elapsed = run_in_subprocess(self.document, self.params, self.region_um)
             else:
                 t0 = time.time()
-                sim = build_simulation(self.document, self.params)
+                sim = build_simulation(self.document, self.params, region_um=self.region_um)
                 result = run_simulation(sim)
                 elapsed = time.time() - t0
         except Exception as exc:
@@ -855,6 +857,16 @@ class FdtdWindow(QMainWindow):
         accel_layout.addStretch(1)
         form.addRow("Acceleration", accel_widget)
 
+        self.run_region_check = QCheckBox("Simulate selected components only")
+        self.run_region_check.setToolTip(
+            "Grid only the bounding box of the components selected on the canvas "
+            "(plus your sources), instead of the whole layout — the way to keep a "
+            "large chip from running out of memory. Light crossing the region edge "
+            "is absorbed, so use it for a local look at a device, not a "
+            "through-circuit measurement."
+        )
+        form.addRow("Region", self.run_region_check)
+
         layout.addLayout(form)
 
         self.place_source_button = QPushButton("Place Source on Canvas")
@@ -1037,11 +1049,47 @@ class FdtdWindow(QMainWindow):
             use_numba=self.run_numba_check.isChecked(),
         )
 
+    def _selected_region_um(self):
+        """Bounding box (left, bottom, right, top in µm, with a margin) of the
+        components selected on the canvas plus the placed sources — the xy
+        window to simulate. None if nothing is selected. Whole instances, so the
+        region never cuts through the middle of a device."""
+        scene = self.view.scene()
+        ids = [
+            it.inst_id
+            for it in scene.selectedItems()
+            if hasattr(it, "inst_id") and it.inst_id in self.document.instances
+        ]
+        if not ids:
+            return None
+        lefts, bottoms, rights, tops = [], [], [], []
+        for inst_id in ids:
+            bb = self.document.instances[inst_id].ref.dbbox()
+            lefts.append(bb.left); bottoms.append(bb.bottom); rights.append(bb.right); tops.append(bb.top)
+        for spec in self._collect_source_specs():  # keep sources inside the grid
+            lefts.append(spec.x_um); rights.append(spec.x_um)
+            bottoms.append(spec.y_um); tops.append(spec.y_um)
+        m = _REGION_MARGIN_UM
+        return (min(lefts) - m, min(bottoms) - m, max(rights) + m, max(tops) + m)
+
     def _on_run_clicked(self) -> None:
         params = self._current_params()
         self._last_params = params
+
+        region_um = None
+        if self.run_region_check.isChecked():
+            region_um = self._selected_region_um()
+            if region_um is None:
+                QMessageBox.warning(
+                    self, "No selection",
+                    "Select one or more components on the canvas to simulate only that "
+                    "region, or untick 'Simulate selected components only'.",
+                )
+                return
+        self._region_um = region_um
+
         try:
-            cell_count = estimate_grid_cell_count(self.document, params)
+            cell_count = estimate_grid_cell_count(self.document, params, region_um=region_um)
         except ValueError as exc:
             QMessageBox.warning(self, "Cannot run simulation", str(exc))
             return
@@ -1087,7 +1135,7 @@ class FdtdWindow(QMainWindow):
         # there directly; the GPU path waits there on a child process (see
         # FdtdWorker.run). Either way the UI stays live.
         self._fdtd_thread = QThread(self)
-        self._fdtd_worker = FdtdWorker(self.document, params)
+        self._fdtd_worker = FdtdWorker(self.document, params, region_um)
         self._fdtd_worker.moveToThread(self._fdtd_thread)
         self._fdtd_thread.started.connect(self._fdtd_worker.run)
         self._fdtd_worker.finished.connect(self._on_fdtd_finished)

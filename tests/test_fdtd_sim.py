@@ -159,6 +159,28 @@ def test_field_movie_records_only_the_mid_core_plane_and_only_Ez(qapp):
     assert np.allclose(result.fields["field"]["Ez"][:, :, :, 0], full[:, :, :, zc])
 
 
+def test_region_shrinks_the_grid_and_still_runs(qapp):
+    # A sprawling layout: simulating only a sub-region grids far fewer cells.
+    doc = LayoutDocument()
+    doc.add_instance("straight", {"length": 20.0, "width": 0.5}, x=0.0, y=0.0)
+    doc.add_instance("mmi1x2", {}, x=200.0, y=150.0)  # far away -> huge full bbox
+    params = FdtdParams(cell_size_um=0.08, sources=(SourceSpec(x_um=-8.0, y_um=0.0),))
+
+    region = (-15.0, -6.0, 15.0, 6.0)  # just around the straight
+    full = estimate_grid_cell_count(doc, params)
+    roi = estimate_grid_cell_count(doc, params, region_um=region)
+    assert roi < full / 10  # dramatically fewer cells
+
+    sim = build_simulation(doc, params, region_um=region)
+    assert estimate_grid_cell_count(doc, params, region_um=region) == (
+        int(sim.grid.shape[0]) * int(sim.grid.shape[1]) * int(sim.grid.shape[2])
+    )
+    import numpy as np
+
+    assert np.asarray(sim.eps_r).max() > 3.0  # the in-region waveguide core was gridded
+    assert (run_simulation(sim).fields["field"]["Ez"] != 0).any()
+
+
 def test_estimate_grid_cell_count_matches_the_actual_built_grid(qapp):
     doc = _tiny_document()
     estimated = estimate_grid_cell_count(doc, _FAST_PARAMS)

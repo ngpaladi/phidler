@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 from .model.document import LayoutDocument, ProjectSettings
@@ -295,19 +296,30 @@ def _layout_bbox_um(document: LayoutDocument):
     return bbox
 
 
-def estimate_grid_cell_count(document: LayoutDocument, params: FdtdParams = FdtdParams()) -> int:
+def _layout_bbox_um_tuple(document: LayoutDocument) -> tuple[float, float, float, float]:
+    """The layout bounding box as (left, bottom, right, top) in µm."""
+    bbox = _layout_bbox_um(document)
+    return float(bbox.left), float(bbox.bottom), float(bbox.right), float(bbox.top)
+
+
+def estimate_grid_cell_count(
+    document: LayoutDocument,
+    params: FdtdParams = FdtdParams(),
+    region_um: tuple[float, float, float, float] | None = None,
+) -> int:
     """Cheap pre-flight check: builds only the Grid (no structures, no
     source, no monitor, no run) to estimate the total cell count a real
     run would use, so a caller can warn before committing to an expensive
     simulation. True 3D now (no z-collapse), so this includes the full
-    core+cladding vertical extent."""
+    core+cladding vertical extent. region_um (left, bottom, right, top in µm)
+    restricts the xy window to simulate, else the whole layout is used."""
     pf = _import_photonfdtd()
-    bbox = _layout_bbox_um(document)
+    left, bottom, right, top = region_um if region_um is not None else _layout_bbox_um_tuple(document)
     settings = document.project_settings
     cell_size_m = params.resolved_cell_size_um() * 1e-6
     padding_m = params.padding_um * 1e-6
-    x_extent = (bbox.right - bbox.left) * 1e-6 + 2 * padding_m
-    y_extent = (bbox.top - bbox.bottom) * 1e-6 + 2 * padding_m
+    x_extent = (right - left) * 1e-6 + 2 * padding_m
+    y_extent = (top - bottom) * 1e-6 + 2 * padding_m
     clad_thickness_um = fdtd_clad_thickness_um(settings, params.wavelength_um)
     z_extent = settings.thickness_um * 1e-6 + 2 * clad_thickness_um * 1e-6 + 2 * padding_m
     grid = pf.Grid(size=(x_extent, y_extent, z_extent), cell_size=cell_size_m, pml_layers=(12, 12, 12))
@@ -524,7 +536,11 @@ def nearest_z_index(grid: Any, z_um: float = 0.0) -> int:
     return int(np.argmin(np.abs(z_coords - z_um * 1e-6)))
 
 
-def build_simulation(document: LayoutDocument, params: FdtdParams = FdtdParams()) -> Any:
+def build_simulation(
+    document: LayoutDocument,
+    params: FdtdParams = FdtdParams(),
+    region_um: tuple[float, float, float, float] | None = None,
+) -> Any:
     """Builds a photonfdtd Simulation from the document's actual placed
     layout, with sources and a field monitor already attached
     (from_gdsfactory itself returns sources=[]/monitors=[] per its own
@@ -544,7 +560,12 @@ def build_simulation(document: LayoutDocument, params: FdtdParams = FdtdParams()
     so the platform picker (Silicon, SiN, LN, LT) drives this too.
     """
     pf = _import_photonfdtd()
-    bbox = _layout_bbox_um(document)
+    left, bottom, right, top = region_um if region_um is not None else _layout_bbox_um_tuple(document)
+    # An explicit region only grids that xy window (structures outside it are
+    # clipped) — the way to keep a large layout's FDTD run from running out of
+    # memory: simulate the part you care about, not the whole chip.
+    xy_bounds = (left * 1e-6, right * 1e-6, bottom * 1e-6, top * 1e-6) if region_um is not None else None
+    bbox = SimpleNamespace(left=left, bottom=bottom, right=right, top=top)
     settings = document.project_settings
 
     core = pf.Medium.from_index(settings.core_index, name=settings.platform_name)
@@ -577,6 +598,7 @@ def build_simulation(document: LayoutDocument, params: FdtdParams = FdtdParams()
         use_gpu=params.use_gpu,
         use_numba=params.use_numba,
         precision=params.precision,
+        xy_bounds=xy_bounds,
     )
 
     sources = params.sources
