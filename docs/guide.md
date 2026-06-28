@@ -351,6 +351,11 @@ Propagation runs use a few accelerators so they don't crawl:
   platform's index contrast), rather than the full cladding the mode solver
   uses — that's a thinner z-stack and a much smaller, faster run, with no change
   to the top-down field you see. (Runs are also single-precision by default.)
+- The recorded **field movie** keeps only the one component and the one
+  horizontal plane (mid-core, z=0) the playback actually shows, not the whole 3D
+  volume — typically ~90× less memory, so large layouts that used to run out of
+  memory now fit. The plane shown is mid-core height, where the guided mode is
+  strongest.
 
 **Read the disclaimer in the window.** Both tabs run a real solve against
 your geometry, not a mockup — but treat the results as a qualitative
