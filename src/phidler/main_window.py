@@ -44,6 +44,7 @@ from phidler.panels.project_settings_dialog import ProjectSettingsDialog
 from phidler.panels.properties_panel import PropertiesPanel
 from phidler.pdk_catalog import build_catalog, list_cross_section_names
 from phidler.project_io import load_project, save_project
+from phidler.recent_projects import add_recent
 
 
 def _without_array_variants(catalog):
@@ -1025,6 +1026,25 @@ class MainWindow(QMainWindow):
             return
         self.statusBar().showMessage(f"Exported script to {path}", 5000)
 
+    def _show_startup(self) -> None:
+        """The launch window: pick a recent project, or start/open another.
+        Split from _handle_startup_choice so the routing is testable without the
+        modal dialog (same pattern as _new_project / _reset_to_new_project)."""
+        from phidler.panels.startup_dialog import StartupDialog
+        from phidler.recent_projects import load_recent
+
+        dialog = StartupDialog(load_recent(), parent=self)
+        dialog.exec()
+        self._handle_startup_choice(dialog.choice)
+
+    def _handle_startup_choice(self, choice: tuple | None) -> None:
+        if choice is not None and choice[0] == "recent":
+            self._load_project_file(choice[1])
+        elif choice is not None and choice[0] == "open":
+            self._open_project()
+        else:  # ("new",) or the window was closed — fall back to a new project
+            self._new_project()
+
     def _new_project(self) -> None:
         dialog = ProjectSettingsDialog(self.document.project_settings, parent=self)
         if dialog.exec() != QDialog.Accepted:
@@ -1102,6 +1122,7 @@ class MainWindow(QMainWindow):
         # through Save As, where "project.phidler" is an explicit, visible
         # choice rather than a silent file-format swap.
         self.project_path = None if path.endswith(".py") else path
+        add_recent(path)  # surface it in the startup window next time
         self.statusBar().showMessage(f"Opened {path}", 3000)
 
     def _save_project(self) -> None:
@@ -1123,6 +1144,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save failed", f"Could not save to {path}:\n{exc}")
             return
         self.project_path = path
+        add_recent(path)
         self.statusBar().showMessage(f"Saved {path}", 3000)
 
     def _import_reference_gds(self) -> None:

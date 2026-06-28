@@ -25,9 +25,9 @@ def main(argv: list[str] | None = None) -> int:
     window.show()
     # Deferred via singleShot(0, ...) rather than called directly here:
     # this fires after the event loop starts and the window is already
-    # shown, not during MainWindow's own construction — _new_project()
+    # shown, not during MainWindow's own construction — _show_startup()
     # opens a *modal* dialog, and triggering that from __init__ would hang
     # every test that constructs a MainWindow (there's no event loop yet
     # for a real user to dismiss it with).
-    QTimer.singleShot(0, window._new_project)
+    QTimer.singleShot(0, window._show_startup)
     return app.exec()
