@@ -200,6 +200,38 @@ class FdtdParams:
 
 
 @dataclass(frozen=True)
+class SimulationConfig:
+    """The user-editable simulation settings persisted with a project (saved
+    in the .phidler file alongside project_settings). Captures what the FDTD
+    window's two tabs hold — the propagation run parameters, the placed
+    excitation sources, and the vertical-mode-profile inputs — so reopening a
+    project restores the simulation you set up, especially the placed sources
+    (tedious to re-drop on the canvas by hand).
+
+    Stored as plain numbers/strings (no live gdsfactory/Qt objects), so it
+    round-trips through JSON the same way the rest of the project does. A
+    document whose simulation_config is None was simply never configured: the
+    FDTD window then falls back to its project-settings-seeded defaults rather
+    than overwriting them with this dataclass's placeholders."""
+
+    # Propagation (FDTD) tab
+    wavelength_um: float = 1.55
+    cell_size_um: float | None = None  # None -> FdtdParams' λ/15 default
+    run_time_fs: float | None = None  # None -> FdtdParams' pulse-width default
+    clad_index: float | None = None  # None -> project_settings.clad_index
+    use_gpu: bool = False
+    use_numba: bool = False
+    region_selected_only: bool = False
+    sources: tuple[SourceSpec, ...] = ()
+
+    # Vertical mode profile tab
+    mode_wavelength_um: float = 1.55
+    mode_core_width_um: float = 0.5
+    mode_num_modes: int = 1
+    mode_clad_index: float | None = None  # None -> project_settings.clad_index
+
+
+@dataclass(frozen=True)
 class ModeProfileParams:
     wavelength_um: float = 1.55
     core_width_um: float = 0.5

@@ -6,7 +6,22 @@ from PySide6.QtWidgets import QApplication
 
 
 def activate_pdk() -> None:
+    import warnings
+
     from gdsfactory.gpdk import get_generic_pdk
+
+    # A handful of generic-PDK components (coupler_bend, coupler_ring_bend,
+    # ring_double_bend_coupler) deliberately build sub-90° euler bends, which
+    # makes gdsfactory's bend_euler emit this nag ("Got 35.0 … use
+    # bend_euler_all_angle"). The components are valid and placeable — it's an
+    # over-eager upstream warning, not a problem with our use — so filter only
+    # this exact message (the angle varies) to keep the console and test output
+    # clean without masking any other warning.
+    warnings.filterwarnings(
+        "ignore",
+        message=r"bend_euler angle should be 90 or 180",
+        category=UserWarning,
+    )
 
     get_generic_pdk().activate()
 

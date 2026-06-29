@@ -5,6 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .custom_components import load_custom_components
+from .fdtd_sim import SimulationConfig, SourceSpec
 from .model.document import LayoutDocument, ProjectSettings
 from .model.layers import LayerInfo
 from .model.placed_instance import ArraySpec
@@ -48,6 +49,11 @@ def save_project(document: LayoutDocument, path: str) -> None:
         "reference_path": document.reference_path,
         "custom_component_paths": document.custom_component_paths,
         "project_settings": asdict(document.project_settings),
+        # asdict recurses into the nested SourceSpec tuple too, so the whole
+        # simulation set-up serializes in one shot. None when never configured.
+        "simulation_config": (
+            asdict(document.simulation_config) if document.simulation_config is not None else None
+        ),
     }
     Path(path).write_text(json.dumps(data, indent=2))
 
@@ -135,6 +141,13 @@ def load_project(path: str, document: LayoutDocument, scene) -> dict[str, Compon
 
     settings_data = data.get("project_settings")
     document.project_settings = ProjectSettings(**settings_data) if settings_data else ProjectSettings()
+
+    sim_data = data.get("simulation_config")  # absent in projects saved before this feature
+    if sim_data is not None:
+        sources = tuple(SourceSpec(**s) for s in sim_data.get("sources", []))
+        document.simulation_config = SimulationConfig(**{**sim_data, "sources": sources})
+    else:
+        document.simulation_config = None
 
     reference_path = data.get("reference_path")
     if reference_path:

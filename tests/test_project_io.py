@@ -181,6 +181,63 @@ def test_save_and_load_round_trips_project_settings(qapp, tmp_path):
     assert s.cross_section == "nitride"
 
 
+def test_save_and_load_round_trips_simulation_config(qapp, tmp_path):
+    from phidler.fdtd_sim import SimulationConfig, SourceSpec
+
+    win = MainWindow()
+    _build_sample(win)
+    win.document.simulation_config = SimulationConfig(
+        wavelength_um=1.31,
+        cell_size_um=0.05,
+        run_time_fs=40.0,
+        clad_index=1.46,
+        use_numba=True,
+        region_selected_only=True,
+        sources=(
+            SourceSpec(x_um=1.0, y_um=2.0, kind="dipole", wavelength_um=1.31),
+            SourceSpec(x_um=3.0, y_um=4.0, kind="single_photon", wavelength_um=1.55, core_width_um=0.6),
+        ),
+        mode_core_width_um=0.7,
+        mode_num_modes=3,
+    )
+
+    project_path = str(tmp_path / "test.phidler")
+    save_project(win.document, project_path)
+
+    win2 = MainWindow()
+    load_project(project_path, win2.document, win2.scene)
+
+    cfg = win2.document.simulation_config
+    assert cfg is not None
+    assert math.isclose(cfg.wavelength_um, 1.31)
+    assert math.isclose(cfg.cell_size_um, 0.05)
+    assert math.isclose(cfg.run_time_fs, 40.0)
+    assert math.isclose(cfg.clad_index, 1.46)
+    assert cfg.use_numba is True
+    assert cfg.region_selected_only is True
+    assert cfg.mode_num_modes == 3
+    assert math.isclose(cfg.mode_core_width_um, 0.7)
+    assert len(cfg.sources) == 2
+    assert cfg.sources[0].kind == "dipole"
+    assert math.isclose(cfg.sources[0].x_um, 1.0)
+    assert cfg.sources[1].kind == "single_photon"
+    assert math.isclose(cfg.sources[1].core_width_um, 0.6)
+
+
+def test_load_project_without_simulation_config_leaves_it_none(qapp, tmp_path):
+    """Projects saved before the simulation-config feature have no
+    "simulation_config" key; loading must leave document.simulation_config None
+    rather than raise or fabricate one."""
+    win = MainWindow()
+    _build_sample(win)
+    project_path = str(tmp_path / "test.phidler")
+    save_project(win.document, project_path)  # simulation_config is None -> serialized as null
+
+    win2 = MainWindow()
+    load_project(project_path, win2.document, win2.scene)
+    assert win2.document.simulation_config is None
+
+
 def test_load_project_file_missing_just_clad_thickness_field_uses_default(qapp, tmp_path):
     """A .phidler saved before clad_thickness_um existed has a
     "project_settings" object missing just that one key (unlike the

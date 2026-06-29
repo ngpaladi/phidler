@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import gdsfactory as gf
 import klayout.db as kdb
 
 from .layers import LayerInfo, LayerKey, layer_info_for
 from .placed_instance import ArraySpec, PlacedInstance, PlacedRoute
+
+if TYPE_CHECKING:
+    # Imported lazily (type-checking only) to avoid a runtime import cycle:
+    # fdtd_sim imports this module, so it can't be imported here at module
+    # scope. The field is plain data (set by project_io / the FDTD window,
+    # both of which import the real class), so document.py never needs it live.
+    from ..fdtd_sim import SimulationConfig
 
 Point = tuple[float, float]
 Shape = tuple[list[Point], list[list[Point]]]  # (hull points, [hole points, ...])
@@ -157,6 +165,11 @@ class LayoutDocument:
         # longer resolve it. project_io replays these before instances.
         self.custom_component_paths: list[str] = []
         self.project_settings: ProjectSettings = ProjectSettings()
+        # The FDTD simulation set-up (sources, run parameters) last configured
+        # for this project, persisted in the .phidler file. None until the
+        # simulation window writes one, so an unconfigured project keeps the
+        # window's project-settings-seeded defaults instead of stale values.
+        self.simulation_config: "SimulationConfig | None" = None
         self._ids = itertools.count(1)
 
     def record_custom_component_path(self, path: str) -> None:
@@ -758,6 +771,7 @@ class LayoutDocument:
             self.remove_instance(inst_id)
         self.clear_reference()
         self.custom_component_paths = []
+        self.simulation_config = None
         return removed_instance_ids, removed_route_ids
 
     # -- export --------------------------------------------------------------

@@ -1138,6 +1138,10 @@ class MainWindow(QMainWindow):
         self._save_project_to(path)
 
     def _save_project_to(self, path: str) -> None:
+        # Pull the FDTD window's live settings into the document first, so an
+        # open-but-unsaved simulation set-up is captured in this save.
+        if self._fdtd_window is not None:
+            self._fdtd_window.sync_config_to_document()
         try:
             save_project(self.document, path)
         except Exception as exc:

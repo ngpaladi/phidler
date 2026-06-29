@@ -39,3 +39,11 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # A few generic-PDK components (coupler_bend, coupler_ring_bend,
+    # ring_double_bend_coupler) build valid sub-90° euler bends, which makes
+    # gdsfactory's bend_euler nag. The components are fine — silence just this
+    # message here too (the app filters it in activate_pdk, but pytest manages
+    # its own warning-filter stack and resets that one).
+    "ignore:bend_euler angle should be 90 or 180:UserWarning",
+]

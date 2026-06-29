@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -28,8 +30,11 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSlider,
     QSpinBox,
@@ -45,6 +50,7 @@ from phidler.fdtd_sim import (
     DISCLAIMER,
     FdtdParams,
     ModeProfileParams,
+    SimulationConfig,
     SourceSpec,
     build_mode_solver,
     build_simulation,
@@ -94,6 +100,22 @@ _TABLE_COLUMNS = [
     _COL_TRACK_LEN,
     _COL_REMOVE,
 ) = range(12)
+
+# Which parameter cells actually feed each source kind (mirrors how build_source
+# in fdtd_sim.py consumes a SourceSpec). Cells outside a row's set are greyed and
+# made non-editable so only the parameters that matter for the chosen kind read
+# as live. X/Y/Kind/Remove are always active, so they're omitted here.
+_RELEVANT_COLUMNS: dict[str, set[int]] = {
+    "dipole": {_COL_WAVELENGTH, _COL_ENERGY},
+    "single_photon": {_COL_WAVELENGTH, _COL_ENERGY, _COL_PHOTON_COUNT, _COL_CORE_WIDTH},
+    "scripted": {_COL_SCRIPT},
+    "cherenkov": {_COL_WAVELENGTH, _COL_ENERGY, _COL_BETA, _COL_TRACK_DIR, _COL_TRACK_LEN},
+}
+# Every togglable parameter column (the always-on X/Y/Kind/Remove excluded).
+_PARAM_COLUMNS = (
+    _COL_WAVELENGTH, _COL_ENERGY, _COL_PHOTON_COUNT, _COL_CORE_WIDTH,
+    _COL_SCRIPT, _COL_BETA, _COL_TRACK_DIR, _COL_TRACK_LEN,
+)
 
 # ---------------------------------------------------------------------------
 # Colormaps: 256-entry uint8 (N, 3) tables built by piecewise-linear interp.
@@ -523,6 +545,17 @@ class _CladRow(QWidget):
         _, n = _CLADDING_MATERIALS[self._combo.currentIndex()]
         return self._custom_spin.value() if n is None else n
 
+    def set_clad_index(self, n: float) -> None:
+        """Restore a saved cladding index: select the preset that matches it,
+        else fall back to the Custom… entry with n typed into the spinbox."""
+        for i, (_, preset) in enumerate(_CLADDING_MATERIALS):
+            if preset is not None and math.isclose(preset, n, abs_tol=1e-6):
+                self._combo.setCurrentIndex(i)
+                return
+        custom_idx = next(i for i, (_, p) in enumerate(_CLADDING_MATERIALS) if p is None)
+        self._custom_spin.setValue(n)  # set before switching so the row shows the right value
+        self._combo.setCurrentIndex(custom_idx)
+
     def _on_combo_changed(self, idx: int) -> None:
         _, n = _CLADDING_MATERIALS[idx]
         self._custom_spin.setVisible(n is None)
@@ -560,16 +593,36 @@ class ModeWorker(QObject):
 class FdtdWorker(QObject):
     finished = Signal(object, object, float)  # Simulation, Result, elapsed_seconds
     failed = Signal(str)
+    progress = Signal(int, int)  # (step, n_steps) — emitted from the worker thread
 
-    def __init__(self, document: LayoutDocument, params: FdtdParams, region_um=None) -> None:
+    def __init__(self, document: LayoutDocument, params: FdtdParams, region_um=None,
+                 remote=False, remote_cfg=None) -> None:
         super().__init__()
         self.document = document
         self.params = params
         self.region_um = region_um
+        self.remote = remote
+        self.remote_cfg = remote_cfg
 
     def run(self) -> None:
+        # progress.emit is safe to call from this worker thread: Qt queues the
+        # cross-thread delivery to the GUI thread. All three backends report
+        # through the same signal — the in-process solver via a callback, the
+        # subprocess/remote paths by parsing markers streamed back.
         try:
-            if self.params.use_gpu:
+            if self.remote:
+                # Ship the job to the configured SSH host, run it there, bring
+                # the result back. The worker thread blocks on ssh while the UI
+                # stays live — same shape as the GPU subprocess path below.
+                # Checked before use_gpu so a remote-GPU run doesn't take the
+                # local subprocess branch.
+                from phidler.fdtd_remote import run_on_remote
+
+                sim, result, elapsed = run_on_remote(
+                    self.document, self.params, self.region_um, self.remote_cfg,
+                    progress_callback=self.progress.emit,
+                )
+            elif self.params.use_gpu:
                 # The GPU (CuPy) backend can't tear down in a worker thread
                 # without crashing, and freezes the UI on the main thread — so
                 # run it in a child process and just wait on it here. CuPy lives
@@ -577,16 +630,218 @@ class FdtdWorker(QObject):
                 # subprocess, so the UI stays responsive.
                 from phidler.fdtd_subprocess import run_in_subprocess
 
-                sim, result, elapsed = run_in_subprocess(self.document, self.params, self.region_um)
+                sim, result, elapsed = run_in_subprocess(
+                    self.document, self.params, self.region_um,
+                    progress_callback=self.progress.emit,
+                )
             else:
                 t0 = time.time()
                 sim = build_simulation(self.document, self.params, region_um=self.region_um)
+                sim.progress_callback = self.progress.emit
                 result = run_simulation(sim)
                 elapsed = time.time() - t0
         except Exception as exc:
             self.failed.emit(str(exc))
             return
         self.finished.emit(sim, result, elapsed)
+
+
+class _RemoteOpWorker(QObject):
+    """Runs a remote connectivity check or deploy off the GUI thread, forwarding
+    each output line as it arrives (so the deploy's pip/build output streams live
+    into the dialog) and a final ok/done signal."""
+
+    line = Signal(str)
+    done = Signal(bool)  # success
+
+    def __init__(self, cfg, op: str) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.op = op  # "check" | "deploy"
+
+    def run(self) -> None:
+        from phidler.fdtd_remote import check_remote, deploy_to_remote
+
+        try:
+            if self.op == "check":
+                ok, msg = check_remote(self.cfg)
+                self.line.emit(msg)
+            else:
+                ok = deploy_to_remote(self.cfg, self.line.emit)
+        except Exception as exc:  # never let the worker die silently
+            self.line.emit(f"Error: {exc}")
+            ok = False
+        self.done.emit(bool(ok))
+
+
+class RemoteConfigDialog(QDialog):
+    """Set up and test offloading FDTD runs to a remote SSH host. Captures the
+    host alias, the remote directory + Python interpreter to install into, and
+    whether to request the remote GPU; persists them via remote_config. The
+    'Test connection' and 'Set up remote' buttons run off the GUI thread and
+    stream their output into the log pane so the window stays responsive."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Remote Simulation Server")
+        self.resize(620, 480)
+        self._op_thread: QThread | None = None
+        self._op_worker: _RemoteOpWorker | None = None
+
+        from phidler.remote_config import load_remote_config
+
+        cfg = load_remote_config()
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.alias_edit = QLineEdit(cfg.alias)
+        self.alias_edit.setPlaceholderText("host alias from ~/.ssh/config, e.g. gpubox")
+        self.alias_edit.setToolTip(
+            "A Host entry from your ~/.ssh/config. Phidler runs `ssh <alias> …` and "
+            "lets your SSH config and agent/keys handle authentication — it stores no "
+            "passwords. Key-based (non-interactive) auth is required."
+        )
+        form.addRow("SSH host alias", self.alias_edit)
+
+        self.remote_dir_edit = QLineEdit(cfg.remote_dir)
+        self.remote_dir_edit.setPlaceholderText("e.g. ~/phidler-remote")
+        self.remote_dir_edit.setToolTip(
+            "Directory on the remote host where phidler's and photonfdtd's source "
+            "are uploaded and installed (created if missing)."
+        )
+        form.addRow("Remote directory", self.remote_dir_edit)
+
+        self.remote_python_edit = QLineEdit(cfg.remote_python)
+        self.remote_python_edit.setPlaceholderText("e.g. ~/phidler-remote/.venv/bin/python")
+        self.remote_python_edit.setToolTip(
+            "The Python interpreter on the remote (ideally a venv) that phidler is "
+            "installed into. Setup installs into this interpreter's environment; runs "
+            "invoke `<this> -m phidler.fdtd_subprocess`."
+        )
+        form.addRow("Remote Python", self.remote_python_edit)
+
+        self.local_pf_edit = QLineEdit(cfg.local_photonfdtd_dir)
+        self.local_pf_edit.setPlaceholderText("(optional) local photonfdtd checkout to upload")
+        self.local_pf_edit.setToolTip(
+            "Where the local photonfdtd source checkout lives, to upload during setup. "
+            "Leave blank to auto-detect it from the editable install."
+        )
+        form.addRow("Local photonfdtd", self.local_pf_edit)
+
+        self.use_gpu_check = QCheckBox("Use GPU on the remote host")
+        self.use_gpu_check.setChecked(cfg.use_gpu)
+        self.use_gpu_check.setToolTip(
+            "Request photonfdtd's GPU (CuPy) backend on the remote — independent of "
+            "whether this machine has a GPU. If the remote has no GPU it falls back to "
+            "CPU, and the result reports the backend that actually ran."
+        )
+        form.addRow("Acceleration", self.use_gpu_check)
+
+        layout.addLayout(form)
+
+        button_row = QHBoxLayout()
+        self.test_button = QPushButton("Test connection")
+        self.test_button.clicked.connect(self._on_test)
+        button_row.addWidget(self.test_button)
+        self.setup_button = QPushButton("Set up remote")
+        self.setup_button.setToolTip(
+            "One-time: upload the phidler + photonfdtd source and `pip install -e` both "
+            "into the remote Python's environment. Re-run after updating either package."
+        )
+        self.setup_button.clicked.connect(self._on_setup)
+        button_row.addWidget(self.setup_button)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setPlaceholderText("Connection / setup output appears here.")
+        layout.addWidget(self.log, stretch=1)
+
+        self._buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Close)
+        self._buttons.button(QDialogButtonBox.Save).setText("Save")
+        self._buttons.accepted.connect(self._on_save)
+        self._buttons.rejected.connect(self.reject)
+        layout.addWidget(self._buttons)
+
+    def _current_config(self):
+        from phidler.remote_config import RemoteConfig
+
+        return RemoteConfig(
+            alias=self.alias_edit.text().strip(),
+            remote_dir=self.remote_dir_edit.text().strip(),
+            remote_python=self.remote_python_edit.text().strip(),
+            use_gpu=self.use_gpu_check.isChecked(),
+            local_photonfdtd_dir=self.local_pf_edit.text().strip(),
+        )
+
+    def _on_save(self) -> None:
+        from phidler.remote_config import save_remote_config
+
+        save_remote_config(self._current_config())
+        self.accept()
+
+    def _on_test(self) -> None:
+        self.log.clear()
+        self._start_op("check")
+
+    def _on_setup(self) -> None:
+        self.log.clear()
+        self._append("Starting remote setup — this can take a while on first install.")
+        self._start_op("deploy")
+
+    def _start_op(self, op: str) -> None:
+        if self._op_thread is not None:  # one operation at a time
+            return
+        self._set_busy(True)
+        self._op_thread = QThread(self)
+        self._op_worker = _RemoteOpWorker(self._current_config(), op)
+        self._op_worker.moveToThread(self._op_thread)
+        self._op_thread.started.connect(self._op_worker.run)
+        self._op_worker.line.connect(self._append)
+        self._op_worker.done.connect(self._on_op_done)
+        self._op_worker.done.connect(self._op_thread.quit)
+        self._op_thread.finished.connect(self._op_worker.deleteLater)
+        self._op_thread.finished.connect(self._on_op_thread_finished)
+        self._op_thread.start()
+
+    def _on_op_done(self, ok: bool) -> None:
+        # Runs on the GUI thread when the worker finishes. Only touch the UI
+        # here — do NOT wait() on the thread: its event loop hasn't returned yet
+        # (the queued quit() runs after this slot), so waiting would deadlock.
+        self._append("\nDone." if ok else "\nFinished with errors.")
+        self._set_busy(False)
+
+    def _on_op_thread_finished(self) -> None:
+        # The worker thread's event loop has actually exited now, so it's safe to
+        # drop the references (re-enabling the next operation).
+        if self._op_thread is not None:
+            self._op_thread.deleteLater()
+        self._op_thread = None
+        self._op_worker = None
+
+    def _set_busy(self, busy: bool) -> None:
+        # Disable the dialog buttons (Save/Close) too while an op runs: closing
+        # the dialog mid-deploy would destroy the running QThread and abort the
+        # process (the same crash FdtdWindow.closeEvent guards against).
+        self.test_button.setEnabled(not busy)
+        self.setup_button.setEnabled(not busy)
+        self._buttons.setEnabled(not busy)
+
+    def reject(self) -> None:
+        if self._op_thread is not None:  # don't tear down a running op
+            return
+        super().reject()
+
+    def closeEvent(self, event) -> None:
+        if self._op_thread is not None:
+            event.ignore()  # block the window-manager close while busy
+            return
+        super().closeEvent(event)
+
+    def _append(self, text: str) -> None:
+        self.log.appendPlainText(text)
 
 
 # ---------------------------------------------------------------------------
@@ -637,9 +892,19 @@ class FdtdWindow(QMainWindow):
         self.mode_view.set_n_eff(n0)
         self.run_view.set_n_eff(n0)
 
+        # Re-apply the simulation set-up saved with this project (sources, run
+        # parameters), if any. Only when one exists — otherwise the controls
+        # keep their project-settings-seeded defaults above.
+        if self.document.simulation_config is not None:
+            self._restore_config(self.document.simulation_config)
+
         self.resize(700, 820)
 
     def closeEvent(self, event) -> None:
+        # Capture the current set-up so it's saved even if the window is closed
+        # before the next project save (the window instance is reused on reopen,
+        # so its widgets persist, but the document copy must stay current too).
+        self.sync_config_to_document()
         # The worker QThreads are parented to this window, so closing it while a
         # solve/run is still in flight would destroy a running thread — Qt aborts
         # the process ("QThread: Destroyed while thread is still running"), and a
@@ -879,6 +1144,22 @@ class FdtdWindow(QMainWindow):
         )
         form.addRow("Region", self.run_region_check)
 
+        remote_widget = QWidget()
+        remote_layout = QHBoxLayout(remote_widget)
+        remote_layout.setContentsMargins(0, 0, 0, 0)
+        self.run_remote_check = QCheckBox("Run on remote server")
+        self.run_remote_check.setToolTip(
+            "Send this run to a remote machine over SSH (e.g. a GPU box) and "
+            "fetch the result back, instead of computing locally. Configure the "
+            "host and do the one-time setup with the button on the right."
+        )
+        remote_layout.addWidget(self.run_remote_check)
+        self.remote_config_button = QPushButton("Configure…")
+        self.remote_config_button.clicked.connect(self._on_configure_remote)
+        remote_layout.addWidget(self.remote_config_button)
+        remote_layout.addStretch(1)
+        form.addRow("Remote", remote_widget)
+
         layout.addLayout(form)
 
         self.place_source_button = QPushButton("Place Source on Canvas")
@@ -899,6 +1180,15 @@ class FdtdWindow(QMainWindow):
         self.run_status_label = QLabel("")
         self.run_status_label.setWordWrap(True)
         layout.addWidget(self.run_status_label)
+
+        # Progress bar for the running solve. Hidden until a run starts; shown
+        # busy (indeterminate) during the startup/upload phase before the first
+        # progress tick, then switched to a determinate 0–100% as ticks arrive
+        # (the same signal feeds it for local, GPU-subprocess, and remote runs).
+        self.run_progress = QProgressBar()
+        self.run_progress.setTextVisible(True)
+        self.run_progress.setVisible(False)
+        layout.addWidget(self.run_progress)
 
         playback_row = QHBoxLayout()
         self.play_button = QPushButton("Play")
@@ -973,6 +1263,7 @@ class FdtdWindow(QMainWindow):
 
         kind_combo = QComboBox()
         kind_combo.addItems(["dipole", "single_photon", "scripted", "cherenkov"])
+        kind_combo.currentTextChanged.connect(lambda _text, c=kind_combo: self._on_kind_changed(c))
         self.source_table.setCellWidget(row, _COL_KIND, kind_combo)
 
         wavelength_um = self.run_wavelength_spin.value()
@@ -992,6 +1283,37 @@ class FdtdWindow(QMainWindow):
         self.source_table.setCellWidget(row, _COL_REMOVE, remove_button)
 
         self._source_rows.append({"marker": marker})
+        self._apply_kind_to_row(row)  # grey out cells the default ("dipole") kind doesn't use
+
+    def _on_kind_changed(self, combo: QComboBox) -> None:
+        """Re-grey a row's parameter cells when its kind changes. The combo (not
+        a fixed row index) is the handle, since rows shift as others are removed;
+        find its current row, then re-apply."""
+        for row in range(self.source_table.rowCount()):
+            if self.source_table.cellWidget(row, _COL_KIND) is combo:
+                self._apply_kind_to_row(row)
+                return
+
+    def _apply_kind_to_row(self, row: int) -> None:
+        """Disable (grey, non-editable) the parameter cells that don't apply to
+        this row's selected kind, leaving only the relevant ones live. Values are
+        kept, not cleared, so switching kind back restores them. Qt renders a
+        disabled item with the palette's faded text colour — that's the fade."""
+        relevant = _RELEVANT_COLUMNS.get(self.source_table.cellWidget(row, _COL_KIND).currentText(), set())
+        # Toggling flags on the wavelength/energy cells can re-emit itemChanged;
+        # suppress the paired wavelength↔energy resync while we restyle.
+        self._syncing_wavelength_energy = True
+        try:
+            for col in _PARAM_COLUMNS:
+                item = self.source_table.item(row, col)
+                if item is None:
+                    continue
+                if col in relevant:
+                    item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsEditable)
+                else:
+                    item.setFlags(item.flags() & ~(Qt.ItemIsEnabled | Qt.ItemIsEditable))
+        finally:
+            self._syncing_wavelength_energy = False
 
     def _on_remove_source_row(self, marker) -> None:
         for row_idx, row_data in enumerate(self._source_rows):
@@ -1061,6 +1383,81 @@ class FdtdWindow(QMainWindow):
             ))
         return tuple(specs)
 
+    # -- persisted configuration ----------------------------------------------
+
+    def sync_config_to_document(self) -> None:
+        """Capture the window's current controls into document.simulation_config
+        so the next project save persists them. The main window calls this
+        before saving (and the window calls it on close): the live widgets, not
+        a stale snapshot, are the source of truth while the window is open.
+
+        Best-effort: a half-typed source cell makes _collect_source_specs raise
+        (the table cells are free text with no validator). Persisting the sim
+        set-up must never block the layout save or the window close that invoke
+        this, so on a parse failure we keep the previous config and move on."""
+        try:
+            params = self._current_params()  # parses the free-text source cells
+        except (ValueError, TypeError):
+            return
+        self.document.simulation_config = SimulationConfig(
+            wavelength_um=params.wavelength_um,
+            cell_size_um=params.cell_size_um,
+            run_time_fs=params.run_time_fs,
+            clad_index=params.clad_index,
+            use_gpu=params.use_gpu,
+            use_numba=params.use_numba,
+            region_selected_only=self.run_region_check.isChecked(),
+            sources=params.sources,
+            mode_wavelength_um=self.mode_wavelength_spin.value(),
+            mode_core_width_um=self.mode_core_width_spin.value(),
+            mode_num_modes=self.mode_num_modes_spin.value(),
+            mode_clad_index=self.mode_clad_row.clad_index(),
+        )
+
+    def _restore_config(self, config: SimulationConfig) -> None:
+        """Apply a saved SimulationConfig to the controls (inverse of
+        sync_config_to_document). Drives the source-of-truth widget and lets the
+        existing handlers follow — setting the run-time spinbox moves its slider,
+        setting a source row's wavelength updates its energy cell, etc."""
+        self.run_wavelength_spin.setValue(config.wavelength_um)
+        if config.cell_size_um is not None:
+            self.run_cell_size_spin.setValue(config.cell_size_um)
+        if config.run_time_fs is not None:
+            self.run_time_spin.setValue(config.run_time_fs)  # slider follows via signal
+        if config.clad_index is not None:
+            self.run_clad_row.set_clad_index(config.clad_index)
+        # Only toggle accelerators whose backend is actually available, so a
+        # project saved on a GPU box doesn't tick a disabled box on a CPU box.
+        if self.run_gpu_check.isEnabled():
+            self.run_gpu_check.setChecked(config.use_gpu)
+        if self.run_numba_check.isEnabled():
+            self.run_numba_check.setChecked(config.use_numba)
+        self.run_region_check.setChecked(config.region_selected_only)
+        for spec in config.sources:
+            self._restore_source(spec)
+
+        self.mode_wavelength_spin.setValue(config.mode_wavelength_um)
+        self.mode_core_width_spin.setValue(config.mode_core_width_um)
+        self.mode_num_modes_spin.setValue(config.mode_num_modes)
+        if config.mode_clad_index is not None:
+            self.mode_clad_row.set_clad_index(config.mode_clad_index)
+
+    def _restore_source(self, spec: SourceSpec) -> None:
+        """Recreate one saved source: place its canvas marker and table row via
+        the normal placement path, then fill the row's cells from the spec."""
+        self._on_source_placement_requested(spec.x_um, spec.y_um)
+        row = self.source_table.rowCount() - 1
+        self.source_table.cellWidget(row, _COL_KIND).setCurrentText(spec.kind)
+        self.source_table.item(row, _COL_WAVELENGTH).setText(f"{spec.wavelength_um:.4f}")  # energy follows
+        self.source_table.item(row, _COL_PHOTON_COUNT).setText(str(spec.photon_count))
+        if spec.core_width_um is not None:
+            self.source_table.item(row, _COL_CORE_WIDTH).setText(f"{spec.core_width_um:.4f}")
+        if spec.script is not None:
+            self.source_table.item(row, _COL_SCRIPT).setText(spec.script)
+        self.source_table.item(row, _COL_BETA).setText(f"{spec.velocity_beta}")
+        self.source_table.item(row, _COL_TRACK_DIR).setText(f"{spec.direction_deg}")
+        self.source_table.item(row, _COL_TRACK_LEN).setText(f"{spec.cherenkov_length_um}")
+
     # -- running the simulation ------------------------------------------------
 
     def _current_params(self) -> FdtdParams:
@@ -1097,8 +1494,32 @@ class FdtdWindow(QMainWindow):
         m = _REGION_MARGIN_UM
         return (min(lefts) - m, min(bottoms) - m, max(rights) + m, max(tops) + m)
 
+    def _on_configure_remote(self) -> None:
+        """Open the remote-server setup dialog (host, paths, test/deploy)."""
+        dialog = RemoteConfigDialog(self)
+        dialog.exec()
+
     def _on_run_clicked(self) -> None:
         params = self._current_params()
+
+        remote = self.run_remote_check.isChecked()
+        remote_cfg = None
+        if remote:
+            from phidler.remote_config import load_remote_config
+
+            remote_cfg = load_remote_config()
+            if not remote_cfg.is_configured():
+                QMessageBox.warning(
+                    self, "Remote not configured",
+                    "No remote server is set up. Click 'Configure…' next to "
+                    "'Run on remote server' to set a host and run the one-time setup, "
+                    "or untick it to run locally.",
+                )
+                return
+            # The local GPU checkbox is disabled when this machine has no GPU, so
+            # _current_params() always reports use_gpu=False. For a remote run the
+            # *remote's* GPU is what matters, so take the toggle from the config.
+            params = dataclasses.replace(params, use_gpu=remote_cfg.use_gpu)
         self._last_params = params
 
         region_um = None
@@ -1137,7 +1558,23 @@ class FdtdWindow(QMainWindow):
         selected = "gpu" if params.use_gpu else ("numba" if params.use_numba else "numpy")
         selected_seconds = estimate_run_seconds(grid, n_steps, backend=selected)
 
-        if selected_seconds > _RUN_TIME_WARNING_SECONDS or memory_gb > _MEMORY_WARNING_GB:
+        # The run-time estimates are calibrated on *local* hardware, so they're
+        # meaningless for a remote box — show only the (machine-independent)
+        # memory figure on the remote path, and only when it's genuinely large.
+        if remote:
+            if memory_gb > _MEMORY_WARNING_GB:
+                reply = QMessageBox.question(
+                    self, "Large simulation",
+                    f"This grid has about {cell_count:,} cells and needs roughly "
+                    f"{memory_gb:.1f} GB of memory — make sure the remote host has "
+                    f"enough (try a coarser cell size, or simulate a smaller region). "
+                    f"Continue?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if reply != QMessageBox.Yes:
+                    return
+        elif selected_seconds > _RUN_TIME_WARNING_SECONDS or memory_gb > _MEMORY_WARNING_GB:
             t_numba = estimate_run_seconds(grid, n_steps, "numba")
             t_gpu = estimate_run_seconds(grid, n_steps, "gpu")
             t_numpy = estimate_run_seconds(grid, n_steps, "numpy")
@@ -1160,25 +1597,46 @@ class FdtdWindow(QMainWindow):
 
         self.run_button.setEnabled(False)
         # GPU runs spawn a child process and pay its ~1 s startup, so say so —
-        # otherwise the extra second reads as the app hanging.
-        self.run_status_label.setText("Running on GPU…" if params.use_gpu else "Running…")
+        # otherwise the extra second reads as the app hanging. Remote runs also
+        # pay an upload/connect cost, so flag that too.
+        if remote:
+            self.run_status_label.setText("Running on remote server…")
+        else:
+            self.run_status_label.setText("Running on GPU…" if params.use_gpu else "Running…")
         self._field_image_initialized = False
 
+        # Start the progress bar busy (indeterminate): there's a startup phase —
+        # JIT compile, GPU/subprocess launch, or remote upload — before the first
+        # step tick, and an animated bar there reads as "working" rather than
+        # stuck at 0%. _on_fdtd_progress switches it to a determinate 0–100% once
+        # ticks start arriving.
+        self.run_progress.setRange(0, 0)
+        self.run_progress.setVisible(True)
+
         # Both backends run in a worker thread now: the non-GPU path computes
-        # there directly; the GPU path waits there on a child process (see
-        # FdtdWorker.run). Either way the UI stays live.
+        # there directly; the GPU path waits there on a child process, and the
+        # remote path waits on ssh (see FdtdWorker.run). Either way the UI stays live.
         self._fdtd_thread = QThread(self)
-        self._fdtd_worker = FdtdWorker(self.document, params, region_um)
+        self._fdtd_worker = FdtdWorker(self.document, params, region_um, remote=remote, remote_cfg=remote_cfg)
         self._fdtd_worker.moveToThread(self._fdtd_thread)
         self._fdtd_thread.started.connect(self._fdtd_worker.run)
+        self._fdtd_worker.progress.connect(self._on_fdtd_progress)
         self._fdtd_worker.finished.connect(self._on_fdtd_finished)
         self._fdtd_worker.failed.connect(self._on_fdtd_failed)
         self._fdtd_worker.finished.connect(self._fdtd_thread.quit)
         self._fdtd_worker.failed.connect(self._fdtd_thread.quit)
         self._fdtd_thread.start()
 
+    def _on_fdtd_progress(self, step: int, n_steps: int) -> None:
+        # First real tick: leave busy/indeterminate mode for a determinate bar.
+        if self.run_progress.maximum() == 0:
+            self.run_progress.setRange(0, 100)
+        pct = int(100 * step / n_steps) if n_steps > 0 else 0
+        self.run_progress.setValue(max(0, min(100, pct)))
+
     def _on_fdtd_finished(self, sim, result, elapsed: float) -> None:
         self.run_button.setEnabled(True)
+        self.run_progress.setVisible(False)
         self._last_sim = sim
         self._last_result = result
 
@@ -1235,6 +1693,7 @@ class FdtdWindow(QMainWindow):
 
     def _on_fdtd_failed(self, message: str) -> None:
         self.run_button.setEnabled(True)
+        self.run_progress.setVisible(False)
         self.run_status_label.setText(f"Error: {message}")
 
     # -- frame animation -------------------------------------------------------

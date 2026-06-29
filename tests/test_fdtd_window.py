@@ -375,6 +375,151 @@ def test_closing_window_clears_markers_and_exits_source_mode(qapp):
     assert len(win.view._source_markers) == 0
 
 
+def test_sync_config_to_document_captures_controls_and_sources(qapp):
+    from phidler.panels.fdtd_window import _COL_KIND
+
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    fdtd_win.run_wavelength_spin.setValue(1.31)
+    fdtd_win.run_cell_size_spin.setValue(0.05)
+    fdtd_win.run_time_spin.setValue(40.0)
+    fdtd_win.mode_num_modes_spin.setValue(3)
+    win.view.source_placement_requested.emit(2.0, 3.0)
+    fdtd_win.source_table.cellWidget(0, _COL_KIND).setCurrentText("dipole")
+
+    fdtd_win.sync_config_to_document()
+
+    cfg = win.document.simulation_config
+    assert cfg is not None
+    assert cfg.wavelength_um == pytest.approx(1.31)
+    assert cfg.cell_size_um == pytest.approx(0.05)
+    assert cfg.run_time_fs == pytest.approx(40.0)
+    assert cfg.mode_num_modes == 3
+    assert len(cfg.sources) == 1
+    assert cfg.sources[0].x_um == pytest.approx(2.0)
+    assert cfg.sources[0].y_um == pytest.approx(3.0)
+
+
+def test_window_restores_saved_config_on_open(qapp):
+    from phidler.fdtd_sim import SimulationConfig, SourceSpec
+    from phidler.panels.fdtd_window import _COL_KIND, _COL_WAVELENGTH
+
+    win = MainWindow()
+    win.document.simulation_config = SimulationConfig(
+        wavelength_um=1.31,
+        cell_size_um=0.05,
+        run_time_fs=40.0,
+        sources=(SourceSpec(x_um=2.0, y_um=3.0, kind="single_photon", wavelength_um=1.55, core_width_um=0.6),),
+        mode_num_modes=3,
+    )
+
+    fdtd_win = FdtdWindow(win.document, win.view)
+
+    assert fdtd_win.run_wavelength_spin.value() == pytest.approx(1.31)
+    assert fdtd_win.run_cell_size_spin.value() == pytest.approx(0.05)
+    assert fdtd_win.run_time_spin.value() == pytest.approx(40.0)
+    assert fdtd_win.mode_num_modes_spin.value() == 3
+    assert fdtd_win.source_table.rowCount() == 1
+    assert fdtd_win.source_table.cellWidget(0, _COL_KIND).currentText() == "single_photon"
+    assert float(fdtd_win.source_table.item(0, _COL_WAVELENGTH).text()) == pytest.approx(1.55, abs=1e-3)
+    # the source's canvas marker was recreated too
+    assert len(win.view._source_markers) == 1
+    # and it round-trips back out unchanged
+    specs = fdtd_win._collect_source_specs()
+    assert specs[0].kind == "single_photon"
+    assert specs[0].core_width_um == pytest.approx(0.6)
+
+
+def test_source_row_greys_out_parameters_irrelevant_to_its_kind(qapp):
+    from PySide6.QtCore import Qt
+
+    from phidler.panels.fdtd_window import (
+        _COL_BETA,
+        _COL_CORE_WIDTH,
+        _COL_KIND,
+        _COL_SCRIPT,
+        _COL_WAVELENGTH,
+    )
+
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    win.view.source_placement_requested.emit(0.0, 0.0)
+    table = fdtd_win.source_table
+
+    def enabled(col):
+        return bool(table.item(0, col).flags() & Qt.ItemIsEnabled)
+
+    # Default kind is "dipole": wavelength live; core width / script / β faded.
+    assert enabled(_COL_WAVELENGTH)
+    assert not enabled(_COL_CORE_WIDTH)
+    assert not enabled(_COL_SCRIPT)
+    assert not enabled(_COL_BETA)
+
+    # single_photon lights up core width (still not script / β).
+    table.cellWidget(0, _COL_KIND).setCurrentText("single_photon")
+    assert enabled(_COL_CORE_WIDTH)
+    assert not enabled(_COL_SCRIPT)
+
+    # scripted: only the script cell is live; wavelength goes faded.
+    table.cellWidget(0, _COL_KIND).setCurrentText("scripted")
+    assert enabled(_COL_SCRIPT)
+    assert not enabled(_COL_WAVELENGTH)
+    assert not enabled(_COL_CORE_WIDTH)
+
+    # cherenkov lights up β; switching back preserves the cell's value.
+    table.cellWidget(0, _COL_KIND).setCurrentText("cherenkov")
+    assert enabled(_COL_BETA)
+    assert enabled(_COL_WAVELENGTH)
+    assert table.item(0, _COL_BETA).text() == "0.8"  # value kept across kind changes
+
+
+def test_save_project_persists_open_fdtd_window_config_end_to_end(qapp, tmp_path):
+    """The literal user scenario: configure the (open) FDTD window, Ctrl+S,
+    reopen the project in a fresh session, open the window — settings restored."""
+    from phidler.panels.fdtd_window import _COL_KIND
+    from phidler.project_io import load_project
+
+    win = MainWindow()
+    win.document.add_instance("straight", {"length": 5.0})
+    win._open_fdtd_window()
+    fdtd_win = win._fdtd_window
+    fdtd_win.run_wavelength_spin.setValue(1.31)
+    fdtd_win.run_cell_size_spin.setValue(0.05)
+    win.view.source_placement_requested.emit(2.0, 3.0)
+    fdtd_win.source_table.cellWidget(0, _COL_KIND).setCurrentText("dipole")
+
+    path = str(tmp_path / "test.phidler")
+    win._save_project_to(path)  # the real save path, including the sync-if-open wiring
+
+    win2 = MainWindow()
+    load_project(path, win2.document, win2.scene)
+    fdtd_win2 = FdtdWindow(win2.document, win2.view)
+
+    assert fdtd_win2.run_wavelength_spin.value() == pytest.approx(1.31)
+    assert fdtd_win2.run_cell_size_spin.value() == pytest.approx(0.05)
+    assert fdtd_win2.source_table.rowCount() == 1
+    specs = fdtd_win2._collect_source_specs()
+    assert specs[0].x_um == pytest.approx(2.0)
+    assert specs[0].y_um == pytest.approx(3.0)
+
+
+def test_save_does_not_fail_on_malformed_source_cell(qapp, tmp_path):
+    """A half-typed source cell must not break the layout save — persisting the
+    sim set-up is best-effort, the file save is not."""
+    from phidler.panels.fdtd_window import _COL_X
+
+    win = MainWindow()
+    win.document.add_instance("straight", {"length": 5.0})
+    win._open_fdtd_window()
+    win.view.source_placement_requested.emit(2.0, 3.0)
+    win._fdtd_window.source_table.item(0, _COL_X).setText("not a number")
+
+    path = str(tmp_path / "test.phidler")
+    win._save_project_to(path)  # must not raise
+
+    assert win.project_path == path  # save completed
+
+
 # -- running + playback -------------------------------------------------------- #
 
 
@@ -392,6 +537,42 @@ def test_run_simulation_through_real_threaded_wiring_completes_and_enables_playb
     assert "Done" in fdtd_win.run_status_label.text()
     assert fdtd_win.frame_slider.isEnabled()
     assert fdtd_win.frame_slider.maximum() > 0
+
+
+def test_progress_handler_switches_busy_to_determinate(qapp):
+    """The bar starts busy (range 0–0); the first tick switches it to a
+    determinate 0–100% and subsequent ticks set the percentage."""
+    win = MainWindow()
+    fdtd_win = FdtdWindow(_tiny_document(), win.view)
+
+    fdtd_win.run_progress.setRange(0, 0)  # busy, as _on_run_clicked leaves it
+    fdtd_win._on_fdtd_progress(0, 200)
+    assert fdtd_win.run_progress.maximum() == 100  # left busy mode
+    fdtd_win._on_fdtd_progress(100, 200)
+    assert fdtd_win.run_progress.value() == 50
+    fdtd_win._on_fdtd_progress(200, 200)
+    assert fdtd_win.run_progress.value() == 100
+
+
+def test_run_shows_progress_bar_reaches_100_then_hides(qapp):
+    """End-to-end: the real photonfdtd progress callback flows through the
+    worker's progress signal to the bar, which is shown while running, fills to
+    100%, and is hidden on completion."""
+    win = MainWindow()
+    fdtd_win = FdtdWindow(_tiny_document(), win.view)
+    fdtd_win.run_cell_size_spin.setValue(0.1)
+    fdtd_win.run_time_spin.setValue(3.0)
+
+    fdtd_win._on_run_clicked()
+    assert fdtd_win._fdtd_thread is not None
+    assert not fdtd_win.run_progress.isHidden()  # shown as soon as the run starts
+
+    assert _pump_until(lambda: not fdtd_win._fdtd_thread.isRunning())
+    qapp.processEvents()  # drain the final queued progress + finished signals
+
+    assert fdtd_win.run_progress.maximum() == 100  # became determinate from real ticks
+    assert fdtd_win.run_progress.value() == 100    # reached 100%
+    assert fdtd_win.run_progress.isHidden()        # hidden once done
 
 
 def test_run_simulation_on_empty_layout_shows_warning_not_crash(qapp, monkeypatch):
