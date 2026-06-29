@@ -47,6 +47,18 @@ def save(widget, name: str) -> None:
     print(f"saved {path} ({pixmap.width()}x{pixmap.height()})")
 
 
+def crop_top(name: str, fraction: float) -> None:
+    """Keeps the top `fraction` of an already-saved screenshot (drops the
+    bottom) — used for the mid-run propagation grab, where the field view below
+    the progress bar is still empty (the movie is assembled only at the end)."""
+    from PIL import Image
+
+    path = OUT / f"{name}.png"
+    img = Image.open(path)
+    w, h = img.size
+    img.crop((0, 0, w, int(h * fraction))).save(path)
+
+
 def crop_bottom(name: str, fraction: float) -> None:
     """Crops the bottom `fraction` of an already-saved screenshot in
     place — used for the console screenshot, where the full window is
@@ -192,6 +204,72 @@ def fdtd_propagation() -> None:
     fdtd_win.run_view.fit_to_image()  # frame the field + element outlines tightly
     app.processEvents()
     save(fdtd_win, "fdtd_propagation")
+
+
+def fdtd_run_progress() -> None:
+    """The Propagation (FDTD) tab during a run: the determinate progress bar
+    filling, the "Running…" status, and the new "Run on remote server" row.
+    Grabbed mid-solve from a real run (the field movie is only assembled at the
+    end, so the view shows the chip outline the run is computing over)."""
+    from phidler.panels.fdtd_window import FdtdWindow
+
+    win = MainWindow()
+    win.resize(900, 600)
+    win.show()
+    a = win.document.add_instance("straight", {"length": 6.0, "width": 0.5})
+    win.scene.add_instance_item(a.id)
+    win.view.zoom_to_fit()
+    win.view.scale(0.6, 0.6)
+
+    fdtd_win = FdtdWindow(win.document, win.view)
+    fdtd_win.resize(750, 950)
+    fdtd_win.show()
+    fdtd_win.centralWidget().setCurrentIndex(1)
+    fdtd_win.run_cell_size_spin.setValue(0.07)
+    fdtd_win.run_time_spin.setValue(40.0)  # enough steps to catch the bar partway
+    fdtd_win._on_source_placement_requested(-0.4, 0.0)
+    fdtd_win._on_run_clicked()
+
+    # Stop pumping once the bar is determinate (first real tick) and at least a
+    # third filled, while the worker is still running.
+    def caught_midrun() -> bool:
+        running = fdtd_win._fdtd_thread is not None and fdtd_win._fdtd_thread.isRunning()
+        return (not running) or (
+            fdtd_win.run_progress.maximum() == 100 and fdtd_win.run_progress.value() >= 35
+        )
+
+    _pump_events(app, caught_midrun)
+    if fdtd_win._fdtd_thread is None or not fdtd_win._fdtd_thread.isRunning():
+        # Solve finished before we sampled it (fast machine): put the bar at a
+        # representative value so the screenshot still shows the in-run state.
+        fdtd_win.run_progress.setVisible(True)
+        fdtd_win.run_progress.setRange(0, 100)
+        fdtd_win.run_progress.setValue(58)
+        fdtd_win.run_status_label.setText("Running…")
+    app.processEvents()
+    save(fdtd_win, "fdtd_run_progress")
+    # Drop the still-empty field view below the bar; keep controls + progress.
+    crop_top("fdtd_run_progress", 0.72)
+    # Let the worker finish so the next capture doesn't tear down a live thread.
+    _pump_events(app, lambda: fdtd_win._fdtd_thread is None or not fdtd_win._fdtd_thread.isRunning())
+
+
+def remote_config_dialog() -> None:
+    """The remote-server setup dialog: host alias, remote dir + Python, the
+    GPU-on-remote toggle, and the Test connection / Set up remote actions."""
+    from phidler.panels.fdtd_window import RemoteConfigDialog
+
+    dialog = RemoteConfigDialog()
+    dialog.resize(620, 460)
+    dialog.alias_edit.setText("gpubox")
+    dialog.remote_dir_edit.setText("~/phidler-remote")
+    dialog.remote_python_edit.setText("~/phidler-remote/.venv/bin/python")
+    dialog.use_gpu_check.setChecked(True)
+    # The exact line check_remote emits on success, so the log pane shows a
+    # realistic result rather than the empty placeholder.
+    dialog._append("Connected to 'gpubox': phidler and photonfdtd import successfully.")
+    dialog.show()
+    save(dialog, "remote_config_dialog")
 
 
 def routing_example() -> None:
@@ -405,6 +483,8 @@ def regenerate_all() -> None:
     drc_violation()
     fdtd_mode_profile()
     fdtd_propagation()
+    fdtd_run_progress()
+    remote_config_dialog()
     routing_example()
     measure_tool_example()
     layers_panel_example()

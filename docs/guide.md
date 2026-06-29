@@ -337,6 +337,13 @@ plays the result back as a movie:
    **Save GIF…** writes the whole animation — field plus chip outline, exactly
    as shown — to an animated GIF at the current speed.
 
+While a run is in flight, a progress bar under the **Compute** button tracks
+it: a busy indicator during start-up (the kernel compile locally, or
+connect-and-upload for a remote run), then a 0–100 % fill as the solve steps
+through time. The same bar drives local, GPU, and remote runs.
+
+![FDTD propagation tab mid-run: the progress bar partway to complete, below the run controls and the "Run on remote server" row](screenshots/fdtd_run_progress.png)
+
 ![Propagation result: red/blue field pattern radiating from a point source and coupling into a waveguide, overlaid on its outline, with the time slider and Play button below the source table](screenshots/fdtd_propagation.png)
 
 #### Speed
@@ -385,6 +392,38 @@ memory. Two things help:
 
 If even a region is too big, a coarser **cell size** is the other lever (fewer
 cells in every dimension), at some cost in accuracy.
+
+#### Running on a remote server
+
+If this machine is slow, low on memory, or has no GPU, you can offload a run to
+another machine over SSH — a workstation or a GPU box — and get the field movie
+back, while the UI here stays responsive. Tick **Run on remote server** and click
+**Configure…** to set it up:
+
+- **SSH host alias** — a `Host` entry from your `~/.ssh/config`. Phidler shells
+  out to `ssh`/`scp`/`rsync` and lets your SSH config and agent/keys handle
+  authentication; it stores no passwords (key-based, non-interactive auth is
+  required).
+- **Remote directory** and **Remote Python** — where to install into, and the
+  (venv) interpreter to use on the remote.
+- **Use GPU on the remote host** — request the remote's GPU regardless of
+  whether *this* machine has one. The result reports the backend that actually
+  ran, so a fallback to CPU is visible.
+
+**Test connection** checks that the remote Python can import phidler and
+photonfdtd. The first time, **Set up remote** does a one-time install: it uploads
+the phidler and photonfdtd sources and `pip install`s them into the remote
+Python, streaming the output into the log so you can watch for any build error.
+After that, ticking **Run on remote server** sends each run to that host and
+brings the result back automatically — the progress bar fills from the remote
+solve just as it does locally.
+
+<img src="screenshots/remote_config_dialog.png" width="560" alt="Remote server setup dialog: SSH host alias, remote directory and Python, a use-GPU-on-remote toggle, and Test connection / Set up remote actions over a log pane">
+
+The remote must be a POSIX host (Linux/macOS) reachable by key-based SSH.
+Projects that place **custom components** (local `.py` files) can't be offloaded
+— those files don't exist on the remote — and that case is reported as a clear
+error rather than failing mid-run.
 
 **Read the disclaimer in the window.** Both tabs run a real solve against
 your geometry, not a mockup — but treat the results as a qualitative
