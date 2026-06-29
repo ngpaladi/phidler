@@ -107,6 +107,22 @@ def flip_transform(transform: "Transform", axis: str) -> "Transform":
     )
 
 
+@dataclass(frozen=True)
+class EtchLayer:
+    """A partial-etch (rib/slab) drawing layer. Geometry drawn on GDS
+    (layer, datatype) is core material extruded only `slab_thickness_um` tall —
+    sharing the core's bottom — instead of the full core thickness, modelling
+    the slab a partial etch leaves behind (e.g. SLAB150 on layer (2, 0) of a rib
+    platform). The FDTD builder and the mode solver both consume these so a rib
+    waveguide is simulated as a ridge-over-slab rather than a fully-etched
+    strip. `slab_thickness_um` is the *remaining* core height, not the etch
+    depth (etch depth = core thickness − slab thickness)."""
+
+    layer: int
+    datatype: int = 0
+    slab_thickness_um: float = 0.0
+
+
 @dataclass
 class ProjectSettings:
     """Project-level metadata captured by the New Project dialog (material
@@ -134,6 +150,14 @@ class ProjectSettings:
     clad_infinite: bool = False
     wavelength_um: float = 1.55
     cross_section: str = "strip"
+    # Partial-etch (rib/slab) layers, drawn on top of the full-height core
+    # (layer (1, 0)). Empty -> a plain strip waveguide, the original behaviour.
+    etch_layers: tuple[EtchLayer, ...] = ()
+
+    def max_slab_thickness_um(self) -> float:
+        """Tallest configured slab (0.0 if none). The mode solver models a
+        single idealised cross-section, so it uses the dominant slab height."""
+        return max((e.slab_thickness_um for e in self.etch_layers), default=0.0)
 
 
 class LayoutDocument:

@@ -27,6 +27,13 @@ On startup (and via File > New), Phidler shows a Project Settings dialog:
   matters there.
 - **Default cross-section**: which gdsfactory cross-section new routes use
   by default.
+- **Etch / slab layers**: for rib waveguides, list the partial-etch layers
+  (e.g. SLAB150 on layer 2) and the **slab thickness** each leaves behind — the
+  core height *remaining* after the etch, less than the full core thickness
+  above. FDTD Simulation then models a ridge-over-slab rib instead of a fully
+  etched strip (see [FDTD simulation](#fdtd-simulation)). Leave it empty for a
+  plain strip waveguide. Add a row with **Add etch layer**; a row left at 0 µm
+  is ignored.
 
 The suggested width is an estimate from the effective-index method, not a
 full 2D mode solve — read the note in the dialog before treating it as
@@ -439,3 +446,17 @@ The material stack (core/cladding index, core thickness, **and now
 cladding thickness**) comes from your current Project Settings platform
 — switching between Silicon, SiN, LN, or LT there changes what gets
 simulated here too.
+
+#### Rib waveguides (etch / slab layers)
+
+By default the simulation treats the waveguide layer (1, 0) as a full-height
+strip and everything else as cladding. If your design uses a **partial-etch
+slab** — a rib waveguide, where a layer like SLAB150 (2, 0) leaves a thinner
+slab of core material beside the full-height ridge — list that layer under
+**Etch / slab layers** in Project Settings with its slab thickness. Both the
+propagation run and the vertical mode solver then model the ridge-over-slab
+cross-section: core material up to the slab height in the slab region, full
+core height under the ridge. Without it, a rib is simulated as if it were fully
+etched (no slab), which changes the mode and the confinement. A configured
+layer that isn't actually drawn in the layout is skipped (it won't silently
+map the wrong geometry).

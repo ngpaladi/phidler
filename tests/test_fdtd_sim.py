@@ -19,7 +19,7 @@ from phidler.fdtd_sim import (
     solve_mode_profile,
     wavelength_um_from_photon_energy_ev,
 )
-from phidler.model.document import LayoutDocument, ProjectSettings
+from phidler.model.document import EtchLayer, LayoutDocument, ProjectSettings
 
 # A tiny, fast domain throughout: short component, coarse cell size, short
 # run time. These tests prove the wiring (does it build, does it run, is
@@ -83,6 +83,95 @@ def test_build_simulation_resolves_lateral_cladding_at_core_height(qapp):
     mid_core_idx = nearest_z_index(sim.grid, 0.0)
     eps_at_mid_core = set(sim.eps_r[:, :, mid_core_idx].flatten().tolist())
     assert 1.0 not in {round(v, 3) for v in eps_at_mid_core}
+
+
+def _rib_document(slab_thickness_um: float | None) -> LayoutDocument:
+    """A WG ridge on (1, 0) plus a wider slab on (2, 0). With slab_thickness_um
+    set, (2, 0) is configured as an etch layer; otherwise it's left unmapped
+    (plain strip), so the two cases can be compared cell-for-cell."""
+    doc = LayoutDocument()
+    doc.top.add_polygon([(0, -0.25), (4, -0.25), (4, 0.25), (0, 0.25)], layer=(1, 0))  # ridge, 0.5 µm wide
+    doc.top.add_polygon([(0, -1.0), (4, -1.0), (4, 1.0), (0, 1.0)], layer=(2, 0))      # slab, 2.0 µm wide
+    doc.project_settings = ProjectSettings(
+        core_index=3.45, clad_index=1.44, thickness_um=0.22, clad_thickness_um=1.0,
+        etch_layers=((EtchLayer(2, 0, slab_thickness_um),) if slab_thickness_um else ()),
+    )
+    return doc
+
+
+def test_etch_slab_lands_in_the_rasterized_permittivity(qapp):
+    """The whole point of etch layers: a partial-etch slab on (2, 0) must show up
+    in sim.eps_r as core material *below the slab height and cladding above it*,
+    in the slab-only region. A silent failure (wrong layer key, ignored slab)
+    would leave that region identical to the strip case — so this compares the
+    two cases cell-for-cell, the way the lateral-cladding bug was caught."""
+    import numpy as np
+
+    thickness_um, slab_um = 0.22, 0.08
+    params = FdtdParams(wavelength_um=1.55, cell_size_um=0.04, run_time_fs=3.0, padding_um=0.3)
+    core_eps, clad_eps = round(3.45**2, 2), round(1.44**2, 2)
+
+    # z probes in the mid-core-centred frame: one inside the bottom slab, one
+    # above the slab but still within the full core height.
+    z_in_slab = -thickness_um / 2 + slab_um / 2
+    z_above_slab = -thickness_um / 2 + slab_um + (thickness_um - slab_um) / 2
+
+    def eps_at(sim, x_um, y_um, z_um):
+        xs, ys, _ = sim.grid.coords
+        ix = int(np.argmin(np.abs(np.asarray(xs) - (x_um - 2.0) * 1e-6)))  # bbox centre x = 2.0
+        iy = int(np.argmin(np.abs(np.asarray(ys) - y_um * 1e-6)))          # bbox centre y = 0
+        iz = nearest_z_index(sim.grid, z_um)
+        return round(float(np.asarray(sim.eps_r)[ix, iy, iz]), 2)
+
+    sim_rib = build_simulation(_rib_document(slab_um), params)
+    sim_strip = build_simulation(_rib_document(None), params)
+
+    X, RIDGE_Y, SLAB_Y = 2.0, 0.0, 0.7  # slab-only probe at y=0.7 (inside slab, outside ridge)
+
+    # (a) The ridge reads core full-height in BOTH cases — pins the WG (1,0)->index
+    #     lookup (a regression there would change both, so this is the guard).
+    assert eps_at(sim_rib, X, RIDGE_Y, z_in_slab) == core_eps
+    assert eps_at(sim_strip, X, RIDGE_Y, z_in_slab) == core_eps
+    assert eps_at(sim_rib, X, RIDGE_Y, z_above_slab) == core_eps
+
+    # (b) The slab-only region differs: core below the slab height WITH the etch,
+    #     cladding WITHOUT it. Unequal eps here == the slab genuinely landed.
+    assert eps_at(sim_rib, X, SLAB_Y, z_in_slab) == core_eps      # the rib slab
+    assert eps_at(sim_strip, X, SLAB_Y, z_in_slab) == clad_eps    # strip: nothing there
+    assert eps_at(sim_rib, X, SLAB_Y, z_above_slab) == clad_eps   # partial etch: clad above the slab
+
+
+def test_build_layer_media_map_maps_slab_and_skips_absent_layers(qapp):
+    """The layer-media map (no grid build) has the full-height WG plus a
+    shorter-z slab for a real etch layer, and silently drops a configured etch
+    layer that isn't actually drawn (wrong layer number) rather than mapping a
+    wrong kdb index."""
+    import photonfdtd as pf
+
+    from phidler.fdtd_sim import build_layer_media_map
+
+    doc = _rib_document(0.08)
+    # (2,0) is drawn; (7,0) is not — it must be skipped.
+    doc.project_settings.etch_layers = (EtchLayer(2, 0, 0.08), EtchLayer(7, 0, 0.05))
+
+    media = build_layer_media_map(doc, pf.Medium.from_index(3.45), 0.22e-6)
+    assert len(media) == 2  # WG + the drawn slab; the absent (7,0) dropped
+    spans = sorted(z1 - z0 for _m, (z0, z1) in media.values())
+    assert spans[0] < spans[1]  # the slab is shorter than the full-height core
+
+
+def test_mode_solver_rib_slab_raises_n_eff(qapp):
+    """A configured slab makes the mode solver build a rib (ridge + slab) rather
+    than a bare strip; the extra lateral high-index material must raise the
+    effective index. (Guards against the slab being a silent no-op here too.)"""
+    common = dict(core_index=3.45, clad_index=1.44, thickness_um=0.22, clad_thickness_um=1.0)
+    strip = ProjectSettings(**common)
+    rib = ProjectSettings(**common, etch_layers=(EtchLayer(2, 0, 0.09),))
+    params = ModeProfileParams(wavelength_um=1.55, core_width_um=0.5, cell_size_um=0.02)
+
+    n_strip = solve_mode_profile(build_mode_solver(strip, params)).n_eff[0]
+    n_rib = solve_mode_profile(build_mode_solver(rib, params)).n_eff[0]
+    assert n_rib > n_strip
 
 
 def test_build_simulation_uses_project_settings_indices(qapp):
@@ -357,6 +446,20 @@ def test_build_source_single_photon_builds_a_mode_injected_source(qapp):
     source = build_source(_SOI_SETTINGS, spec)
     assert source.component == "Ey"
     assert source.n_eff > 1.0
+
+
+def test_build_source_single_photon_uses_rib_profile_when_etched(qapp):
+    """A single_photon source solves its launch mode via build_mode_solver,
+    which now reads settings.etch_layers — so on a rib platform it launches the
+    rib mode (higher n_eff) rather than the strip mode. Pins that coupling."""
+    spec = SourceSpec(x_um=0.0, y_um=0.0, kind="single_photon", wavelength_um=1.55, core_width_um=0.5)
+    rib_settings = ProjectSettings(
+        core_index=3.45, clad_index=1.44, thickness_um=0.22, clad_thickness_um=2.0,
+        etch_layers=(EtchLayer(2, 0, 0.09),),
+    )
+    n_strip = build_source(_SOI_SETTINGS, spec).n_eff
+    n_rib = build_source(rib_settings, spec).n_eff
+    assert n_rib > n_strip
 
 
 def test_build_source_cherenkov_travels_in_z_out_of_plane(qapp):

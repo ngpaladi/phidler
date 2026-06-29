@@ -7,11 +7,16 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
+    QPushButton,
+    QSpinBox,
+    QTableWidget,
     QVBoxLayout,
+    QWidget,
 )
 
-from phidler.model.document import ProjectSettings
+from phidler.model.document import EtchLayer, ProjectSettings
 from phidler.pdk_catalog import list_cross_section_names
 from phidler.waveguide_calc import DISCLAIMER, PLATFORM_PRESETS, suggested_waveguide_width
 
@@ -101,6 +106,41 @@ class ProjectSettingsDialog(QDialog):
         self.cross_section_combo.setCurrentText(initial.cross_section)
         form.addRow("Default cross-section", self.cross_section_combo)
 
+        # Partial-etch (rib/slab) layers. Each row is a drawing layer whose
+        # geometry is core material only `slab thickness` tall (the rest of the
+        # full core thickness above it is cladding) — so FDTD and the mode solver
+        # see a ridge-over-slab rib instead of a fully-etched strip.
+        etch_widget = QWidget()
+        etch_layout = QVBoxLayout(etch_widget)
+        etch_layout.setContentsMargins(0, 0, 0, 0)
+        self.etch_table = QTableWidget(0, 3)
+        self.etch_table.setHorizontalHeaderLabels(["Layer", "Datatype", "Slab thickness"])
+        self.etch_table.setMinimumHeight(96)  # header + a couple of rows stay visible
+        self.etch_table.setMaximumHeight(140)
+        self.etch_table.verticalHeader().setVisible(False)
+        _hdr = self.etch_table.horizontalHeader()
+        _hdr.setStretchLastSection(True)  # fill the width -> no horizontal scrollbar
+        _hdr.setDefaultSectionSize(70)
+        self.etch_table.setToolTip(
+            "Partial-etch slab layers (e.g. SLAB150 on layer 2). 'Slab thickness' "
+            "is the core height *remaining* after the etch (less than Core thickness "
+            "above) — both FDTD and the mode solver then model a rib waveguide. "
+            "Leave empty for a plain strip waveguide."
+        )
+        etch_layout.addWidget(self.etch_table)
+        etch_buttons = QHBoxLayout()
+        add_etch = QPushButton("Add etch layer")
+        add_etch.clicked.connect(lambda: self._add_etch_row(2, 0, 0.0))
+        remove_etch = QPushButton("Remove")
+        remove_etch.clicked.connect(self._remove_etch_row)
+        etch_buttons.addWidget(add_etch)
+        etch_buttons.addWidget(remove_etch)
+        etch_buttons.addStretch(1)
+        etch_layout.addLayout(etch_buttons)
+        form.addRow("Etch / slab layers", etch_widget)
+        for e in initial.etch_layers:
+            self._add_etch_row(e.layer, e.datatype, e.slab_thickness_um)
+
         self.suggestion_label = QLabel()
         self.suggestion_label.setWordWrap(True)
         form.addRow("Suggested width", self.suggestion_label)
@@ -141,6 +181,38 @@ class ProjectSettingsDialog(QDialog):
             f"~{suggested * 1000:.0f} nm (single-mode cutoff ~{cutoff * 1000:.0f} nm) — see note below"
         )
 
+    def _add_etch_row(self, layer: int, datatype: int, slab_thickness_um: float) -> None:
+        row = self.etch_table.rowCount()
+        self.etch_table.insertRow(row)
+        layer_spin = QSpinBox(); layer_spin.setRange(0, 255); layer_spin.setValue(int(layer))
+        dt_spin = QSpinBox(); dt_spin.setRange(0, 255); dt_spin.setValue(int(datatype))
+        slab_spin = QDoubleSpinBox()
+        slab_spin.setRange(0.0, 100.0); slab_spin.setDecimals(3); slab_spin.setSuffix(" µm")
+        slab_spin.setValue(float(slab_thickness_um))
+        self.etch_table.setCellWidget(row, 0, layer_spin)
+        self.etch_table.setCellWidget(row, 1, dt_spin)
+        self.etch_table.setCellWidget(row, 2, slab_spin)
+
+    def _remove_etch_row(self) -> None:
+        row = self.etch_table.currentRow()
+        if row < 0:
+            row = self.etch_table.rowCount() - 1  # nothing selected -> drop the last
+        if row >= 0:
+            self.etch_table.removeRow(row)
+
+    def _etch_layers(self) -> tuple[EtchLayer, ...]:
+        out = []
+        for row in range(self.etch_table.rowCount()):
+            slab = self.etch_table.cellWidget(row, 2).value()
+            if slab <= 0.0:
+                continue  # a 0-thickness slab is a no-op; drop it rather than save it
+            out.append(EtchLayer(
+                layer=self.etch_table.cellWidget(row, 0).value(),
+                datatype=self.etch_table.cellWidget(row, 1).value(),
+                slab_thickness_um=slab,
+            ))
+        return tuple(out)
+
     def _on_clad_infinite_toggled(self, checked: bool) -> None:
         # The thickness value is ignored while infinite mode is on — grey it
         # out so that's visible rather than silently overridden.
@@ -156,4 +228,5 @@ class ProjectSettingsDialog(QDialog):
             clad_infinite=self.clad_infinite_check.isChecked(),
             wavelength_um=self.wavelength_spin.value(),
             cross_section=self.cross_section_combo.currentText(),
+            etch_layers=self._etch_layers(),
         )

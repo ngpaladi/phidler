@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .custom_components import load_custom_components
 from .fdtd_sim import SimulationConfig, SourceSpec
-from .model.document import LayoutDocument, ProjectSettings
+from .model.document import EtchLayer, LayoutDocument, ProjectSettings
 from .model.layers import LayerInfo
 from .model.placed_instance import ArraySpec
 from .pdk_catalog import ComponentSpec
@@ -140,7 +140,16 @@ def load_project(path: str, document: LayoutDocument, scene) -> dict[str, Compon
     document.bump_id_counter(max_id + 1)
 
     settings_data = data.get("project_settings")
-    document.project_settings = ProjectSettings(**settings_data) if settings_data else ProjectSettings()
+    if settings_data:
+        settings_data = dict(settings_data)
+        # asdict flattened the EtchLayer tuple to a list of dicts; rebuild them
+        # (absent in projects saved before etch layers -> the () default).
+        etch = settings_data.pop("etch_layers", None)
+        if etch is not None:
+            settings_data["etch_layers"] = tuple(EtchLayer(**e) for e in etch)
+        document.project_settings = ProjectSettings(**settings_data)
+    else:
+        document.project_settings = ProjectSettings()
 
     sim_data = data.get("simulation_config")  # absent in projects saved before this feature
     if sim_data is not None:

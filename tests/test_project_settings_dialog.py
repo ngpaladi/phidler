@@ -96,3 +96,23 @@ def test_dialog_seeded_with_infinite_cladding_disables_thickness(qapp):
     dialog = ProjectSettingsDialog(initial=existing)
     assert dialog.clad_infinite_check.isChecked() is True
     assert dialog.clad_thickness_spin.isEnabled() is False
+
+
+def test_dialog_round_trips_etch_layers(qapp):
+    """Etch layers seed the table from existing settings and come back out of
+    result_settings() unchanged (with a 0-thickness row dropped as a no-op)."""
+    from phidler.model.document import EtchLayer
+
+    existing = ProjectSettings(etch_layers=(EtchLayer(2, 0, 0.15),))
+    dialog = ProjectSettingsDialog(initial=existing)
+    assert dialog.etch_table.rowCount() == 1
+    assert dialog.result_settings().etch_layers == (EtchLayer(2, 0, 0.15),)
+
+    # A freshly added, still-zero-thickness row is not persisted.
+    dialog._add_etch_row(5, 0, 0.0)
+    assert dialog.etch_table.rowCount() == 2
+    assert dialog.result_settings().etch_layers == (EtchLayer(2, 0, 0.15),)
+
+
+def test_dialog_defaults_to_no_etch_layers(qapp):
+    assert ProjectSettingsDialog().result_settings().etch_layers == ()

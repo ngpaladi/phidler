@@ -224,6 +224,45 @@ def test_save_and_load_round_trips_simulation_config(qapp, tmp_path):
     assert math.isclose(cfg.sources[1].core_width_um, 0.6)
 
 
+def test_save_and_load_round_trips_etch_layers(qapp, tmp_path):
+    from phidler.model.document import EtchLayer, ProjectSettings
+
+    win = MainWindow()
+    _build_sample(win)
+    win.document.project_settings = ProjectSettings(
+        platform_name="Lithium Tantalate (LT)", core_index=2.14, thickness_um=0.3,
+        etch_layers=(EtchLayer(2, 0, 0.15), EtchLayer(3, 0, 0.05)),
+    )
+
+    project_path = str(tmp_path / "test.phidler")
+    save_project(win.document, project_path)
+
+    win2 = MainWindow()
+    load_project(project_path, win2.document, win2.scene)
+
+    el = win2.document.project_settings.etch_layers
+    assert el == (EtchLayer(2, 0, 0.15), EtchLayer(3, 0, 0.05))
+    assert all(isinstance(e, EtchLayer) for e in el)  # rebuilt as dataclasses, not dicts
+
+
+def test_load_project_without_etch_layers_defaults_to_strip(qapp, tmp_path):
+    """A project saved before etch layers existed has no "etch_layers" key in
+    project_settings; loading must leave it the empty () default (plain strip)."""
+    import json
+
+    win = MainWindow()
+    _build_sample(win)
+    project_path = tmp_path / "old.phidler"
+    save_project(win.document, str(project_path))
+    data = json.loads(project_path.read_text())
+    del data["project_settings"]["etch_layers"]
+    project_path.write_text(json.dumps(data))
+
+    win2 = MainWindow()
+    load_project(str(project_path), win2.document, win2.scene)  # must not raise
+    assert win2.document.project_settings.etch_layers == ()
+
+
 def test_load_project_without_simulation_config_leaves_it_none(qapp, tmp_path):
     """Projects saved before the simulation-config feature have no
     "simulation_config" key; loading must leave document.simulation_config None

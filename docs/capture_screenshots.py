@@ -130,8 +130,12 @@ def transform_overlay() -> None:
 
 
 def project_settings_dialog() -> None:
-    dialog = ProjectSettingsDialog()
-    dialog.resize(420, 320)
+    from phidler.model.document import EtchLayer, ProjectSettings
+
+    # Seed one etch/slab layer so the rib-waveguide control is visible (SLAB150
+    # on layer 2, ~70 nm slab on standard SOI).
+    dialog = ProjectSettingsDialog(initial=ProjectSettings(etch_layers=(EtchLayer(2, 0, 0.07),)))
+    dialog.resize(440, 640)
     dialog.show()  # not exec() -- exec() blocks, there's no user here to dismiss it
     save(dialog, "project_settings_dialog")
 

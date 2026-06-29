@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
 from .model.document import LayoutDocument, ProjectSettings
+
+logger = logging.getLogger(__name__)
+
+# GDS (layer, datatype) of the full-height waveguide core. Etch/slab layers are
+# configured per-project in ProjectSettings.etch_layers; this one is always the
+# core. (Looked up to a kdb layer *index* per component — see _layer_index_map.)
+_CORE_LAYER = (1, 0)
 
 DISCLAIMER = (
     "This runs a real local FDTD solve (photonfdtd, a Yee-grid time-domain "
@@ -409,10 +417,26 @@ def build_mode_solver(settings: ProjectSettings, params: ModeProfileParams = Mod
         size=(params.core_width_um * 1e-6, thickness_m),
         medium=core,
     )
+    structures = [core_box]
+
+    # Rib waveguide: a slab of core material spanning the full domain width,
+    # sharing the core's bottom (z in [-t/2, -t/2 + slab]). It raises the lateral
+    # effective index, so the mode is a rib mode rather than a strip mode. The
+    # cross-section is a single idealised profile, so the tallest configured slab
+    # is used (settings.max_slab_thickness_um) as the dominant lateral guide.
+    slab_um = settings.max_slab_thickness_um()
+    if slab_um > 0.0:
+        slab_m = min(slab_um, settings.thickness_um) * 1e-6
+        structures.append(pf.Box(
+            center=(0.0, -thickness_m / 2 + slab_m / 2),
+            size=(ly, slab_m),
+            medium=core,
+        ))
+
     return pf.ModeSolver(
         size=(ly, lz),
         cell_size=cell_size_m,
-        structures=[core_box],
+        structures=structures,
         wavelength=wavelength_m,
         background_eps=clad.eps_r,
         num_modes=params.num_modes,
@@ -571,6 +595,57 @@ def nearest_z_index(grid: Any, z_um: float = 0.0) -> int:
     return int(np.argmin(np.abs(z_coords - z_um * 1e-6)))
 
 
+def _layer_index_map(component: Any) -> dict[tuple[int, int], int]:
+    """Map ``(gds_layer, gds_datatype) -> kdb layer index`` for the layers that
+    actually carry geometry in ``component``.
+
+    photonfdtd's from_gdsfactory keys its ``layers`` map by the integer kdb
+    layer *index* returned from ``component.get_polygons()``, which is NOT the
+    GDS layer number — e.g. WG (1, 0) may be index 1 while SLAB (2, 0) is index
+    3. So every layer we want to simulate has to be translated through this."""
+    kcl = component.kcl
+    out: dict[tuple[int, int], int] = {}
+    for idx in component.get_polygons().keys():
+        info = kcl.get_info(idx)
+        out[(int(info.layer), int(info.datatype))] = idx
+    return out
+
+
+def build_layer_media_map(document: LayoutDocument, core: Any, thickness_m: float) -> dict[int, tuple[Any, tuple[float, float]]]:
+    """The ``{kdb_index: (medium, (z_min_m, z_max_m))}`` map for from_gdsfactory:
+    the full-height core, plus a partial-height core slab for each configured
+    etch layer (rib/slab geometry). All share the core's bottom at z=0; the core
+    spans (0, thickness) and a slab spans (0, slab_thickness), so a slab-only
+    region reads core below the slab height and cladding above it.
+
+    Etch layers that aren't actually drawn in the layout (wrong layer number, or
+    a strip-only design) are skipped with a warning rather than silently doing
+    nothing."""
+    settings = document.project_settings
+    index_of = _layer_index_map(document.top)
+
+    layers_map: dict[int, tuple[Any, tuple[float, float]]] = {}
+    core_idx = index_of.get(_CORE_LAYER)
+    if core_idx is not None:
+        layers_map[core_idx] = (core, (0.0, thickness_m))
+
+    for etch in settings.etch_layers:
+        # The slab is a partial etch: a remaining core height strictly inside the
+        # full thickness. Clamp defensively and skip a no-op (<=0) slab.
+        slab_m = min(max(etch.slab_thickness_um, 0.0), settings.thickness_um) * 1e-6
+        if slab_m <= 0.0:
+            continue
+        idx = index_of.get((etch.layer, etch.datatype))
+        if idx is None:
+            logger.warning(
+                "Etch layer (%d, %d) is configured but has no geometry in the "
+                "layout — skipping it.", etch.layer, etch.datatype,
+            )
+            continue
+        layers_map[idx] = (core, (0.0, slab_m))
+    return layers_map
+
+
 def build_simulation(
     document: LayoutDocument,
     params: FdtdParams = FdtdParams(),
@@ -613,7 +688,10 @@ def build_simulation(
 
     sim = pf.from_gdsfactory(
         document.top,
-        layers={1: (core, (0.0, thickness_m))},
+        # Full-height core plus any partial-height rib/slab etch layers. Keyed by
+        # kdb layer index (translated from GDS layer/datatype) — see
+        # build_layer_media_map / _layer_index_map.
+        layers=build_layer_media_map(document, core, thickness_m),
         # Background slabs are stamped before the per-layer polygons (the
         # polygon wins where they overlap, per from_gdsfactory's own
         # documented order) — so the middle slab here, spanning the same
