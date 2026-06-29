@@ -1,0 +1,113 @@
+name: Remote setup verification
+
+# End-to-end check of the FDTD remote-offload feature over *real* SSH (no mocks).
+# The runner stands up passwordless SSH to localhost and uses it as the "remote"
+# host, then exercises the full one-time setup and a real solve:
+#   deploy_to_remote  -> rsync the checkouts + `pip install -e` into a fresh venv
+#   check_remote      -> the remote python imports phidler + photonfdtd
+#   run_on_remote     -> ship a job, run it there, stream progress, fetch result
+# Driven by tests/test_remote_loopback.py (gated on PHIDLER_REMOTE_LOOPBACK).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/phidler/fdtd_remote.py"
+      - "src/phidler/fdtd_subprocess.py"
+      - "src/phidler/remote_config.py"
+      - "tests/test_remote_loopback.py"
+      - ".github/workflows/remote-setup.yml"
+  pull_request:
+    paths:
+      - "src/phidler/fdtd_remote.py"
+      - "src/phidler/fdtd_subprocess.py"
+      - "src/phidler/remote_config.py"
+      - "tests/test_remote_loopback.py"
+      - ".github/workflows/remote-setup.yml"
+  workflow_dispatch:
+    inputs:
+      photonfdtd_ref:
+        description: "photonfdtd git ref to test against (must contain progress_callback)"
+        default: main
+        required: false
+
+# Precondition: the remote run-progress assertion needs photonfdtd's
+# progress_callback. Until that change is on photonfdtd's default branch, run
+# this via workflow_dispatch with photonfdtd_ref set to the branch that has it.
+permissions:
+  contents: read
+
+jobs:
+  remote-loopback:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out phidler
+        uses: actions/checkout@v4
+
+      - name: Check out photonfdtd (sibling dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: ngpaladi/photonfdtd
+          ref: ${{ inputs.photonfdtd_ref || 'main' }}
+          path: photonfdtd
+          # github.token covers a public sibling repo; set PHOTONFDTD_TOKEN
+          # (a PAT with read access) as a secret if photonfdtd is private.
+          token: ${{ secrets.PHOTONFDTD_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: System dependencies (SSH server + Qt offscreen libs)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server libegl1 libgl1
+
+      - name: Install phidler + photonfdtd (the side that drives the test)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./photonfdtd
+          pip install -e ".[fdtd,dev]"
+
+      - name: Put PySide6's bundled Qt libs on the load path
+        # The test process imports QtCore (via remote_config); prepend PySide6's
+        # own Qt libs so its import can't pick up a mismatched system Qt — the
+        # same fix run_tests.sh applies locally.
+        run: |
+          QT_LIB=$(python -c "import PySide6, pathlib; print(pathlib.Path(PySide6.__file__).parent / 'Qt' / 'lib')")
+          echo "LD_LIBRARY_PATH=$QT_LIB:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Set up passwordless SSH to localhost
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+          cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          # A real ~/.ssh/config Host alias, exactly as a user would configure.
+          cat >> ~/.ssh/config <<EOF
+          Host phidler-ci
+            HostName localhost
+            User $USER
+            IdentityFile ~/.ssh/id_ed25519
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+          EOF
+          chmod 600 ~/.ssh/config
+          sudo ssh-keygen -A          # ensure host keys exist
+          sudo systemctl start ssh
+          ssh -o BatchMode=yes phidler-ci 'echo connected to localhost as $(whoami)'
+
+      - name: Create the empty remote venv that deploy will populate
+        # Isolated (no system-site-packages) so the verification proves a real
+        # from-scratch install: only what deploy_to_remote installs is importable.
+        run: python -m venv "$RUNNER_TEMP/remote-venv"
+
+      - name: Verify remote setup end-to-end over SSH
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PHIDLER_REMOTE_LOOPBACK: "1"
+          PHIDLER_REMOTE_TEST_DEPLOY: "1"
+          PHIDLER_REMOTE_ALIAS: phidler-ci
+          PHIDLER_REMOTE_PYTHON: ${{ runner.temp }}/remote-venv/bin/python
+          PHIDLER_REMOTE_DIR: ${{ runner.temp }}/phidler-remote
+          PHIDLER_LOCAL_PHOTONFDTD: ${{ github.workspace }}/photonfdtd
+        run: pytest tests/test_remote_loopback.py -v
