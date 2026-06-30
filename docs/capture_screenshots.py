@@ -330,19 +330,27 @@ def measure_tool_example() -> None:
 
 def layers_panel_example() -> None:
     win = MainWindow()
-    win.resize(350, 500)
+    win.resize(350, 520)
     win.show()
 
+    # A spread of components that between them carry a representative variety of
+    # layer types — waveguide (WG), a half-etch slab (SLAB150 under the grating),
+    # and a heater with its metal routing and vias — so the panel illustrates the
+    # layer-types reference in the guide rather than just the waveguide layer.
     for comp, kwargs, x in [
         ("straight", {"length": 10.0, "width": 0.5}, 0.0),
-        ("bend_euler", {}, 15.0),
-        ("mmi1x2", {}, 25.0),
+        ("grating_coupler_elliptical_te", {}, 18.0),
+        ("straight_heater_metal_simple", {"length": 10.0}, 40.0),
     ]:
         inst = win.document.add_instance(comp, kwargs)
         win.scene.add_instance_item(inst.id)
         win.document.set_transform(inst.id, Transform(x=x, y=0.0, rotation=0.0, mirror=False))
 
     win.undo_stack.indexChanged.emit(0)
+    # The panel's natural size only shows a few rows before scrolling; grab it
+    # tall enough to show the whole layer list.
+    win.layers_panel.resize(300, 235)
+    app.processEvents()
     save(win.layers_panel, "layers_panel_example")
 
 

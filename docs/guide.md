@@ -1,5 +1,56 @@
 # User Guide
 
+Phidler is a graphical layout tool for photonic integrated circuits, built on
+[gdsfactory](https://gdsfactory.github.io/gdsfactory/) and its generic PDK. You
+place real photonic components, connect them with real routed waveguides, verify
+the result, and export a foundry-ready GDS — without writing code, though you can
+drop into Python at any point.
+
+This page is the **reference** for every panel and tool. If you would rather
+learn by building something concrete, the [MZI tutorial](tutorial.md) walks the
+whole flow end to end on a real device; here we explain each piece in depth.
+
+## The design process, end to end
+
+A photonic layout comes together in roughly this order. Each phase feeds the
+next, so it helps to see the whole arc before diving into the details:
+
+1. **Pick a platform** ([Project Settings](#project-settings)). The material
+   system — silicon, silicon nitride, lithium niobate/tantalate — sets the
+   core/cladding indices and thickness that drive the suggested waveguide width,
+   the propagation-time readouts, and the FDTD stack. Choose this first: it is
+   the physical context everything else is interpreted in (and it is reopenable
+   anytime).
+2. **Place components** ([Placing components](#placing-components)). Drop the
+   building blocks of your circuit — splitters, bends, rings, grating couplers —
+   from the palette. Phidler exposes ~300 components from the generic PDK,
+   grouped by function. This is choosing *what* sits on the chip.
+3. **Set each component's parameters** ([Editing parameters](#editing-parameters)).
+   Dial in lengths, widths, radii, gaps, and the **cross-section** each part
+   uses. The cross-section is the most consequential choice — it decides the
+   waveguide's width and which [layers](#layers) the geometry lands on, and it is
+   what lets a component connect cleanly to the rest of your circuit.
+4. **Connect them with routes** ([Routing](#routing)). Click port-to-port and
+   Phidler lays down a real waveguide with low-loss Euler bends, optionally
+   length-matched to a target delay. This is where a set of parts becomes a
+   circuit.
+5. **Verify**. Two independent checks: [DRC](#design-rule-checking-drc) for
+   geometric rules (minimum width/spacing), and [FDTD simulation](#fdtd-simulation)
+   for the physics — first a sub-second
+   [vertical mode solve](#checking-your-cladding-is-thick-enough) to confirm the
+   waveguide guides a single, well-confined mode, then full 3D propagation to
+   watch light move through the device. The mode solve's effective index feeds
+   back into the propagation-time readouts, so verifying and designing inform
+   each other.
+6. **Export** ([Saving, loading, and exporting](#saving-loading-and-exporting)).
+   A `.phidler` project to keep editing, a `.gds` for the foundry, or a
+   gdsfactory `.py` script for code review and version control.
+
+In practice you will not go straight down the list — you will route, hit a
+spacing violation, widen a gap, re-route, re-simulate. The point is that the
+tools are arranged around that loop. The rest of this guide covers each phase in
+turn.
+
 ## Project Settings
 
 On startup (and via File > New), Phidler shows a Project Settings dialog:
@@ -57,6 +108,58 @@ Use the **Components** panel on the left:
   click on the canvas to place it.
 
 <img src="screenshots/palette_hover_preview.png" width="260" alt="Component palette"> <img src="screenshots/hover_preview_popup.png" width="200" alt="Hover preview">
+
+### The component catalog
+
+Phidler exposes the placeable parts of the generic PDK — roughly 300 components
+that build cleanly on their own. (Parts that need required arguments, or that
+are not real standalone cells, are filtered out so everything in the palette
+actually places.) They are grouped by function; the core photonic categories are
+expanded by default, and each one answers a recurring need in a circuit:
+
+- **Waveguides** — the straight sections (and crossings) light travels along.
+  `straight` is the workhorse; `crossing` lets two waveguides cross with low
+  crosstalk; `straight_heater_metal_simple` carries a heater on top for
+  thermo-optic tuning, and `straight_pin` embeds a PIN junction for modulation.
+- **Bends** — turn a waveguide. `bend_euler` is the default low-loss *adiabatic*
+  bend (curvature ramps up gradually rather than snapping to a fixed radius);
+  `bend_circular` is a constant-radius turn; `bend_s` and `bezier` offset a
+  waveguide sideways.
+- **Tapers** — smoothly change a waveguide's width or cross-section. `taper` is
+  linear; `taper_adiabatic` and `taper_parabolic` are lower-loss profiles;
+  `taper_sc_nc` / `taper_nc_sc` convert between silicon and nitride waveguides.
+- **Couplers** — split or combine light by *evanescent* coupling between two
+  closely-spaced waveguides. `coupler` is a directional coupler; `coupler_ring`
+  couples a bus into a ring; `coupler_adiabatic` and `coupler_broadband` split
+  flatly across wavelength.
+- **Edge couplers** — get light on and off the chip at a cleaved facet:
+  `edge_coupler_silicon`, or `edge_coupler_array` for a whole fiber array.
+- **MMIs** — multimode-interference splitters, the compact, broadband,
+  fabrication-tolerant workhorse for splitting and combining: `mmi1x2` (1→2),
+  `mmi2x2` (2→2), plus `_with_sbend` variants that fan the ports apart.
+- **Rings** — resonators for filtering, modulation, and sensing: `ring_single`,
+  `ring_double`, `ring_single_pn` (a modulator), `ring_double_heater` (tunable),
+  and `disk` (a whispering-gallery disk resonator).
+- **MZIs** — ready-made Mach–Zehnder interferometers (the [tutorial](tutorial.md)
+  builds one by hand from MMIs and routes): `mzi`, and `mzi_lattice` for a
+  cascade with a sharper filter response.
+- **Grating couplers** — couple light *vertically* to a fiber above the chip via
+  a diffraction grating: `grating_coupler_elliptical_te`,
+  `grating_coupler_rectangular`, `grating_coupler_array`.
+- **Filters** — wavelength- and polarization-selective parts: `dbr` (a Bragg
+  reflector), `awg` (an arrayed-waveguide-grating (de)multiplexer),
+  `polarization_splitter_rotator`, and `terminator` (dumps unwanted light
+  without reflecting it).
+- **Spirals** — coil a long waveguide into a small footprint, for delay lines or
+  on-chip propagation-loss measurement: `spiral`, `delay_snake`,
+  `spiral_racetrack_heater_metal`.
+- **Detectors** — `ge_detector_straight_si_contacts`, a germanium photodetector
+  that converts guided light into photocurrent.
+
+Everything else — MEMS, quantum/superconducting parts, microfluidics, analog RF,
+pads, vias, dies, text, and process-control test structures — lives under
+**Other**. Use the filter box to search across all of them by name (it matches
+both the raw gdsfactory name and the prettified display label).
 
 ### Custom components
 
@@ -123,6 +226,62 @@ platform's valid names, so you can't type something invalid.
 
 <img src="screenshots/properties_panel_example.png" width="300" alt="Properties panel showing editable parameters for a selected ring resonator">
 
+### What the parameters are, and how they edit
+
+Phidler reads the component's actual function signature, so the fields you see
+are exactly the parameters that part accepts — they differ from component to
+component. Every parameter that has a default is shown, and how it edits depends
+on its type:
+
+- **Numbers** (lengths, widths, counts, radii) are numeric fields.
+- **Booleans** are checkboxes.
+- **`cross_section`** is a **dropdown** constrained to the active PDK's valid
+  names, so you cannot type one that will not build.
+- Other **text** parameters are free-text fields. A few take the *name* of a
+  sub-component (e.g. `bend="bend_euler"`); these are editable, but most designs
+  leave them at the default.
+- A parameter whose default is a complex object (a function, a list) is shown
+  greyed-out with its value and marked *"not editable from the panel yet"* —
+  adjust those by exporting to a script or from the console instead.
+
+Click **Apply** to rebuild the instance's geometry from the new values (undoable
+like any edit). The parameters you will meet most often, across many components:
+
+| Parameter | What it controls |
+|---|---|
+| `cross_section` | The waveguide profile — width and layers — the part is drawn with. The most consequential parameter; see below. |
+| `length` | Length of a straight section, taper, or heater (µm). |
+| `width` | Waveguide or feature width (µm). Widening raises confinement and shifts the effective index. |
+| `radius` | Bend radius (µm). Smaller is more compact but lossier, down to a minimum the cross-section enforces. |
+| `gap` | Edge-to-edge spacing (µm) between two coupled waveguides (couplers, rings) — the single biggest lever on how strongly they exchange light. |
+| `length_x` / `length_y` | The footprint of a two-dimensional part — an MZI's arm length, a ring's straight sections. |
+| `npoints` | How many points discretize a curve: higher is smoother but heavier geometry. |
+| `taper_length` | The length a width/cross-section transition happens over; longer is more adiabatic (lower loss). |
+| `spacing` / `pitch` | Center-to-center spacing in arrayed parts (grating-coupler arrays, edge-coupler arrays). |
+
+### Cross-sections
+
+A **cross-section** is the recipe for a waveguide's transverse profile: its
+width, and which [layers](#layers) it occupies. It is both a component parameter
+(`cross_section`) and the choice in the routing toolbar, so a route and the
+components it joins can share one and line up. The generic PDK's main
+cross-sections:
+
+| Cross-section | What it is |
+|---|---|
+| `strip` | The default silicon wire — full-etch `WG` core, ~500 nm wide. Highest confinement; the standard for dense routing. |
+| `rib` / `rib2` | A ridge over a partial-etch slab (`WG` + `SLAB`). Lower loss and the basis for doped/active devices, at the cost of weaker lateral confinement. Tell the simulator about the slab so it models the rib correctly — see [Rib waveguides](#rib-waveguides-etch-slab-layers). |
+| `nitride` | A silicon-nitride (`WGN`) waveguide — lower index contrast means lower loss and broader bandwidth; used for visible light and low-loss interconnect. |
+| `slot` | Two rails separated by a narrow gap that concentrates the field *in* the slot — for sensing and electro-optic/nonlinear fills. |
+| `pn` / `pin` | A waveguide with a PN or PIN junction across it (adds doping layers) — the basis of carrier-depletion / injection modulators. |
+| `strip_heater_metal` / `rib_heater_doped` | A waveguide with a heater on top (metal) or doped into the slab, for thermo-optic phase tuning. |
+| `metal1` / `metal2` / `metal3` / `metal_routing` | Not optical — electrical routing on the metal layers, for the contacts and pads active devices need. |
+
+Because the cross-section decides which layers geometry lands on, your choice
+here is what populates the [Layers](#layers) panel: picking `rib`, a `pn`, or a
+heater cross-section is exactly what makes the slab, doping, and metal layers
+appear.
+
 ### Precision transform entry
 
 The same panel has a **Transform** section above the parameter form —
@@ -135,11 +294,104 @@ that tracking until you click elsewhere, so your typing isn't overwritten.
 
 ## Layers
 
-The **Layers** panel (right side) lists every layer your design actually
-uses — it starts empty and grows as you place/route/import. Toggle
-visibility or change a layer's color with the checkbox and color swatch.
+Every shape in a GDS layout lives on a **layer** — a `(layer number, datatype)`
+pair that tells the foundry which fabrication step draws it: which etch, which
+implant, which metal. A photonic component is rarely a single layer; a modulator,
+for instance, carries a waveguide core, doping implants, contacts, and metal all
+at once.
+
+The **Layers** panel (right side) lists every layer your design *actually* uses.
+It starts empty and grows as you place, route, and import — a layer appears the
+moment some component puts geometry on it, named from the active PDK (`WG`,
+`SLAB150`, `M1`, …). Toggle a layer's visibility or change its color with the
+checkbox and swatch; hover a layer for a one-line note on what it is for (the
+same descriptions collected below).
 
 <img src="screenshots/layers_panel_example.png" width="320" alt="Layers panel showing active layers with visibility toggles and color swatches">
+
+Layers appear because **components carry them**, not because you draw on them
+directly. Phidler routes optical waveguides; it has no electrical-net router, so
+the doping, metal, and heater layers below show up when you place a part that
+already includes them (a heater-tuned ring, a PN modulator, a detector) or pick a
+[cross-section](#cross-sections) that uses them — not from wiring them yourself.
+
+### Layer types in the generic PDK
+
+The generic PDK models a fairly complete silicon-photonics process. Grouped by
+what they do, these are the layers you are likely to encounter:
+
+**Silicon waveguide and etch** — the layers that define where light is guided.
+
+| Layer | What it is |
+|---|---|
+| `WG` | Silicon waveguide core — full etch (~220 nm on standard SOI). Defines single-mode wire waveguides and grating teeth. |
+| `SLAB150` | Half-etch silicon slab (~150 nm etch, leaving ~70 nm slab). Used under grating couplers and rib waveguides to improve coupling efficiency and confinement. |
+| `SLAB90` | Shallow-etch slab (~90 nm). For very-low-loss rib waveguides, where a thicker slab reduces scattering. |
+| `SHALLOW_ETCH` / `DEEP_ETCH` | Process masks for the shallow (~90 nm) and full-depth (~220 nm) silicon etch steps. |
+| `DEEPTRENCH` | Deep isolation trench etched through the whole device layer to isolate regions optically and electrically. |
+| `UNDERCUT` | Removes buried oxide beneath the silicon to form suspended membranes — MEMS, or ultra-low-loss waveguides. |
+| `WGCLAD` | Waveguide cladding (typically SiO₂) surrounding the core. |
+
+The half-etch slab layers are exactly what [FDTD's rib-waveguide
+support](#rib-waveguides-etch-slab-layers) needs to know about to simulate a rib
+correctly rather than as a fully-etched strip.
+
+**Doping implants** — define PN/PIN junctions for modulators and the
+low-resistance contacts that feed them.
+
+| Layer | What it is |
+|---|---|
+| `N` / `P` | Moderate n-type / p-type silicon doping — the junction of a PN-junction phase shifter or PIN modulator. |
+| `NP` / `PP` | N+ / P+ implants — higher doping next to the waveguide to reduce series resistance. |
+| `NPP` / `PPP` | N++ / P++ implants — heavy doping for low-resistance ohmic contact to metal vias. |
+
+**Germanium** — for detectors and electro-absorption modulators.
+
+| Layer | What it is |
+|---|---|
+| `GE` | Germanium grown selectively on silicon; absorbs near-IR (1.3–1.6 µm) for photodetectors and EA modulators. |
+| `GEN` / `GEP` | N-doped / P-doped germanium — the cathode and anode contact regions of a Ge photodetector. |
+
+**Silicon nitride** — a lower-contrast, lower-loss guiding layer.
+
+| Layer | What it is |
+|---|---|
+| `WGN` | Silicon-nitride (Si₃N₄) waveguide core — lower index contrast than silicon gives lower loss and broader bandwidth; used for visible-light and low-loss interconnect PICs. |
+| `WGN_CLAD` | Silicon-nitride waveguide cladding. |
+
+**Metals, vias, and heaters** — electrical contact, routing, and thermo-optic
+tuning.
+
+| Layer | What it is |
+|---|---|
+| `VIAC` | Contact via — metal plug from M1 down to silicon or germanium. |
+| `VIA1` / `VIA2` | Vias connecting M1→M2 and M2→M3. |
+| `M1` / `M2` / `M3` | Metal routing layers 1–3; M3 is typically bond pads and RF lines. |
+| `HEATER` | Resistive metal heater over a waveguide for thermo-optic phase shifting (silicon's index drifts ~1.8×10⁻⁴ /K). |
+| `PADOPEN` | Pad opening — removes passivation over a bond pad for wire bonding or probing. |
+
+**Process and utility** — non-optical layers the foundry and tooling need.
+
+| Layer | What it is |
+|---|---|
+| `FLOORPLAN` | Chip floorplan boundary — the die extent. |
+| `DICING` | Dicing lane, kept clear of devices so the wafer saw can cleave safely. |
+| `DEVREC` | Device-recognition bounding box — the exclusion zone around a cell for placement and DRC. |
+| `NO_TILE_SI` | Inhibits dummy-silicon fill in a region. |
+| `PADDING` | Extra clearance around a device. |
+| `TEXT` / `LABEL_INSTANCE` / `LABEL_SETTINGS` | Human-readable labels and stored metadata — not physical structures. |
+
+**Ports and simulation markers** — annotations, not fabricated geometry.
+
+| Layer | What it is |
+|---|---|
+| `PORT` / `PORTE` / `PORTH` | Optical / electrical / horizontal port markers — where a cell connects to its neighbors or the outside world. |
+| `TE` / `TM` | TE- and TM-polarization port markers (TE — in-plane E-field — is the standard for SOI strip waveguides). |
+| `SOURCE` / `MONITOR` | FDTD source and monitor markers — where a simulation injects power or records fields. |
+| `DRC_MARKER` | Highlights a design-rule violation; not a physical layer. |
+
+You will rarely see all of these at once — only the layers your particular
+components and cross-sections use ever appear in the panel.
 
 ## Routing
 
