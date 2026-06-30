@@ -100,16 +100,38 @@ class PropertiesPanel(QWidget):
         self.transform_group = QGroupBox("Transform")
         transform_layout = QFormLayout(self.transform_group)
         self.x_spin = self._make_transform_spin()
+        self.x_spin.setToolTip(
+            "Exact X position (µm) of the instance origin — a precise, typed "
+            "alternative to dragging on the canvas. Takes effect on Apply Transform."
+        )
         self.y_spin = self._make_transform_spin()
+        self.y_spin.setToolTip(
+            "Exact Y position (µm) of the instance origin — a precise, typed "
+            "alternative to dragging on the canvas. Takes effect on Apply Transform."
+        )
         self.rotation_spin = self._make_transform_spin(minimum=-360.0, maximum=360.0, decimals=2)
+        self.rotation_spin.setToolTip(
+            "Rotation in degrees (counter-clockwise). Normalized to 0–360 when applied."
+        )
         self.mirror_check = QCheckBox()
+        self.mirror_check.setToolTip(
+            "Reflect the instance about its x-axis (flip top-to-bottom). "
+            "Applied before scale and rotation."
+        )
         self.scale_spin = self._make_transform_spin(minimum=0.001, maximum=1000.0, decimals=4)
+        self.scale_spin.setToolTip(
+            "Uniform magnification factor (1 = original size)."
+        )
         transform_layout.addRow("X (µm)", self.x_spin)
         transform_layout.addRow("Y (µm)", self.y_spin)
         transform_layout.addRow("Rotation (°)", self.rotation_spin)
         transform_layout.addRow("Mirror", self.mirror_check)
         transform_layout.addRow("Scale", self.scale_spin)
         self.apply_transform_button = QPushButton("Apply Transform")
+        self.apply_transform_button.setToolTip(
+            "Apply the X/Y, rotation, mirror and scale above to the selected "
+            "instance as a single undoable move."
+        )
         self.apply_transform_button.clicked.connect(self._on_apply_transform)
         transform_layout.addRow(self.apply_transform_button)
         layout.addWidget(self.transform_group)
@@ -117,9 +139,23 @@ class PropertiesPanel(QWidget):
         self.array_group = QGroupBox("Array")
         array_layout = QFormLayout(self.array_group)
         self.columns_spin = self._make_count_spin()
+        self.columns_spin.setToolTip(
+            "Number of columns when tiling this instance into a rectangular array (1 = no array)."
+        )
         self.rows_spin = self._make_count_spin()
+        self.rows_spin.setToolTip(
+            "Number of rows when tiling this instance into a rectangular array (1 = no array)."
+        )
         self.column_pitch_spin = self._make_transform_spin(minimum=-1e6, maximum=1e6, decimals=4)
+        self.column_pitch_spin.setToolTip(
+            "Spacing (µm) between array columns. Auto-seeded from the instance's own "
+            "width the first time you raise the column count above 1 so copies don't stack."
+        )
         self.row_pitch_spin = self._make_transform_spin(minimum=-1e6, maximum=1e6, decimals=4)
+        self.row_pitch_spin.setToolTip(
+            "Spacing (µm) between array rows. Auto-seeded from the instance's own "
+            "height the first time you raise the row count above 1 so copies don't stack."
+        )
         # Bumping a count above 1 with the pitch still at 0 would stack every
         # copy on top of the original — seed the pitch from the component's
         # own size so a fresh array is immediately visible/sensible.
@@ -130,6 +166,9 @@ class PropertiesPanel(QWidget):
         array_layout.addRow("Column pitch (µm)", self.column_pitch_spin)
         array_layout.addRow("Row pitch (µm)", self.row_pitch_spin)
         self.apply_array_button = QPushButton("Apply Array")
+        self.apply_array_button.setToolTip(
+            "Tile the selected instance into a columns×rows array using the pitches above (undoable)."
+        )
         self.apply_array_button.clicked.connect(self._on_apply_array)
         array_layout.addRow(self.apply_array_button)
         layout.addWidget(self.array_group)
@@ -138,6 +177,10 @@ class PropertiesPanel(QWidget):
         layout.addLayout(self.form_layout)
 
         self.apply_button = QPushButton("Apply")
+        self.apply_button.setToolTip(
+            "Rebuild the selected instance with the parameter values above. If the "
+            "rebuild fails the change is reverted and the error shown in the status bar."
+        )
         self.apply_button.clicked.connect(self._on_apply)
         layout.addWidget(self.apply_button)
         layout.addStretch(1)

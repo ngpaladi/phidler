@@ -298,6 +298,10 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         place_action = toolbar.addAction("Place Straight Waveguide")
+        place_action.setToolTip(
+            "Drop a default straight waveguide at the origin — a quick way to get a "
+            "first element down. The component palette on the left has the full set."
+        )
         place_action.triggered.connect(self._place_straight_waveguide)
 
         self.route_action = toolbar.addAction("Route")
@@ -319,6 +323,10 @@ class MainWindow(QMainWindow):
         self.cross_section_combo = QComboBox()
         self.cross_section_combo.addItems(list_cross_section_names())
         self.cross_section_combo.setCurrentText(self.route_cross_section)
+        self.cross_section_combo.setToolTip(
+            "The gdsfactory cross-section new routes are drawn with — it sets the "
+            "route's waveguide width and layers (strip, rib, nitride, …)."
+        )
         self.cross_section_combo.currentTextChanged.connect(self._on_route_cross_section_changed)
         toolbar.addWidget(self.cross_section_combo)
 
@@ -357,11 +365,19 @@ class MainWindow(QMainWindow):
         self.grid_pitch_spin.setRange(0.001, 1000.0)  # > 0: drawBackground's pitch-scaling loop requires it
         self.grid_pitch_spin.setSingleStep(0.1)
         self.grid_pitch_spin.setValue(self.view.grid_pitch)
+        self.grid_pitch_spin.setToolTip(
+            "Spacing of the background grid, in µm. When Snap is on, this is also "
+            "the step that placement, dragging and routing round to."
+        )
         self.grid_pitch_spin.valueChanged.connect(self._on_grid_pitch_changed)
         toolbar.addWidget(self.grid_pitch_spin)
 
         self.snap_checkbox = QCheckBox("Snap")
         self.snap_checkbox.setChecked(self.view.snap_enabled)
+        self.snap_checkbox.setToolTip(
+            "Snap placement, dragging and routing to the grid pitch on the left. "
+            "Turn off for free, unsnapped positioning."
+        )
         self.snap_checkbox.toggled.connect(self._on_snap_enabled_changed)
         toolbar.addWidget(self.snap_checkbox)
 
@@ -378,6 +394,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.units_combo)
 
         export_action = toolbar.addAction("Export GDS…")
+        export_action.setToolTip("Write the current layout to a GDSII (.gds) file for a foundry/PDK toolchain.")
         export_action.triggered.connect(self._export_gds)
 
         toolbar.addSeparator()
@@ -387,12 +404,18 @@ class MainWindow(QMainWindow):
 
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
+        file_menu.setToolTipsVisible(True)  # show the per-item tooltips below on hover
 
         new_action = file_menu.addAction("New")
         new_action.setShortcut(QKeySequence.New)
         new_action.triggered.connect(self._new_project)
 
         project_settings_action = file_menu.addAction("Project Settings…")
+        project_settings_action.setToolTip(
+            "Material platform, core/cladding indices, thicknesses, and rib/slab "
+            "etch layers — drives the FDTD stack and the suggested width. Reopenable "
+            "anytime without clearing your design."
+        )
         project_settings_action.triggered.connect(self._edit_project_settings)
 
         file_menu.addSeparator()
@@ -412,14 +435,23 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
 
         import_ref_action = file_menu.addAction("Import Reference GDS…")
+        import_ref_action.setToolTip(
+            "Load a GDS as a non-editable backdrop to trace or align against — it's "
+            "shown dimmed and is not part of your design or export."
+        )
         import_ref_action.triggered.connect(self._import_reference_gds)
 
         clear_ref_action = file_menu.addAction("Clear Reference")
+        clear_ref_action.setToolTip("Remove the reference GDS backdrop.")
         clear_ref_action.triggered.connect(self._clear_reference_gds)
 
         file_menu.addSeparator()
 
         import_custom_action = file_menu.addAction("Import Custom Components…")
+        import_custom_action.setToolTip(
+            "Load components from a Python file (gdsfactory @cell functions) so they "
+            "appear in the palette and can be placed like built-ins."
+        )
         import_custom_action.triggered.connect(self._import_custom_components)
 
         file_menu.addSeparator()
@@ -428,9 +460,14 @@ class MainWindow(QMainWindow):
         export_action.triggered.connect(self._export_gds)
 
         export_script_action = file_menu.addAction("Export Python Script…")
+        export_script_action.setToolTip(
+            "Write the layout as a runnable gdsfactory Python script — an alternative "
+            "to GDS that re-creates the design (and routes) in code."
+        )
         export_script_action.triggered.connect(self._export_python_script)
 
         edit_menu = self.menuBar().addMenu("&Edit")
+        edit_menu.setToolTipsVisible(True)
 
         undo_action = self.undo_stack.createUndoAction(self, "Undo")
         undo_action.setShortcut(QKeySequence.Undo)
@@ -462,6 +499,10 @@ class MainWindow(QMainWindow):
         self.flip_v_action.triggered.connect(lambda: self._flip_selected("v"))
 
         self.reset_transform_action = edit_menu.addAction("Reset Transform")
+        self.reset_transform_action.setToolTip(
+            "Reset the selected instance's rotation, mirror and scale to defaults. "
+            "Its position is left where it is."
+        )
         self.reset_transform_action.triggered.connect(self._reset_selected_transform)
 
         self._build_align_actions()
@@ -489,6 +530,7 @@ class MainWindow(QMainWindow):
         self.select_all_action.triggered.connect(self._select_all)
 
         view_menu = self.menuBar().addMenu("&View")
+        view_menu.setToolTipsVisible(True)
 
         self.zoom_fit_action = view_menu.addAction("Zoom to Fit")
         self.zoom_fit_action.setShortcut("Ctrl+0")

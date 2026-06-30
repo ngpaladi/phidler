@@ -26,9 +26,11 @@ class _LayerRow(QWidget):
 
         self.visible_box = QCheckBox()
         self.visible_box.setChecked(info.visible)
+        self.visible_box.setToolTip("Show or hide this layer on the canvas.")
         layout.addWidget(self.visible_box)
 
         self.color_button = QPushButton()
+        self.color_button.setToolTip("Click to pick this layer's display color on the canvas.")
         self.color_button.setFixedSize(18, 18)
         self._set_swatch_color(info.color)
         layout.addWidget(self.color_button)

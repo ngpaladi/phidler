@@ -78,6 +78,13 @@ class ConsolePanel(QWidget):
         self.input = _HistoryLineEdit()
         self.input.setFont(QFont("Monospace"))
         self.input.setPlaceholderText(">>> ")
+        self.input.setToolTip(
+            "Full Python against the live session. Use gf (gdsfactory), doc, "
+            "scene, view, win, plus place(spec, x=, y=, rotation=, mirror=, "
+            "**kwargs) and route(inst_a, port_a, inst_b, port_b, "
+            "cross_section=). Up/Down recall history; multi-line blocks need a "
+            "blank line to run. Changes apply immediately but bypass undo."
+        )
         self.input.returnPressed.connect(self._on_return)
         layout.addWidget(self.input)
 

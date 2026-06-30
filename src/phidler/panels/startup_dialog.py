@@ -34,6 +34,10 @@ class StartupDialog(QDialog):
         layout.addWidget(QLabel("<b>Recent projects</b>"))
 
         self.list = QListWidget()
+        self.list.setToolTip(
+            "Recently opened projects. Double-click one to open it immediately, "
+            "or select it and click Open Selected."
+        )
         for path in recent_paths:
             item = QListWidgetItem(f"{os.path.basename(path)}\n{path}")
             item.setData(Qt.UserRole, path)
@@ -48,11 +52,16 @@ class StartupDialog(QDialog):
 
         buttons = QHBoxLayout()
         self.open_button = QPushButton("Open Selected")
+        self.open_button.setToolTip(
+            "Open the project highlighted in the list above. Enabled once a recent project is selected."
+        )
         self.open_button.setEnabled(False)
         self.open_button.clicked.connect(self._open_selected)
         new_button = QPushButton("New Project…")
+        new_button.setToolTip("Start a new project — opens the project-settings dialog.")
         new_button.clicked.connect(lambda: self._finish(("new",)))
         open_other_button = QPushButton("Open Other…")
+        open_other_button.setToolTip("Browse for and open a project file that isn't in the recent list.")
         open_other_button.clicked.connect(lambda: self._finish(("open",)))
         buttons.addWidget(self.open_button)
         buttons.addStretch(1)

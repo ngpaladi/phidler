@@ -519,6 +519,11 @@ class _CladRow(QWidget):
         self._combo = QComboBox()
         for name, _ in _CLADDING_MATERIALS:
             self._combo.addItem(name)
+        self._combo.setToolTip(
+            "Refractive index of the material surrounding the waveguide core. Pick a "
+            "preset or choose Custom… to type an index — a higher cladding index reduces "
+            "the core/cladding contrast and so weakens confinement."
+        )
         layout.addWidget(self._combo)
 
         self._custom_spin = QDoubleSpinBox()
@@ -942,17 +947,32 @@ class FdtdWindow(QMainWindow):
         self.mode_wavelength_spin.setDecimals(3)
         self.mode_wavelength_spin.setRange(0.1, 10.0)
         self.mode_wavelength_spin.setValue(self.document.project_settings.wavelength_um)
+        self.mode_wavelength_spin.setToolTip(
+            "Free-space wavelength at which the vertical (cross-section) mode is solved. "
+            "The resulting n_eff is wavelength-dependent, so this also sets the index used "
+            "for the fs/ns axis rulers after a solve."
+        )
         form.addRow("Wavelength (µm)", self.mode_wavelength_spin)
 
         self.mode_core_width_spin = QDoubleSpinBox()
         self.mode_core_width_spin.setDecimals(3)
         self.mode_core_width_spin.setRange(0.05, 50.0)
         self.mode_core_width_spin.setValue(0.5)
+        self.mode_core_width_spin.setToolTip(
+            "Lateral width of the waveguide core for this standalone cross-section solve "
+            "(drawn as the core outline on the profile). Independent of the layout — set "
+            "it to the width of the waveguide you want to characterise."
+        )
         form.addRow("Core width (µm)", self.mode_core_width_spin)
 
         self.mode_num_modes_spin = QSpinBox()
         self.mode_num_modes_spin.setRange(1, 6)
         self.mode_num_modes_spin.setValue(1)
+        self.mode_num_modes_spin.setToolTip(
+            "How many guided modes to solve, ordered by n_eff. Mode 0 (the fundamental) "
+            "is the one displayed; raise this to check whether higher-order modes are "
+            "also supported at this width and wavelength."
+        )
         form.addRow("Number of modes", self.mode_num_modes_spin)
 
         self.mode_clad_row = _CladRow(default_n=self.document.project_settings.clad_index)
@@ -961,11 +981,20 @@ class FdtdWindow(QMainWindow):
         self.mode_units_combo = QComboBox()
         for label, _ in _UNIT_MODES:
             self.mode_units_combo.addItem(label)
+        self.mode_units_combo.setToolTip(
+            "Units for the profile's axis labels. The time modes (fs/ns) convert distance "
+            "via the propagation time x·n_eff/c₀, using the n_eff from the last solve."
+        )
         form.addRow("Axis units", self.mode_units_combo)
 
         layout.addLayout(form)
 
         self.mode_solve_button = QPushButton("Compute")
+        self.mode_solve_button.setToolTip(
+            "Solve the vertical mode profile for the cross-section above. Runs off the UI "
+            "thread; on completion shows n_eff and a confinement check, and updates the "
+            "fs/ns rulers in both tabs to the solved n_eff."
+        )
         self.mode_solve_button.clicked.connect(self._on_solve_mode_clicked)
         layout.addWidget(self.mode_solve_button)
 
@@ -1051,6 +1080,11 @@ class FdtdWindow(QMainWindow):
         self.run_wavelength_spin.setDecimals(3)
         self.run_wavelength_spin.setRange(0.1, 10.0)
         self.run_wavelength_spin.setValue(self.document.project_settings.wavelength_um)
+        self.run_wavelength_spin.setToolTip(
+            "Default free-space wavelength used to seed each new source row's wavelength "
+            "and to set the default cell size. Per-source wavelengths can still be edited "
+            "in the table below."
+        )
         form.addRow("Wavelength (µm)", self.run_wavelength_spin)
 
         self.run_cell_size_spin = QDoubleSpinBox()
@@ -1058,6 +1092,11 @@ class FdtdWindow(QMainWindow):
         self.run_cell_size_spin.setRange(0.005, 1.0)
         default_params = FdtdParams(wavelength_um=self.run_wavelength_spin.value())
         self.run_cell_size_spin.setValue(default_params.resolved_cell_size_um())
+        self.run_cell_size_spin.setToolTip(
+            "Edge length of one Yee grid cell. Smaller cells resolve fine features more "
+            "accurately but the cell count (and so memory and run time) grows as roughly "
+            "1/size³ — the default is about λ/15."
+        )
         form.addRow("Cell size (µm)", self.run_cell_size_spin)
 
         # Run time: spinbox + log-scale slider in one row
@@ -1072,11 +1111,20 @@ class FdtdWindow(QMainWindow):
         default_rt = default_params.resolved_run_time_fs()
         self.run_time_spin.setValue(default_rt)
         self.run_time_spin.setFixedWidth(110)
+        self.run_time_spin.setToolTip(
+            "Physical duration of the simulation in femtoseconds — how long the light is "
+            "propagated, not wall-clock time. Allow enough for the field to traverse the "
+            "domain; longer runs cost proportionally more steps."
+        )
         rt_layout.addWidget(self.run_time_spin)
 
         self.run_time_slider = QSlider(Qt.Horizontal)
         self.run_time_slider.setRange(0, _RT_STEPS)
         self.run_time_slider.setValue(_fs_to_slider(default_rt))
+        self.run_time_slider.setToolTip(
+            "Log-scale run-time control, 10 fs to 100 ps, kept in sync with the box on the "
+            "left. Type into the box for values beyond 100 ps."
+        )
         rt_layout.addWidget(self.run_time_slider)
 
         form.addRow("Run time", rt_widget)
@@ -1096,6 +1144,10 @@ class FdtdWindow(QMainWindow):
         self.run_units_combo = QComboBox()
         for label, _ in _UNIT_MODES:
             self.run_units_combo.addItem(label)
+        self.run_units_combo.setToolTip(
+            "Units for the field view's axis labels. The time modes (fs/ns) convert "
+            "distance to propagation time using the last solved n_eff."
+        )
         form.addRow("Axis units", self.run_units_combo)
 
         accel_widget = QWidget()
@@ -1164,16 +1216,31 @@ class FdtdWindow(QMainWindow):
 
         self.place_source_button = QPushButton("Place Source on Canvas")
         self.place_source_button.setCheckable(True)
+        self.place_source_button.setToolTip(
+            "Toggle source-placement mode: while active, clicking the design canvas drops "
+            "a source at that point and adds a row to the table below. Untoggle to return "
+            "the canvas to normal editing."
+        )
         self.place_source_button.toggled.connect(self._on_place_source_toggled)
         layout.addWidget(self.place_source_button)
 
         self.source_table = QTableWidget(0, len(_TABLE_COLUMNS))
         self.source_table.setHorizontalHeaderLabels(_TABLE_COLUMNS)
         self.source_table.setMaximumHeight(140)
+        self.source_table.setToolTip(
+            "One row per placed source. Pick a Kind per row; cells that the chosen Kind "
+            "doesn't use are greyed out. Add rows with 'Place Source on Canvas'."
+        )
+        self._init_source_table_header_tooltips()
         self.source_table.itemChanged.connect(self._on_source_table_item_changed)
         layout.addWidget(self.source_table)
 
         self.run_button = QPushButton("Compute")
+        self.run_button.setToolTip(
+            "Run the FDTD propagation with the parameters and sources above. Runs off the "
+            "UI thread (locally, in a GPU subprocess, or on the remote host); a large grid "
+            "prompts a memory/run-time warning first. Results animate in the view below."
+        )
         self.run_button.clicked.connect(self._on_run_clicked)
         layout.addWidget(self.run_button)
 
@@ -1195,11 +1262,19 @@ class FdtdWindow(QMainWindow):
         self.play_button.setCheckable(True)
         self.play_button.setEnabled(False)
         self.play_button.setFixedWidth(60)
+        self.play_button.setToolTip(
+            "Animate the recorded field frames in a loop (toggles to Pause). Enabled once "
+            "a run produces more than one frame."
+        )
         self.play_button.toggled.connect(self._on_play_toggled)
         playback_row.addWidget(self.play_button)
 
         self.frame_slider = QSlider(Qt.Horizontal)
         self.frame_slider.setEnabled(False)
+        self.frame_slider.setToolTip(
+            "Scrub through the recorded field frames. A run records up to ~300 frames, "
+            "sampled evenly across the full run time."
+        )
         self.frame_slider.valueChanged.connect(self._on_slider_changed)
         playback_row.addWidget(self.frame_slider)
 
@@ -1208,11 +1283,20 @@ class FdtdWindow(QMainWindow):
         for label, mult in (("0.25×", 0.25), ("0.5×", 0.5), ("1×", 1.0), ("2×", 2.0), ("4×", 4.0)):
             self.play_speed_combo.addItem(label, mult)
         self.play_speed_combo.setCurrentIndex(2)  # 1×
+        self.play_speed_combo.setToolTip(
+            "Playback speed multiplier (1× is 10 frames per second). Also sets the frame "
+            "duration written into an exported GIF."
+        )
         self.play_speed_combo.currentIndexChanged.connect(self._on_play_speed_changed)
         playback_row.addWidget(self.play_speed_combo)
 
         self.save_gif_button = QPushButton("Save GIF…")
         self.save_gif_button.setEnabled(False)
+        self.save_gif_button.setToolTip(
+            "Export every recorded frame (field plus the chip/source overlay, as shown) to "
+            "an animated GIF, looping at the current Speed. Enabled after a run produces "
+            "frames; requires Pillow."
+        )
         self.save_gif_button.clicked.connect(self._on_save_gif)
         playback_row.addWidget(self.save_gif_button)
         layout.addLayout(playback_row)
@@ -1250,6 +1334,42 @@ class FdtdWindow(QMainWindow):
             self._syncing_run_time = False
 
     # -- source placement ------------------------------------------------------
+
+    def _init_source_table_header_tooltips(self) -> None:
+        """Per-column header tooltips explaining what each cell feeds and which
+        source Kind consumes it (mirrors _RELEVANT_COLUMNS). Set on the header
+        items rather than per-cell, since cells are recreated on every row add."""
+        tips = {
+            _COL_X: "Source X position in layout coordinates (µm). Seeded by the click "
+                    "that placed it; editable.",
+            _COL_Y: "Source Y position in layout coordinates (µm). Seeded by the click "
+                    "that placed it; editable.",
+            _COL_KIND: "Excitation type. 'dipole' is a plain point source; 'single_photon' "
+                       "launches the local guided mode; 'scripted' uses a custom waveform; "
+                       "'cherenkov' models a charged particle crossing the chip. The choice "
+                       "decides which other cells in the row are active.",
+            _COL_WAVELENGTH: "Free-space wavelength (µm) for this source. Paired with the "
+                             "Energy cell — editing one rewrites the other. Used by dipole, "
+                             "single_photon and cherenkov.",
+            _COL_ENERGY: "Photon energy (eV), the inverse-wavelength view of this source. "
+                         "Editing it rewrites the Wavelength cell and vice versa.",
+            _COL_PHOTON_COUNT: "single_photon only: number of photons. Scales the launched "
+                               "amplitude by √N (so intensity by N), not by stacking copies.",
+            _COL_CORE_WIDTH: "single_photon only: width (µm) of the local guided mode solved "
+                             "under the source and launched into the waveguide.",
+            _COL_SCRIPT: "scripted only: a Python expression of t (seconds) giving the "
+                         "source's time-domain waveform.",
+            _COL_BETA: "cherenkov only: particle speed as a fraction of c (v/c). Cherenkov "
+                       "emission needs β·n > 1.",
+            _COL_TRACK_DIR: "cherenkov only: tilt of the particle track from vertical, in "
+                            "degrees (0 = straight up, out of the layout plane).",
+            _COL_TRACK_LEN: "cherenkov only: length of the track in z (µm), clamped to the "
+                            "dielectric stack thickness.",
+        }
+        for col, text in tips.items():
+            item = self.source_table.horizontalHeaderItem(col)
+            if item is not None:
+                item.setToolTip(text)
 
     def _on_place_source_toggled(self, checked: bool) -> None:
         self.view.set_source_mode(checked)

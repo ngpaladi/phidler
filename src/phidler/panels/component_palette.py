@@ -57,11 +57,20 @@ class ComponentPalette(QWidget):
         layout = QVBoxLayout(self)
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Filter components…")
+        self.search_box.setToolTip(
+            "Filter the component tree as you type. Matches both the raw "
+            "gdsfactory name and the prettified display name; categories "
+            "with matches expand automatically."
+        )
         self.search_box.textChanged.connect(self._populate)
         layout.addWidget(self.search_box)
 
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
+        self.tree.setToolTip(
+            "Click a component to arm placement, then click on the canvas to "
+            "drop it (Enter or double-click also works)."
+        )
         self.tree.setMouseTracking(True)  # required for itemEntered to fire on hover
         # A single click already arms placement (itemClicked) — itemActivated
         # (double-click or Enter) is also wired to the same handler so both
