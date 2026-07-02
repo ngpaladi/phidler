@@ -20,6 +20,11 @@ docs = [
 # (pip install -e /path/to/photonfdtd), then this version constraint will
 # already be satisfied and `pip install -e ".[fdtd]"` won't need network
 # access for it. Phidler tracks photonfdtd 0.2.x (CuPy GPU backend).
+#
+# The GPU backend is optional and not pinned here — install CuPy yourself to
+# match your hardware: the CUDA build for NVIDIA (pip install cupy-cuda12x) or
+# the ROCm build for AMD (pip install cupy-rocm-5-0). photonfdtd uses only
+# generic CuPy array ops, so either works; leaving CuPy out just runs on CPU.
 fdtd = [
     "photonfdtd>=0.2.0",
     "matplotlib>=3.7",
@@ -28,6 +33,17 @@ fdtd = [
     # backend, runs in the worker thread so the UI stays responsive. Enabled by
     # default when importable.
     "numba>=0.59",
+]
+# Offload FDTD runs to a remote nereid-server over gRPC (phidler.fdtd_nereid).
+# Only grpcio + protobuf are needed at runtime; the generated stubs in
+# phidler._nereid are committed, so no protoc toolchain is required to *use* it
+# (only to regenerate — see src/phidler/_nereid/README.md). These floors are the
+# versions the committed stubs were generated against (their own embedded guards
+# refuse to import under anything older); they move when the stubs are
+# regenerated, and a looser floor needs an older grpcio-tools at generation time.
+nereid = [
+    "grpcio>=1.81.1",
+    "protobuf>=6.33.5",
 ]
 
 [build-system]

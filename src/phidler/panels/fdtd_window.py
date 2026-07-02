@@ -58,6 +58,7 @@ from phidler.fdtd_sim import (
     estimate_memory_gb,
     estimate_run_seconds,
     gpu_available,
+    gpu_backend_name,
     mode_confinement,
     nearest_z_index,
     numba_available,
@@ -1158,12 +1159,17 @@ class FdtdWindow(QMainWindow):
         # with availability), so a stray check would quietly run on the CPU.
         self.run_gpu_check = QCheckBox("GPU")
         if gpu_available():
-            self.run_gpu_check.setToolTip("Run on the GPU via photonfdtd's CuPy backend.")
+            backend = gpu_backend_name()  # "CUDA" (NVIDIA) or "ROCm" (AMD)
+            self.run_gpu_check.setToolTip(
+                f"Run on the GPU via photonfdtd's CuPy backend ({backend})."
+            )
         else:
             self.run_gpu_check.setEnabled(False)
             self.run_gpu_check.setToolTip(
-                "GPU acceleration needs CuPy and a CUDA-capable NVIDIA GPU "
-                "(pip install cupy-cuda12x) — not available in this environment."
+                "GPU acceleration needs CuPy — either the CUDA build for an "
+                "NVIDIA GPU (pip install cupy-cuda12x) or the ROCm build for an "
+                "AMD GPU (pip install cupy-rocm-5-0). Not available in this "
+                "environment."
             )
         self.run_numba_check = QCheckBox("Numba")
         if numba_available():
@@ -1472,32 +1478,52 @@ class FdtdWindow(QMainWindow):
         finally:
             self._syncing_wavelength_energy = False
 
+    def _cell_float(self, row: int, col: int, default: float) -> float:
+        """Parse a table cell as a float, falling back to ``default`` if the cell
+        is blank, mid-edit, or missing. A single un-parseable cell must not sink
+        the whole capture: _collect_source_specs feeds sync_config_to_document,
+        which persists the sim set-up on save/close, and an exception there used
+        to be swallowed — silently dropping *every* source. Defaulting the one
+        bad cell keeps the rest."""
+        item = self.source_table.item(row, col)
+        try:
+            return float(item.text())
+        except (AttributeError, ValueError):
+            return default
+
+    def _cell_int(self, row: int, col: int, default: int) -> int:
+        item = self.source_table.item(row, col)
+        try:
+            return int(item.text())
+        except (AttributeError, ValueError):
+            return default
+
     def _collect_source_specs(self) -> tuple[SourceSpec, ...]:
         specs = []
         for row in range(self.source_table.rowCount()):
-            x_um = float(self.source_table.item(row, _COL_X).text())
-            y_um = float(self.source_table.item(row, _COL_Y).text())
             kind = self.source_table.cellWidget(row, _COL_KIND).currentText()
-            wavelength_um = float(self.source_table.item(row, _COL_WAVELENGTH).text())
-            photon_count = int(self.source_table.item(row, _COL_PHOTON_COUNT).text())
             core_width_um = (
-                float(self.source_table.item(row, _COL_CORE_WIDTH).text())
+                self._cell_float(row, _COL_CORE_WIDTH, 0.5)
                 if kind == "single_photon" else None
             )
+            script_item = self.source_table.item(row, _COL_SCRIPT)
             script = (
-                self.source_table.item(row, _COL_SCRIPT).text()
+                (script_item.text() if script_item is not None else "")
                 if kind == "scripted" else None
             )
             cherenkov_kwargs = {}
             if kind == "cherenkov":
                 cherenkov_kwargs = dict(
-                    velocity_beta=float(self.source_table.item(row, _COL_BETA).text()),
-                    direction_deg=float(self.source_table.item(row, _COL_TRACK_DIR).text()),
-                    cherenkov_length_um=float(self.source_table.item(row, _COL_TRACK_LEN).text()),
+                    velocity_beta=self._cell_float(row, _COL_BETA, 0.8),
+                    direction_deg=self._cell_float(row, _COL_TRACK_DIR, 0.0),
+                    cherenkov_length_um=self._cell_float(row, _COL_TRACK_LEN, 5.0),
                 )
             specs.append(SourceSpec(
-                x_um=x_um, y_um=y_um, kind=kind,
-                wavelength_um=wavelength_um, photon_count=photon_count,
+                x_um=self._cell_float(row, _COL_X, 0.0),
+                y_um=self._cell_float(row, _COL_Y, 0.0),
+                kind=kind,
+                wavelength_um=self._cell_float(row, _COL_WAVELENGTH, 1.55),
+                photon_count=self._cell_int(row, _COL_PHOTON_COUNT, 1),
                 core_width_um=core_width_um, script=script,
                 **cherenkov_kwargs,
             ))
@@ -1766,7 +1792,9 @@ class FdtdWindow(QMainWindow):
         # Report the backend that actually ran (not what was requested) — a GPU
         # request can quietly fall back to CPU, which this makes visible.
         if getattr(sim, "use_gpu", False):
-            backend = "GPU"
+            # Name the GPU vendor backend (CUDA/ROCm) when we can identify it.
+            gpu_kind = gpu_backend_name()
+            backend = f"GPU ({gpu_kind})" if gpu_kind and gpu_kind != "GPU" else "GPU"
         elif getattr(sim, "use_numba", False):
             backend = "Numba"
         else:

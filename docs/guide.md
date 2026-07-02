@@ -616,9 +616,13 @@ Propagation runs use a few accelerators so they don't crawl:
   cached to disk, so every run after is fast.
 - **GPU** (CuPy) is far faster still and is left off by default mainly because
   of its ~1 s startup, which only pays off on larger runs. It runs in a
-  separate process now (its own CUDA context), so — unlike before — it no longer
+  separate process now (its own GPU context), so — unlike before — it no longer
   freezes the UI or risks crashing the app; the worker just waits on the child.
-  The status line reports which backend actually ran (**"Done on GPU…"** vs
+  Both GPU vendors work through the same code path: install CuPy's CUDA build
+  for an **NVIDIA** GPU (`pip install cupy-cuda12x`) or its ROCm build for an
+  **AMD** GPU (`pip install cupy-rocm-5-0`) — photonfdtd uses only generic CuPy
+  array ops, so either drives the solve. The status line reports which backend
+  actually ran (**"Done on GPU (CUDA)…"** / **"…GPU (ROCm)…"** vs
   **"…on Numba…"**), so a GPU request that quietly fell back to CPU is visible.
 - The propagation domain keeps only as much **cladding** as the mode's
   evanescent field actually needs (a few decay lengths, scaled by your

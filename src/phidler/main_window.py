@@ -294,7 +294,14 @@ class MainWindow(QMainWindow):
     # -- toolbar / menus ------------------------------------------------------
 
     def _build_toolbar(self) -> None:
-        toolbar = QToolBar("Main")
+        # The controls are split across several named toolbars rather than one
+        # long bar. A single bar wider than the window collapses its overflow
+        # into Qt's ">>" extension popup, and that popup auto-closes the moment
+        # an embedded combo/spinbox opens its own dropdown — so those controls
+        # become unusable at any normal window width. Multiple shorter toolbars
+        # wrap onto toolbar rows instead (the break below starts the second
+        # row), keeping every control directly clickable.
+        toolbar = QToolBar("Tools")
         self.addToolBar(toolbar)
 
         place_action = toolbar.addAction("Place Straight Waveguide")
@@ -318,6 +325,9 @@ class MainWindow(QMainWindow):
             "Click two points (snaps to a nearby port) to show the distance between them (Esc to exit)"
         )
         self.measure_action.toggled.connect(self.view.set_measure_mode)
+
+        toolbar = QToolBar("Routing")
+        self.addToolBar(toolbar)
 
         toolbar.addWidget(QLabel(" Cross-section: "))
         self.cross_section_combo = QComboBox()
@@ -359,6 +369,11 @@ class MainWindow(QMainWindow):
         )
         toolbar.addWidget(self.route_diagonal_check)
 
+        # Second toolbar row: grid/snap/units, then the export + simulate actions.
+        self.addToolBarBreak()
+        toolbar = QToolBar("Grid & Units")
+        self.addToolBar(toolbar)
+
         toolbar.addWidget(QLabel(" Grid (µm): "))
         self.grid_pitch_spin = QDoubleSpinBox()
         self.grid_pitch_spin.setDecimals(3)
@@ -392,6 +407,9 @@ class MainWindow(QMainWindow):
         )
         self.units_combo.currentIndexChanged.connect(self._on_unit_mode_changed)
         toolbar.addWidget(self.units_combo)
+
+        toolbar = QToolBar("Export & Simulate")
+        self.addToolBar(toolbar)
 
         export_action = toolbar.addAction("Export GDS…")
         export_action.setToolTip("Write the current layout to a GDSII (.gds) file for a foundry/PDK toolchain.")

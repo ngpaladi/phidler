@@ -200,3 +200,32 @@ def test_project_settings_menu_action_is_wired(qapp):
     file_menu = next(m for m in win.menuBar().findChildren(QMenu) if m.title() == "&File")
     titles = [a.text() for a in file_menu.actions()]
     assert any("Project Settings" in t for t in titles)
+
+
+def test_toolbar_controls_never_hide_in_the_overflow_popup(qapp):
+    """The toolbar controls are split across several toolbars so they wrap onto
+    rows instead of collapsing into Qt's ">>" extension popup. That popup
+    auto-closes when an embedded combo/spinbox opens its dropdown, making those
+    controls unusable — so no single toolbar may be wider than the window (which
+    is what forces the popup). Guards against a regression that piles everything
+    back onto one bar."""
+    from PySide6.QtWidgets import QToolBar
+
+    win = MainWindow()
+    win.resize(1200, 800)  # not shown: toolbar sizeHints are content-based, and
+    # a lingering shown top-level window steals focus from later key-event tests
+
+    toolbars = win.findChildren(QToolBar)
+    assert len(toolbars) > 1  # split, not one overloaded bar
+    for tb in toolbars:
+        # A toolbar wider than the window is the exact condition that raises the
+        # auto-closing overflow extension.
+        assert tb.sizeHint().width() <= win.width(), (
+            f"toolbar {tb.windowTitle()!r} overflows the window and would hide "
+            f"controls in the auto-closing >> popup"
+        )
+
+    # the embedded interactive widgets (the ones the popup broke) are all present
+    assert win.cross_section_combo is not None
+    assert win.route_goal_spin is not None
+    assert win.units_combo is not None

@@ -62,6 +62,28 @@ def test_gpu_and_numba_checkboxes_feed_into_params(qapp):
     assert params.use_gpu is True and params.use_numba is True
 
 
+def test_gpu_backend_name_tracks_availability_and_names_the_vendor(qapp):
+    """GPU support is backend-agnostic (CuPy's CUDA build for NVIDIA or its ROCm
+    build for AMD). gpu_backend_name() reports which is live, consistent with
+    gpu_available(), and the GPU checkbox's tooltip names it when enabled."""
+    from phidler.fdtd_sim import gpu_available, gpu_backend_name
+
+    name = gpu_backend_name()
+    # None exactly when no CuPy is importable; a vendor label otherwise.
+    assert (name is None) == (not gpu_available())
+    if name is not None:
+        assert name in {"CUDA", "ROCm", "GPU"}
+
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    tip = fdtd_win.run_gpu_check.toolTip()
+    if gpu_available():
+        assert name in tip  # e.g. "...CuPy backend (CUDA)."
+    else:
+        # the disabled tip points at both wheels, not just CUDA
+        assert "cupy-cuda12x" in tip and "cupy-rocm" in tip
+
+
 def test_gpu_run_goes_through_the_worker_thread_via_subprocess(qapp):
     """A GPU-flagged run no longer blocks the main thread: it spawns a child
     process (own CUDA context, clean teardown) that the worker thread waits on,
@@ -283,6 +305,54 @@ def test_collect_source_specs_reflects_table_state(qapp):
     assert spec.core_width_um == 0.6
     assert spec.x_um == 1.0
     assert spec.y_um == 2.0
+
+
+def test_blank_source_cell_does_not_drop_the_whole_config(qapp):
+    """A blank or half-typed source cell (the table is free text with no
+    validator) must not sink the save. sync_config_to_document used to swallow
+    the ValueError _collect_source_specs raised on an unparseable cell and keep
+    the *previous* config — silently dropping every source. Now the one bad cell
+    falls back to the field default and the source is still captured."""
+    from phidler.panels.fdtd_window import _COL_WAVELENGTH, _COL_X
+
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    win.view.source_placement_requested.emit(3.0, 4.0)
+    # simulate a save landing mid-edit, with cells cleared to be retyped
+    fdtd_win.source_table.item(0, _COL_WAVELENGTH).setText("")
+    fdtd_win.source_table.item(0, _COL_X).setText("   ")
+
+    fdtd_win.sync_config_to_document()
+
+    config = win.document.simulation_config
+    assert config is not None  # the config is not discarded...
+    assert len(config.sources) == 1  # ...and the source survives
+    assert config.sources[0].wavelength_um == 1.55  # blank -> field default
+    assert config.sources[0].x_um == 0.0
+
+
+def test_source_config_round_trips_through_a_saved_project(qapp, tmp_path):
+    """End-to-end: a placed source is written into the .phidler file and comes
+    back on load (the "sources aren't saved" path)."""
+    from phidler.panels.fdtd_window import _COL_KIND
+    from phidler.project_io import load_project, save_project
+
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    win._fdtd_window = fdtd_win
+    win.view.source_placement_requested.emit(1.0, 2.0)
+    fdtd_win.source_table.cellWidget(0, _COL_KIND).setCurrentText("cherenkov")
+
+    path = tmp_path / "proj.phidler"
+    win._save_project_to(str(path))
+
+    reopened = MainWindow()
+    load_project(str(path), reopened.document, reopened.scene)
+    config = reopened.document.simulation_config
+    assert config is not None
+    assert len(config.sources) == 1
+    assert config.sources[0].kind == "cherenkov"
+    assert config.sources[0].x_um == 1.0 and config.sources[0].y_um == 2.0
 
 
 def test_placing_a_source_fills_in_the_equivalent_photon_energy(qapp):
@@ -641,8 +711,10 @@ def test_frame_advance_wraps_around_at_the_end(qapp):
 def test_main_window_has_simulate_toolbar_button(qapp):
     win = MainWindow()
     assert win.fdtd_window_action.text() == "Simulate"
-    # It's a toolbar action now, not under a Simulate menu.
-    assert win.fdtd_window_action in win.findChild(QToolBar).actions()
+    # It's a toolbar action now, not under a Simulate menu. The controls are
+    # split across several toolbars, so look across all of them.
+    toolbar_actions = [a for tb in win.findChildren(QToolBar) for a in tb.actions()]
+    assert win.fdtd_window_action in toolbar_actions
     assert all(m.title() != "&Simulate" for m in win.menuBar().findChildren(QMenu))
 
 

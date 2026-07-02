@@ -84,13 +84,37 @@ def gpu_available() -> bool:
     so this is True only when CuPy imports. photonfdtd silently falls back to
     NumPy when it can't (use_gpu is AND'd with availability), so without this
     check a requested GPU run would quietly execute on the CPU. (CuPy importing
-    doesn't by itself guarantee a working CUDA device, but it's the same signal
-    photonfdtd keys off.)"""
+    doesn't by itself guarantee a working device, but it's the same signal
+    photonfdtd keys off.)
+
+    Backend-agnostic: this is True for CuPy's CUDA build (NVIDIA) *or* its
+    ROCm/HIP build (AMD) — photonfdtd only uses generic CuPy array ops, so
+    either drives the solve. See gpu_backend_name() for which one is live."""
     try:
         import cupy  # noqa: F401
         return True
     except Exception:
         return False
+
+
+def gpu_backend_name() -> str | None:
+    """Which CuPy GPU backend is active — "CUDA" (NVIDIA), "ROCm" (AMD), or None
+    when no CuPy is importable ("GPU" as a last resort if CuPy is present but the
+    build can't be identified). Used to tell the user *which* accelerator a run
+    actually used, since phidler supports both through the same code path."""
+    try:
+        import cupy
+    except Exception:
+        return None
+    try:
+        # CuPy's ROCm build sets cupy.cuda.runtime.is_hip; the CUDA build leaves
+        # it False/absent. getattr-guarded so an unexpected CuPy layout can't
+        # raise here.
+        if getattr(cupy.cuda.runtime, "is_hip", False):
+            return "ROCm"
+        return "CUDA"
+    except Exception:
+        return "GPU"
 
 
 def numba_available() -> bool:
