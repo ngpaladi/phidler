@@ -37,9 +37,12 @@ pip install -e ".[dev]"
 ./run.sh
 ```
 
-This activates the project's venv and launches the app. (See "Environment
-gotcha" below for why a plain `python -m phidler` from a different shell
-might crash on some Linux systems.)
+This activates the project's venv and launches the app. On first run, if the
+`.venv` doesn't exist yet, `run.sh` creates it and installs phidler (`.[dev]`)
+automatically — so the manual venv steps under Installation are optional if you
+just use `run.sh`. (FDTD support still needs the sibling photonfdtd installed
+separately; see below.) (See "Environment gotcha" below for why a plain
+`python -m phidler` from a different shell might crash on some Linux systems.)
 
 ![Phidler main window: a ring resonator and an MMI splitter on the canvas, with the component palette, layers, and DRC panels visible](docs/screenshots/main_overview.png)
 
@@ -315,8 +318,10 @@ so they can be regenerated after future UI changes.
   count) before starting a run that would otherwise look like a frozen
   app. Not on PyPI: install from its own checkout first
   (`pip install -e /path/to/FastTiming/photonfdtd`), then
-  `pip install -e ".[fdtd]"` here — without it, the menu action shows an
-  explanatory message instead of crashing the app at startup.
+  `pip install -e ".[fdtd]"` here. If it's missing when you click **Simulate**,
+  the app offers to download and install it from GitHub on the spot (with your
+  approval) rather than crashing or dead-ending — so a manual install is
+  optional.
 
 ## Bugs found from actual use
 

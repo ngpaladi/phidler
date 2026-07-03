@@ -745,3 +745,40 @@ def test_main_window_shows_a_warning_when_fdtd_extras_are_missing(qapp, monkeypa
 
     assert warned
     assert win._fdtd_window is None
+
+
+def test_simulate_offers_to_install_photonfdtd_when_missing(qapp, monkeypatch):
+    """Clicking Simulate with photonfdtd absent must offer to fetch it, not
+    open a window that can't run (photonfdtd is imported lazily, so the failure
+    would otherwise only surface at Run time)."""
+    monkeypatch.setattr("phidler.fdtd_sim.photonfdtd_available", lambda: False)
+    win = MainWindow()
+    offered = []
+    monkeypatch.setattr(win, "_offer_photonfdtd_install", lambda: offered.append(True))
+
+    win._open_fdtd_window()
+
+    assert offered  # prompted to install...
+    assert win._fdtd_window is None  # ...and did not open an unusable window
+
+
+def test_install_prompt_declined_does_not_install(qapp, monkeypatch):
+    win = MainWindow()
+    ran = []
+    monkeypatch.setattr(win, "_run_photonfdtd_install", lambda: ran.append(True))
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.No)
+
+    win._offer_photonfdtd_install()
+
+    assert not ran  # declining the prompt installs nothing
+
+
+def test_install_prompt_approved_triggers_install(qapp, monkeypatch):
+    win = MainWindow()
+    ran = []
+    monkeypatch.setattr(win, "_run_photonfdtd_install", lambda: ran.append(True))
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+
+    win._offer_photonfdtd_install()
+
+    assert ran  # approving kicks off the install

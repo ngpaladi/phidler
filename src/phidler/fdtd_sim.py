@@ -60,6 +60,11 @@ EV_TO_JOULE = 1.602176634e-19  # exact (SI 2019)
 _C0 = 299792458.0  # m/s, exact
 
 
+# photonfdtd isn't on PyPI, so it's fetched from its GitHub checkout — both by
+# the SSH-offload deploy and by the app's on-demand "install it now?" prompt.
+PHOTONFDTD_GIT_URL = "git+https://github.com/ngpaladi/photonfdtd.git"
+
+
 class FdtdNotAvailableError(ImportError):
     """photonfdtd (and/or matplotlib) isn't installed. See pyproject.toml's
     `fdtd` extras group docstring — it's not yet on PyPI, so it must be
@@ -77,6 +82,20 @@ def _import_photonfdtd():
             "then `pip install -e \".[fdtd]\"` here."
         ) from exc
     return pf
+
+
+def photonfdtd_available() -> bool:
+    """Whether the photonfdtd solver package can be imported. It's the one FDTD
+    dependency not on PyPI (installed from its GitHub checkout), so when it's
+    missing the app can offer to fetch it on demand rather than dead-end the
+    Simulate action. Re-checks the live import each call (so it flips to True
+    right after an in-app install), so call importlib.invalidate_caches() first
+    if a fresh install may have landed in this same process."""
+    try:
+        import photonfdtd  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 def gpu_available() -> bool:

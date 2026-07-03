@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressDialog,
     QStatusBar,
     QToolBar,
 )
@@ -175,6 +176,7 @@ class MainWindow(QMainWindow):
         menu — FDTD simulation is a separate top-level window, opened on
         demand from the 'Simulate' toolbar button (wired in _build_toolbar)."""
         self._fdtd_window = None
+        self._photonfdtd_proc = None
 
     def _open_fdtd_window(self) -> None:
         if self._fdtd_window is not None:
@@ -183,18 +185,30 @@ class MainWindow(QMainWindow):
             self._fdtd_window.activateWindow()
             return
 
+        # photonfdtd (the solver) isn't on PyPI and is imported lazily, so a
+        # missing install wouldn't surface until a run is kicked off. Catch it
+        # here, at the Simulate click, and offer to fetch it rather than opening
+        # a window that can't actually run.
+        from phidler.fdtd_sim import photonfdtd_available
+
+        if not photonfdtd_available():
+            self._offer_photonfdtd_install()
+            return
+
+        self._launch_fdtd_window()
+
+    def _launch_fdtd_window(self) -> None:
         try:
             from phidler.panels.fdtd_window import FdtdWindow
         except ImportError as exc:
-            # photonfdtd/matplotlib are the optional `fdtd` extras, not a
-            # core dependency — a user without them installed still gets
-            # a working app, just with this explanatory message instead
-            # of a crash at startup.
+            # Any remaining optional `fdtd` pieces (e.g. matplotlib) are not a
+            # core dependency — a user without them still gets a working app,
+            # just this explanatory message instead of a crash.
             QMessageBox.warning(
                 self,
                 "FDTD Simulation unavailable",
-                "FDTD simulation requires the optional 'fdtd' extras "
-                f"(photonfdtd + matplotlib), which aren't installed:\n{exc}\n\n"
+                "FDTD simulation requires the optional 'fdtd' extras, which "
+                f"aren't installed:\n{exc}\n\n"
                 'Install with: pip install -e ".[fdtd]"\n'
                 "(photonfdtd isn't on PyPI yet — see pyproject.toml)",
             )
@@ -202,6 +216,94 @@ class MainWindow(QMainWindow):
 
         self._fdtd_window = FdtdWindow(self.document, self.view, parent=self)
         self._fdtd_window.show()
+
+    def _offer_photonfdtd_install(self) -> None:
+        """Ask before fetching photonfdtd, then install it on approval. It's not
+        on PyPI, so this pulls it from its GitHub checkout into the running
+        environment; on success the FDTD window opens."""
+        from phidler.fdtd_sim import PHOTONFDTD_GIT_URL
+
+        resp = QMessageBox.question(
+            self,
+            "Install photonfdtd?",
+            "FDTD simulation needs the photonfdtd solver, which isn't installed "
+            "in this environment.\n\n"
+            "It isn't published on PyPI, so it's fetched from GitHub:\n"
+            f"    {PHOTONFDTD_GIT_URL}\n\n"
+            "Download and install it now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if resp == QMessageBox.Yes:
+            self._run_photonfdtd_install()
+
+    def _run_photonfdtd_install(self) -> None:
+        import sys
+
+        from PySide6.QtCore import QProcess
+
+        from phidler.fdtd_sim import PHOTONFDTD_GIT_URL
+
+        # Run pip in a child process wired into the Qt event loop (QProcess), so
+        # the multi-minute download/build doesn't freeze the UI. A busy dialog
+        # shows progress and can cancel it.
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.MergedChannels)
+        proc.setProgram(sys.executable)
+        proc.setArguments(["-m", "pip", "install", PHOTONFDTD_GIT_URL])
+
+        dialog = QProgressDialog(
+            "Downloading and installing photonfdtd…", "Cancel", 0, 0, self
+        )
+        dialog.setWindowTitle("Installing photonfdtd")
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setMinimumDuration(0)
+
+        state = {"canceled": False, "output": []}
+        proc.readyReadStandardOutput.connect(
+            lambda: state["output"].append(
+                bytes(proc.readAllStandardOutput()).decode(errors="replace")
+            )
+        )
+
+        def _cancel() -> None:
+            state["canceled"] = True
+            proc.kill()
+
+        dialog.canceled.connect(_cancel)
+
+        def _finished(exit_code: int, _status) -> None:
+            dialog.close()
+            self._photonfdtd_proc = None
+            if state["canceled"]:
+                self.statusBar().showMessage("photonfdtd install canceled", 3000)
+                return
+            # pip dropped new files into site-packages under this same running
+            # interpreter — clear the import caches so the fresh install is
+            # visible without a restart.
+            import importlib
+
+            importlib.invalidate_caches()
+            from phidler.fdtd_sim import photonfdtd_available
+
+            if exit_code == 0 and photonfdtd_available():
+                self.statusBar().showMessage("photonfdtd installed", 3000)
+                self._launch_fdtd_window()
+            else:
+                tail = "".join(state["output"])[-1500:]
+                QMessageBox.critical(
+                    self,
+                    "photonfdtd install failed",
+                    "Could not install photonfdtd. Install it manually — see "
+                    "pyproject.toml's fdtd extras.\n\n"
+                    f"{tail}",
+                )
+
+        proc.finished.connect(_finished)
+        # Hold a reference so the QProcess isn't garbage-collected mid-run.
+        self._photonfdtd_proc = proc
+        proc.start()
+        dialog.show()
 
     def _build_console_panel(self) -> None:
         def place(
