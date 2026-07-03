@@ -8,8 +8,11 @@ theme:
 
 nav:
   - Home: index.md
+  - Feature Tour: tour.md
   - Tutorial — Designing an MZI: tutorial.md
   - User Guide: guide.md
+  - Keyboard Shortcuts: shortcuts.md
+  - FAQ & Troubleshooting: faq.md
   - Development: development.md
 
 hooks:

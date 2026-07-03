@@ -481,6 +481,369 @@ def tutorial_routing_feedback() -> None:
     win.route_action.setChecked(False)
 
 
+# ---------------------------------------------------------------------------
+# Expanded gallery captures (feature tour). These favour rich, real app states
+# over UI chrome. Menus/combo popups grab correctly under offscreen Qt (they
+# render into the same off-screen buffer once popped up); native OS file
+# dialogs do not, so they're deliberately absent.
+# ---------------------------------------------------------------------------
+
+
+def _grab_menu(menu, name: str) -> None:
+    """Pop a QMenu up (menus only lay out once shown) and grab it."""
+    from PySide6.QtCore import QPoint
+
+    menu.popup(QPoint(0, 0))
+    app.processEvents()
+    save(menu, name)
+    menu.close()
+
+
+def _menu_by_title(win, title: str):
+    from PySide6.QtWidgets import QMenu
+
+    return next(m for m in win.menuBar().findChildren(QMenu) if m.title() == title)
+
+
+def _grab_combo_popup(combo, name: str) -> None:
+    """Open a QComboBox dropdown and grab the popup (a separate top-level view
+    that still renders off-screen)."""
+    combo.showPopup()
+    app.processEvents()
+    view = combo.view()
+    save(view.parentWidget() or view, name)
+    combo.hidePopup()
+
+
+def _demo_window(width: int = 1400, height: int = 820):
+    win = MainWindow()
+    win.resize(width, height)
+    win.show()
+    return win
+
+
+def menu_file() -> None:
+    win = _demo_window()
+    _grab_menu(_menu_by_title(win, "&File"), "menu_file")
+
+
+def menu_edit() -> None:
+    win = _demo_window()
+    # Populate history + a selection so the menu shows its actions live, not
+    # greyed: place, select, and rotate once (enables Undo).
+    inst = win.document.add_instance("bend_euler", {})
+    win.scene.add_instance_item(inst.id)
+    win.scene.items_by_inst[inst.id].setSelected(True)
+    win._rotate_selected()
+    _grab_menu(_menu_by_title(win, "&Edit"), "menu_edit")
+
+
+def menu_view() -> None:
+    win = _demo_window()
+    _grab_menu(_menu_by_title(win, "&View"), "menu_view")
+
+
+def context_menu() -> None:
+    """The right-click canvas menu (rotate/flip/align/copy/delete/zoom) over a
+    selected instance."""
+    win = _demo_window(1200, 760)
+    inst = win.document.add_instance("mmi1x2", {})
+    win.scene.add_instance_item(inst.id)
+    win.view.zoom_to_fit()
+    win.view.scale(0.8, 0.8)
+    win.scene.items_by_inst[inst.id].setSelected(True)
+    win._update_transform_overlay()
+    _grab_menu(win._build_canvas_context_menu(), "context_menu")
+
+
+def multi_select() -> None:
+    """Two components selected together — the shared selection highlight the
+    align/distribute and group-transform tools act on."""
+    win = _demo_window(1100, 700)
+    a = win.document.add_instance("mmi1x2", {})
+    win.scene.add_instance_item(a.id)
+    b = win.document.add_instance("ring_single", {"radius": 6.0})
+    win.scene.add_instance_item(b.id)
+    win.document.set_transform(b.id, Transform(x=40.0, y=-18.0, rotation=0.0, mirror=False))
+    win.scene.items_by_inst[b.id].apply_transform(40.0, -18.0, 0.0, False)
+    win.view.zoom_to_fit()
+    win.view.scale(0.85, 0.85)
+    for inst_id in (a.id, b.id):
+        win.scene.items_by_inst[inst_id].setSelected(True)
+    win._update_transform_overlay()
+    save(win, "multi_select")
+
+
+def array_layout() -> None:
+    """One component tiled into an array (a fiber grating-coupler bank) — set
+    once in the Array section of the properties panel, placed as a unit."""
+    from phidler.model.placed_instance import ArraySpec
+
+    win = _demo_window(1100, 760)
+    inst = win.document.add_instance(
+        "grating_coupler_elliptical_te", {}, array=ArraySpec(columns=1, rows=6, row_pitch=25.0)
+    )
+    win.scene.add_instance_item(inst.id)
+    win.view.zoom_to_fit()
+    win.view.scale(0.85, 0.85)
+    win.scene.clearSelection()
+    save(win, "array_layout")
+
+
+def distribute_result() -> None:
+    """Three components spaced evenly by Distribute Horizontally — scattered
+    input, even output."""
+    win = _demo_window(1200, 640)
+    xs = (-30.0, -2.0, 34.0)  # deliberately uneven gaps
+    ids = []
+    for x in xs:
+        inst = win.document.add_instance("ring_single", {"radius": 5.0})
+        win.scene.add_instance_item(inst.id)
+        win.document.set_transform(inst.id, Transform(x=x, y=0.0, rotation=0.0, mirror=False))
+        win.scene.items_by_inst[inst.id].apply_transform(x, 0.0, 0.0, False)
+        ids.append(inst.id)
+    for inst_id in ids:
+        win.scene.items_by_inst[inst_id].setSelected(True)
+    win._distribute_selected("x")
+    win.view.zoom_to_fit()
+    win.view.scale(0.9, 0.9)
+    save(win, "distribute_result")
+
+
+def reference_overlay() -> None:
+    """A design drawn on top of a dimmed reference GDS backdrop — the trace /
+    align-to-existing-layout workflow."""
+    import tempfile
+
+    import gdsfactory as gf
+
+    ref_path = Path(tempfile.gettempdir()) / "phidler_ref_demo.gds"
+    gf.components.ring_double().write_gds(str(ref_path))
+
+    win = _demo_window(1100, 720)
+    win.document.import_reference(str(ref_path))
+    win.scene.show_reference()
+    # A new element being drawn over the backdrop.
+    inst = win.document.add_instance("straight", {"length": 12.0, "width": 0.5})
+    win.scene.add_instance_item(inst.id)
+    win.document.set_transform(inst.id, Transform(x=-6.0, y=8.0, rotation=0.0, mirror=False))
+    win.scene.items_by_inst[inst.id].apply_transform(-6.0, 8.0, 0.0, False)
+    win.view.zoom_to_fit()
+    win.view.scale(0.8, 0.8)
+    win.scene.clearSelection()
+    save(win, "reference_overlay")
+
+
+def showcase_ring() -> None:
+    """A clean add–drop ring resonator — a recognisable device, framed as a
+    gallery hero."""
+    win = _demo_window(1100, 720)
+    inst = win.document.add_instance("ring_double", {})
+    win.scene.add_instance_item(inst.id)
+    win.view.zoom_to_fit()
+    win.view.scale(0.85, 0.85)
+    win.scene.clearSelection()
+    save(win, "showcase_ring")
+
+
+def cross_section_dropdown() -> None:
+    """The routing cross-section picker open — every PDK cross-section a route
+    can be drawn with."""
+    win = _demo_window()
+    _grab_combo_popup(win.cross_section_combo, "cross_section_dropdown")
+
+
+def palette_search() -> None:
+    """The component palette filtered live by a search term."""
+    win = MainWindow()
+    win.resize(420, 720)
+    win.show()
+    win.palette.resize(380, 700)
+    win.palette.search_box.setText("ring")
+    app.processEvents()
+    win.palette.tree.expandAll()
+    app.processEvents()
+    save(win.palette, "palette_search")
+
+
+def drc_panel_results() -> None:
+    """The DRC panel after a check: min-width / min-spacing controls and a
+    violation flagged in the results list."""
+    win = _demo_window(1400, 900)
+    win.document.top.add_polygon([(0, 0), (10, 0), (10, 0.05), (0, 0.05)], layer=(1, 0))
+    layer_info_for((1, 0), win.document.layers)
+    win.drc_panel.set_layers(win.document.layers)
+    win.drc_panel.width_spin.setValue(0.2)
+    win.drc_panel.spacing_spin.setValue(0.0)
+    win.drc_panel.set_current_layer((1, 0))
+    win._on_run_drc((1, 0), 0.2, 0.0)
+    win.drc_panel.resize(320, 380)
+    app.processEvents()
+    save(win.drc_panel, "drc_panel_results")
+
+
+def _fdtd_prop_window_with_sources():
+    """A propagation-tab FDTD window with two sources of different kinds placed —
+    shared by the source-table and dropdown captures so they don't each rebuild."""
+    from phidler.panels.fdtd_window import FdtdWindow
+
+    win = MainWindow()
+    a = win.document.add_instance("straight", {"length": 6.0, "width": 0.5})
+    win.scene.add_instance_item(a.id)
+    win.view.zoom_to_fit()
+    win.view.scale(0.5, 0.5)
+
+    fdtd_win = FdtdWindow(win.document, win.view)
+    fdtd_win.resize(760, 960)
+    fdtd_win.show()
+    fdtd_win.centralWidget().setCurrentIndex(1)  # Propagation tab
+    fdtd_win._on_source_placement_requested(-1.5, 0.0)
+    fdtd_win._on_source_placement_requested(1.5, 0.4)
+    from phidler.panels.fdtd_window import _COL_KIND
+
+    fdtd_win.source_table.cellWidget(1, _COL_KIND).setCurrentText("cherenkov")
+    app.processEvents()
+    return win, fdtd_win
+
+
+def fdtd_source_setup() -> None:
+    win, fdtd_win = _fdtd_prop_window_with_sources()
+    save(fdtd_win, "fdtd_source_setup")
+    crop_top("fdtd_source_setup", 0.62)  # controls + populated source table
+
+
+def fdtd_source_kind_dropdown() -> None:
+    from phidler.panels.fdtd_window import _COL_KIND
+
+    win, fdtd_win = _fdtd_prop_window_with_sources()
+    _grab_combo_popup(fdtd_win.source_table.cellWidget(0, _COL_KIND), "fdtd_source_kind_dropdown")
+
+
+def fdtd_cladding_material_dropdown() -> None:
+    win, fdtd_win = _fdtd_prop_window_with_sources()
+    _grab_combo_popup(fdtd_win.run_clad_row._combo, "fdtd_cladding_material_dropdown")
+
+
+def fdtd_field_midframe() -> None:
+    """A propagation snapshot caught mid-flight (the pulse partway across the
+    waveguide) rather than at the end — the most eye-catching FDTD view."""
+    from phidler.panels.fdtd_window import FdtdWindow
+
+    win = MainWindow()
+    win.resize(900, 600)
+    win.show()
+    a = win.document.add_instance("straight", {"length": 6.0, "width": 0.5})
+    win.scene.add_instance_item(a.id)
+    win.view.zoom_to_fit()
+    win.view.scale(0.5, 0.5)
+
+    fdtd_win = FdtdWindow(win.document, win.view)
+    fdtd_win.resize(750, 950)
+    fdtd_win.show()
+    fdtd_win.centralWidget().setCurrentIndex(1)
+    fdtd_win.run_cell_size_spin.setValue(0.06)
+    fdtd_win.run_time_spin.setValue(30.0)
+    fdtd_win._on_source_placement_requested(-2.2, 0.0)
+    fdtd_win._on_run_clicked()
+    _pump_events(app, lambda: fdtd_win._fdtd_thread is not None and not fdtd_win._fdtd_thread.isRunning())
+    # ~40% through the movie: the pulse is mid-waveguide, both ends still visible.
+    fdtd_win.frame_slider.setValue(int(fdtd_win.frame_slider.maximum() * 0.4))
+    app.processEvents()
+    fdtd_win.run_view.fit_to_image()
+    app.processEvents()
+    save(fdtd_win, "fdtd_field_midframe")
+
+
+def startup_dialog() -> None:
+    """The launcher's recent-projects dialog — the first thing you see."""
+    from phidler.panels.startup_dialog import StartupDialog
+
+    recents = [
+        "/home/you/photonics/mzi_filter.phidler",
+        "/home/you/photonics/ring_modulator.phidler",
+        "/home/you/photonics/grating_coupler_array.phidler",
+    ]
+    dialog = StartupDialog(recents)
+    dialog.resize(480, 360)
+    dialog.show()
+    dialog.list.setCurrentRow(0)  # selects a project so Open Selected is live
+    app.processEvents()
+    save(dialog, "startup_dialog")
+
+
+def units_time_view() -> None:
+    """Coordinate axes shown as propagation time (fs) instead of microns — the
+    time-of-flight view for delay-line design."""
+    win = _demo_window(1100, 700)
+    a = win.document.add_instance("straight", {"length": 40.0, "width": 0.5})
+    win.scene.add_instance_item(a.id)
+    win.view.zoom_to_fit()
+    win.view.scale(0.8, 0.8)
+    win.scene.clearSelection()
+    win.units_combo.setCurrentIndex(2)  # "fs  (propagation time)"
+    app.processEvents()
+    save(win, "units_time_view")
+
+
+def grid_snap_closeup() -> None:
+    """The snapping grid up close — placement, dragging, and routing round to
+    this pitch when Snap is on."""
+    win = _demo_window(1000, 700)
+    a = win.document.add_instance("straight", {"length": 6.0, "width": 0.5})
+    win.scene.add_instance_item(a.id)
+    win.view.zoom_to_fit()
+    win.view.scale(3.0, 3.0)  # zoom in until the 1 µm grid squares are visible
+    win.scene.clearSelection()
+    save(win, "grid_snap_closeup")
+
+
+def align_result() -> None:
+    """Three components snapped to a common top edge with Align."""
+    win = _demo_window(1200, 640)
+    ids = []
+    for i, y in enumerate((10.0, -6.0, 2.0)):
+        inst = win.document.add_instance("mmi1x2", {})
+        win.scene.add_instance_item(inst.id)
+        x = -40.0 + i * 40.0
+        win.document.set_transform(inst.id, Transform(x=x, y=y, rotation=0.0, mirror=False))
+        win.scene.items_by_inst[inst.id].apply_transform(x, y, 0.0, False)
+        ids.append(inst.id)
+    for inst_id in ids:
+        win.scene.items_by_inst[inst_id].setSelected(True)
+    win._align_selected("top")
+    win.view.zoom_to_fit()
+    win.view.scale(0.9, 0.9)
+    save(win, "align_result")
+
+
+def heater_showcase() -> None:
+    """A thermo-optic phase shifter — a waveguide with a metal heater and its
+    routing — showing the metal and via layers stacked over the optical layer."""
+    win = _demo_window(1100, 680)
+    inst = win.document.add_instance("straight_heater_metal_simple", {"length": 40.0})
+    win.scene.add_instance_item(inst.id)
+    win.undo_stack.indexChanged.emit(0)  # refresh the Layers panel so the stack shows
+    win.view.zoom_to_fit()
+    win.view.scale(0.85, 0.85)
+    win.scene.clearSelection()
+    app.processEvents()
+    save(win, "heater_showcase")
+
+
+def palette_catalog() -> None:
+    """The component palette with its top categories expanded — the gdsfactory
+    PDK catalog, grouped by kind."""
+    win = MainWindow()
+    win.resize(420, 900)
+    win.show()
+    win.palette.resize(380, 880)
+    tree = win.palette.tree
+    for i in range(min(tree.topLevelItemCount(), 4)):
+        tree.topLevelItem(i).setExpanded(True)
+    app.processEvents()
+    save(win.palette, "palette_catalog")
+
+
 def regenerate_all() -> None:
     """Rebuild every embedded screenshot. Called by the standalone script and
     by the mkdocs pre-build hook (docs/hooks.py)."""
@@ -502,6 +865,29 @@ def regenerate_all() -> None:
     layers_panel_example()
     properties_panel_example()
     console_session()
+    # Expanded feature-tour gallery
+    menu_file()
+    menu_edit()
+    menu_view()
+    context_menu()
+    multi_select()
+    array_layout()
+    distribute_result()
+    reference_overlay()
+    showcase_ring()
+    cross_section_dropdown()
+    palette_search()
+    drc_panel_results()
+    fdtd_source_setup()
+    fdtd_source_kind_dropdown()
+    fdtd_cladding_material_dropdown()
+    fdtd_field_midframe()
+    startup_dialog()
+    units_time_view()
+    grid_snap_closeup()
+    align_result()
+    heater_showcase()
+    palette_catalog()
     print("done")
 
 

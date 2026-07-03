@@ -117,6 +117,9 @@ are not real standalone cells, are filtered out so everything in the palette
 actually places.) They are grouped by function; the core photonic categories are
 expanded by default, and each one answers a recurring need in a circuit:
 
+<img src="screenshots/palette_catalog.png" width="320" alt="The component palette with its top categories expanded, showing the grouped PDK catalog">
+
+
 - **Waveguides** — the straight sections (and crossings) light travels along.
   `straight` is the workhorse; `crossing` lets two waveguides cross with low
   crosstalk; `straight_heater_metal_simple` carries a heater on top for
@@ -201,6 +204,10 @@ in the right-click context menu):
   centers evenly along that axis, keeping the two extreme instances fixed.
 
 Each is a single undo step, even when it moves several instances.
+
+![Three instances aligned to a common top edge](screenshots/align_result.png)
+
+![Three instances spaced evenly after Distribute Horizontally](screenshots/distribute_result.png)
 
 ### Transform handles
 
@@ -444,6 +451,8 @@ floorplan) to design against. It's shown dimmed and is **not** included
 in your own GDS export — it's purely a visual aid. **File > Clear
 Reference** removes it. The reference path is remembered with the saved
 project.
+
+![A new waveguide drawn over a dimmed reference-GDS backdrop](screenshots/reference_overlay.png)
 
 ## Design rule checking (DRC)
 
