@@ -1,13 +1,24 @@
 # Requirements pip-installed into the AppImage's bundled Python, in order.
 #
-# photonfdtd (the FDTD solver) isn't on PyPI, so it's fetched from GitHub. It's
-# listed first so it's installed before phidler[fdtd] resolves its
-# `photonfdtd>=0.2.0` pin (which no PyPI release satisfies).
-photonfdtd @ git+https://github.com/ngpaladi/photonfdtd.git
+# IMPORTANT: python-appimage runs each `pip install <line>` through a shell
+# (' '.join then shell=True), so a line must contain NO shell metacharacters —
+# no spaces, no '>' / '<' (redirects), no '[...]' (globs), no '@'. That rules
+# out PEP 508 "name @ url" forms, "pkg[extra]" extras, and ">=x.y" version
+# pins. Bare names / a git+ URL / a plain path are safe; hence the forms below
+# (and the bare checkout path appended by build.sh).
 #
-# phidler itself, with the [fdtd] extras (matplotlib + numba), is appended by
-# packaging/appimage/build.sh as an absolute path to the current checkout — so
-# the AppImage bundles this exact source, not a fixed git ref. The extras are
-# bundled at build time on purpose: an AppImage is a read-only mount, so the
-# app's "install photonfdtd on demand" pip path can't run inside it — everything
-# FDTD needs has to be here already.
+# photonfdtd (the FDTD solver) isn't on PyPI — install it from GitHub. First, so
+# it's present before phidler needs it.
+git+https://github.com/ngpaladi/photonfdtd.git
+#
+# The FDTD extras, listed explicitly (unpinned) instead of via phidler's [fdtd]
+# group — the "[...]" would be glob-expanded and a ">=" pin redirected. `-U`
+# fetches recent, Python-3.12-compatible builds. Keep in sync with the [fdtd]
+# group in pyproject.toml.
+matplotlib
+numba
+#
+# phidler itself is appended by packaging/appimage/build.sh as the absolute path
+# to the current checkout — so the AppImage bundles this exact source. Bundling
+# the FDTD stack at build time is deliberate: an AppImage is a read-only mount,
+# so the app's "install photonfdtd on demand" pip path can't run inside it.

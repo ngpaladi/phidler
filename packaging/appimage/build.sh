@@ -19,13 +19,15 @@ if ! command -v python-appimage >/dev/null 2>&1; then
     exit 1
 fi
 
-# Build against a copy of the recipe so we can append the current checkout as
-# `phidler[fdtd]` (an absolute path — it differs between a local build and CI)
-# without mutating the committed requirements.txt.
+# Build against a copy of the recipe so we can append the current checkout (an
+# absolute path — it differs between a local build and CI) without mutating the
+# committed requirements.txt. A bare path (no "[fdtd]") on purpose: python-appimage
+# installs each requirement through a shell, which would glob-expand the brackets;
+# the FDTD extras are listed explicitly in requirements.txt instead.
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 cp -a "$RECIPE/." "$WORK/"
-echo "${REPO_ROOT}[fdtd]" >> "$WORK/requirements.txt"
+echo "${REPO_ROOT}" >> "$WORK/requirements.txt"
 
 # python-appimage writes the AppImage into the current directory.
 cd "$REPO_ROOT"
