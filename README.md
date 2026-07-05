@@ -33,26 +33,28 @@ pip install -e ".[dev]"
 
 ### Linux AppImage
 
-A portable, self-contained **AppImage** (bundling Python, the app, and the FDTD
-solver — no install needed) is built on every push by the
-[Build AppImage](.github/workflows/appimage.yml) workflow and attached to that
-run as an artifact. Download it from the run's page under **Artifacts**, then:
+A portable, self-contained **AppImage** bundles Python, the app, and the full
+FDTD simulation stack (photonfdtd + numba + matplotlib) — nothing to install, and
+**FDTD works out of the box**. Download the latest
+[**nightly release**](https://github.com/ngpaladi/phidler/releases/tag/nightly):
 
 ```
 chmod +x Phidler-x86_64.AppImage
 ./Phidler-x86_64.AppImage
 ```
 
-To build one yourself:
+A fresh AppImage is built and published every night from `main` by the
+[Build AppImage](.github/workflows/appimage.yml) workflow (which also attaches it
+to every run as an artifact). To build one yourself:
 
 ```
 pip install python-appimage
 packaging/appimage/build.sh          # -> ./Phidler-x86_64.AppImage
 ```
 
-The recipe lives in [`packaging/appimage/`](packaging/appimage/). The FDTD
-extras are bundled in at build time (an AppImage is read-only, so the in-app
-"install photonfdtd" step can't run inside one).
+The recipe lives in [`packaging/appimage/`](packaging/appimage/). The simulation
+packages are bundled at build time on purpose: an AppImage is read-only, so the
+app's in-app "install photonfdtd" step can't run inside one.
 
 ## Running it
 

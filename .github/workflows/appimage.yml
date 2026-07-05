@@ -1,9 +1,11 @@
 name: Build AppImage
 
-# Builds a portable Linux AppImage of the app on every push that can affect it,
-# and uploads it as a workflow artifact. python-appimage bundles a relocatable
-# CPython, pip-installs phidler[fdtd] + photonfdtd into it, and repackages — no
-# FUSE needed (it extracts rather than mounts), so it runs on the stock runner.
+# Builds a portable Linux AppImage of the app and uploads it as a workflow
+# artifact. python-appimage bundles a relocatable CPython, pip-installs phidler +
+# the FDTD simulation stack (photonfdtd + numba + matplotlib) into it, and
+# repackages — no FUSE needed (it extracts rather than mounts), so it runs on the
+# stock runner. On the nightly schedule (and manual runs) it also publishes a
+# rolling `nightly` pre-release with the AppImage attached.
 on:
   push:
     branches: [main]
@@ -12,13 +14,15 @@ on:
       - "pyproject.toml"
       - "packaging/appimage/**"
       - ".github/workflows/appimage.yml"
+  schedule:
+    - cron: "0 6 * * *"   # 06:00 UTC nightly
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  appimage:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -32,7 +36,7 @@ jobs:
 
       - name: Build the AppImage
         # Downloads a manylinux CPython base, pip-installs the requirements
-        # (photonfdtd from git, then this checkout as phidler[fdtd]) into it, and
+        # (photonfdtd from git, the FDTD extras, then this checkout) into it, and
         # repackages. Expect a few minutes and a large (~hundreds of MB) result.
         run: packaging/appimage/build.sh
 
@@ -46,17 +50,21 @@ jobs:
 
       - name: Smoke-test the AppImage (headless import)
         # Extract (no FUSE on runners) and drive the bundled Python directly:
-        # importing the app + its heavy deps proves the bundle is populated and
-        # loadable. A full GUI launch can't be verified headlessly (it enters an
-        # event loop), so this checks importability, not a running window.
+        # importing the app + its heavy deps — including the FDTD simulation
+        # stack (photonfdtd, numba, matplotlib) — proves the bundle is populated
+        # and loadable, and guards that simulation stays bundled. A full GUI
+        # launch can't be verified headlessly (it enters an event loop), so this
+        # checks importability, not a running window.
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONNOUSERSITE: "1"
         run: |
           "${{ steps.find.outputs.path }}" --appimage-extract >/dev/null
           squashfs-root/usr/bin/python3.12 - <<'PY'
-          import phidler, gdsfactory, photonfdtd, PySide6.QtCore
-          print("AppImage import OK — phidler", phidler.__version__)
+          import phidler, gdsfactory, PySide6.QtCore
+          import photonfdtd, numba, matplotlib  # the bundled FDTD simulation stack
+          print("AppImage import OK — phidler", phidler.__version__,
+                "| photonfdtd", photonfdtd.__version__, "| numba", numba.__version__)
           PY
 
       - uses: actions/upload-artifact@v4
@@ -64,3 +72,33 @@ jobs:
           name: Phidler-AppImage-x86_64
           path: Phidler-*.AppImage
           if-no-files-found: error
+
+  nightly-release:
+    # Publish the built AppImage as a rolling `nightly` pre-release. Only on the
+    # schedule or a manual run — ordinary pushes just produce the CI artifact
+    # above. Runs after (and only if) the build + smoke test passed, so a broken
+    # build is never released. Scoped contents:write lives here, not on `build`.
+    needs: build
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Phidler-AppImage-x86_64
+
+      - name: Publish / refresh the nightly pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        # Move the rolling `nightly` tag to this commit and re-publish the
+        # release with the fresh AppImage. Delete-then-create keeps a single
+        # stable download URL (…/releases/download/nightly/Phidler-x86_64.AppImage).
+        run: |
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly Phidler-*.AppImage \
+            --title "Nightly build ($(date -u +%Y-%m-%d))" \
+            --notes "Automated nightly AppImage built from \`${{ github.sha }}\`. Self-contained: bundles Python, phidler, and the FDTD simulation stack (photonfdtd + numba + matplotlib) — no install needed. \`chmod +x\` it and run." \
+            --prerelease \
+            --target "${{ github.sha }}"

@@ -37,9 +37,30 @@ end-to-end in about fifteen minutes.
 
 ## Installation
 
+### Linux — AppImage (no install)
+
+The quickest way to run Phidler on Linux is the **AppImage**: a single
+self-contained file that bundles Python, the app, and the full FDTD simulation
+stack (photonfdtd + numba + matplotlib) — nothing to install, no Python needed.
+
+Grab the latest [**nightly release**](https://github.com/ngpaladi/phidler/releases/tag/nightly),
+then:
+
+```sh
+chmod +x Phidler-x86_64.AppImage
+./Phidler-x86_64.AppImage
+```
+
+Because the simulation packages are bundled, **FDTD works out of the box** — no
+separate photonfdtd install. (A fresh AppImage is built and published every night
+from `main`; it needs a reasonably recent glibc — any current desktop distro is
+fine.)
+
+### From source
+
 Requires Python 3.10+.
 
-### Linux
+#### Linux
 
 ```sh
 git clone https://github.com/ngpaladi/phidler.git
@@ -49,7 +70,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-### macOS
+#### macOS
 
 Requires Python 3.10+ from [python.org](https://www.python.org/downloads/)
 or Homebrew (`brew install python@3.12`).
@@ -62,7 +83,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-### Windows
+#### Windows
 
 Requires Python 3.10+ from [python.org](https://www.python.org/downloads/).
 Run in PowerShell or Command Prompt:
