@@ -31,6 +31,29 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+### Linux AppImage
+
+A portable, self-contained **AppImage** (bundling Python, the app, and the FDTD
+solver — no install needed) is built on every push by the
+[Build AppImage](.github/workflows/appimage.yml) workflow and attached to that
+run as an artifact. Download it from the run's page under **Artifacts**, then:
+
+```
+chmod +x Phidler-x86_64.AppImage
+./Phidler-x86_64.AppImage
+```
+
+To build one yourself:
+
+```
+pip install python-appimage
+packaging/appimage/build.sh          # -> ./Phidler-x86_64.AppImage
+```
+
+The recipe lives in [`packaging/appimage/`](packaging/appimage/). The FDTD
+extras are bundled in at build time (an AppImage is read-only, so the in-app
+"install photonfdtd" step can't run inside one).
+
 ## Running it
 
 ```

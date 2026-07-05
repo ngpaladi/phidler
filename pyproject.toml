@@ -8,6 +8,12 @@ dependencies = [
     "PySide6>=6.7.0",
 ]
 
+# `phidler` launches the app (same entry point as `python -m phidler`). This is
+# also what the AppImage's entry point wraps. gui-scripts (vs scripts) makes a
+# no-console GUI launcher on Windows; on Linux it's an ordinary console script.
+[project.gui-scripts]
+phidler = "phidler.app:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",

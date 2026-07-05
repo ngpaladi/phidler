@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Phidler
+GenericName=Photonic IC Layout
+Comment=Visual CAD for photonic integrated circuit layout, built on gdsfactory
+Exec=phidler
+Icon=phidler
+Categories=Science;Engineering;Education;
+Keywords=photonics;PIC;gdsfactory;FDTD;GDS;layout;
+Terminal=false

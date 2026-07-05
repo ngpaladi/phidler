@@ -1,0 +1,65 @@
+name: Build AppImage
+
+# Builds a portable Linux AppImage of the app on every push that can affect it,
+# and uploads it as a workflow artifact. python-appimage bundles a relocatable
+# CPython, pip-installs phidler[fdtd] + photonfdtd into it, and repackages — no
+# FUSE needed (it extracts rather than mounts), so it runs on the stock runner.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "pyproject.toml"
+      - "packaging/appimage/**"
+      - ".github/workflows/appimage.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  appimage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install python-appimage
+        run: pip install python-appimage
+
+      - name: Build the AppImage
+        # Downloads a manylinux CPython base, pip-installs the requirements
+        # (photonfdtd from git, then this checkout as phidler[fdtd]) into it, and
+        # repackages. Expect a few minutes and a large (~hundreds of MB) result.
+        run: packaging/appimage/build.sh
+
+      - name: Locate the AppImage
+        id: find
+        run: echo "path=$(ls Phidler-*.AppImage)" >> "$GITHUB_OUTPUT"
+
+      - name: Low-level libraries the bundled Qt / gdsfactory may dlopen
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libglib2.0-0
+
+      - name: Smoke-test the AppImage (headless import)
+        # Extract (no FUSE on runners) and drive the bundled Python directly:
+        # importing the app + its heavy deps proves the bundle is populated and
+        # loadable. A full GUI launch can't be verified headlessly (it enters an
+        # event loop), so this checks importability, not a running window.
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONNOUSERSITE: "1"
+        run: |
+          "${{ steps.find.outputs.path }}" --appimage-extract >/dev/null
+          squashfs-root/usr/bin/python3.12 - <<'PY'
+          import phidler, gdsfactory, photonfdtd, PySide6.QtCore
+          print("AppImage import OK — phidler", phidler.__version__)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Phidler-AppImage-x86_64
+          path: Phidler-*.AppImage
+          if-no-files-found: error
