@@ -38,7 +38,8 @@ jobs:
 
       - name: Locate the AppImage
         id: find
-        run: echo "path=$(ls Phidler-*.AppImage)" >> "$GITHUB_OUTPUT"
+        # Prefix ./ so it's runnable as a path, not looked up on PATH.
+        run: echo "path=./$(ls Phidler-*.AppImage)" >> "$GITHUB_OUTPUT"
 
       - name: Low-level libraries the bundled Qt / gdsfactory may dlopen
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libglib2.0-0
