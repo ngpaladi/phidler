@@ -59,6 +59,7 @@ from phidler.fdtd_sim import (
     estimate_run_seconds,
     gpu_available,
     gpu_backend_name,
+    limit_solver_threads,
     mode_confinement,
     nearest_z_index,
     numba_available,
@@ -641,6 +642,13 @@ class FdtdWorker(QObject):
                     progress_callback=self.progress.emit,
                 )
             else:
+                # In-process CPU/numba solve: it shares this (GUI) process, so
+                # cap numba's parallel kernel to leave the desktop some cores —
+                # otherwise a long run pins every core and freezes the whole
+                # machine (mouse still moves) until it finishes. renice=False:
+                # this thread is discarded after the run, but lowering the GUI
+                # process's own priority would slow the UI, so only cap threads.
+                limit_solver_threads(renice=False)
                 t0 = time.time()
                 sim = build_simulation(self.document, self.params, region_um=self.region_um)
                 sim.progress_callback = self.progress.emit

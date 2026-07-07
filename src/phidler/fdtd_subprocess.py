@@ -219,7 +219,7 @@ def _run_job(job_path: str) -> None:
 
     get_generic_pdk().activate()
 
-    from .fdtd_sim import build_simulation, run_simulation
+    from .fdtd_sim import build_simulation, limit_solver_threads, run_simulation
     from .model.document import LayoutDocument
     from .project_io import load_project
 
@@ -228,6 +228,13 @@ def _run_job(job_path: str) -> None:
     params = _params_from_dict(job["params"])
     region = job.get("region_um")
     region_um = tuple(region) if region is not None else None
+
+    # Cap the numba solve to leave the executing machine some cores, and drop
+    # this child below interactive priority. This process is dedicated to the
+    # solve, so both are safe here — and it's the entry point the SSH remote
+    # host and the nereid server run too, so their desktops don't freeze either
+    # (the GPU/CuPy path ignores the numba cap, and renice never hurts it).
+    limit_solver_threads(renice=True)
 
     sim = build_simulation(document, params, region_um=region_um)
     # Stream progress out as stdout markers; the parent (local subprocess or
