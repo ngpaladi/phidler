@@ -12,6 +12,7 @@ from phidler.fdtd_sim import (
     effective_clad_thickness_um,
     estimate_grid_cell_count,
     estimate_run_seconds,
+    limit_solver_threads,
     mode_confinement,
     nearest_z_index,
     photon_energy_ev_from_wavelength_um,
@@ -568,3 +569,24 @@ def test_nearest_z_index_finds_mid_core_height(qapp):
     assert 0 <= idx < sim.grid.shape[2]
     # at mid-core height, the z coordinate found should be close to 0
     assert abs(sim.grid.coords[2][idx]) < sim.grid.cell_size[2]
+
+
+def test_limit_solver_threads_leaves_cores_free():
+    # The solver thread cap is what keeps a CPU-bound numba run from pinning
+    # every core and freezing the desktop. It must always leave headroom (never
+    # request more than cpu_count) and never return a nonsense count.
+    import os
+
+    n = limit_solver_threads(renice=False)
+    cpu = os.cpu_count() or 2
+    assert n >= 1
+    assert n <= cpu
+    # On a machine with cores to spare it should actually reserve some.
+    if cpu > 2:
+        assert n < cpu
+
+
+def test_limit_solver_threads_applies_to_numba_when_present():
+    numba = pytest.importorskip("numba")
+    applied = limit_solver_threads(renice=False)
+    assert numba.get_num_threads() == applied

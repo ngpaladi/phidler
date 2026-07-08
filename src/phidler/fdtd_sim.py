@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -778,6 +779,47 @@ def build_simulation(
     )
 
     return sim
+
+
+# Logical cores to leave free for the rest of the machine while a solve runs.
+# photonfdtd's numba kernel is @njit(parallel=True) and grabs one thread per
+# logical core by default; on the in-process (CPU/numba) path that shares the
+# GUI process, pinning *every* core starves the compositor and window manager
+# and freezes the whole desktop for the run's duration — everything locks up
+# but the (hardware) mouse cursor still moves. Reserving a couple of cores keeps
+# the desktop (and, on the SSH/nereid path, the remote box) usable for a small,
+# sub-linear hit to solve throughput. See panels.fdtd_window / fdtd_subprocess.
+_SOLVER_RESERVED_CORES = 2
+
+
+def limit_solver_threads(renice: bool = False) -> int:
+    """Cap the numba solve to leave ``_SOLVER_RESERVED_CORES`` logical cores
+    free so a CPU-bound run can't pin every core and freeze the machine. Returns
+    the thread count applied (always >= 1).
+
+    Call once before each solve on every path that runs numba locally to the
+    executing machine — the in-process worker *and* the subprocess entry point
+    (which is also what runs on the SSH remote host and the nereid server).
+    ``numba.set_num_threads`` re-applies per run (numba only creates its pool
+    once, so setting it at import time wouldn't stick across the app's lifetime).
+
+    Best-effort: a no-op if numba isn't importable. ``renice`` (POSIX only, for
+    the dedicated child process where lowering the whole process is safe) also
+    drops the caller below interactive priority so the desktop wins any
+    remaining CPU contention; harmless/ignored where unsupported."""
+    n_threads = max(1, (os.cpu_count() or 2) - _SOLVER_RESERVED_CORES)
+    try:
+        import numba
+
+        numba.set_num_threads(n_threads)
+    except Exception:  # numba absent (plain-NumPy engine) or set_num_threads unavailable
+        pass
+    if renice:
+        try:
+            os.nice(10)  # only lowers priority; a discarded child never needs it restored
+        except (AttributeError, OSError):  # no os.nice (Windows) or not permitted
+            pass
+    return n_threads
 
 
 def run_simulation(sim: Any) -> Any:
