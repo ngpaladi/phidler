@@ -346,6 +346,66 @@ def _push_bundle(alias: str, local_tmp: Path, remote_dir: str) -> None:
                f"Uploading {name}")
 
 
+# gdsfactory (a phidler dependency) supports Python 3.11–3.13, and the distro's
+# bare `python3` is often outside that (e.g. 3.10 on Ubuntu 22.04), which makes
+# the remote pip install fail with "No matching distribution found for
+# gdsfactory". Prefer an explicitly-versioned interpreter in that range.
+_SUPPORTED_PYTHONS = ("python3.13", "python3.12", "python3.11")
+_SUPPORTED_MINORS = {"3.11", "3.12", "3.13"}
+
+
+def _remote_python_minor(alias: str, python_cmd: str) -> str:
+    """The remote interpreter's 'X.Y' version (last output line, so a shell
+    banner doesn't fool it), or '' if it can't run (e.g. no such venv yet)."""
+    probe = f"{python_cmd} -c 'import sys;print(\"%d.%d\" % sys.version_info[:2])'"
+    r = _ssh(alias, probe, timeout=_CONNECT_TIMEOUT_S)
+    if r.returncode != 0:
+        return ""
+    lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+    return lines[-1] if lines else ""
+
+
+def _pick_remote_python(alias: str, on_line: Callable[[str], None]) -> str | None:
+    """Newest gdsfactory-compatible interpreter (3.11–3.13) on the remote to
+    build the venv from, or None with a clear message. Tries the versioned
+    names first (the bare `python3` is often too old), then `python3` if it
+    happens to be in range."""
+    for name in _SUPPORTED_PYTHONS:
+        r = _ssh(alias, f"command -v {shlex.quote(name)}", timeout=_CONNECT_TIMEOUT_S)
+        if r.returncode == 0 and (r.stdout or "").strip():
+            return name
+    ver = _remote_python_minor(alias, "python3")
+    if ver in _SUPPORTED_MINORS:
+        return "python3"
+    on_line(
+        f"The remote's Python is {ver or 'unavailable'}, but gdsfactory needs 3.11–3.13. "
+        "Install a newer Python on the remote (e.g. `python3.12`) or set an explicit "
+        "Remote Python (a venv on a supported Python) under Advanced."
+    )
+    return None
+
+
+def _ensure_remote_venv(alias: str, venv_dir: str, on_line: Callable[[str], None]) -> bool:
+    """Ensure a gdsfactory-compatible venv exists at ``venv_dir`` and its pip is
+    current. Reuses an existing venv already on a supported Python; otherwise
+    (re)builds it with the newest suitable remote interpreter — rebuilding
+    matters when an earlier setup left a venv on an unsupported Python (e.g.
+    3.10) that would keep failing to install gdsfactory. Returns True on success."""
+    rpy = _remote_path(f"{venv_dir}/bin/python")
+    if _remote_python_minor(alias, rpy) in _SUPPORTED_MINORS:
+        return True  # a usable venv is already there
+    py = _pick_remote_python(alias, on_line)
+    if py is None:
+        return False
+    on_line(f"Creating a Python venv on the remote with {py} …")
+    rc = _ssh_stream(alias, f"rm -rf {_remote_path(venv_dir)} && {py} -m venv {_remote_path(venv_dir)}", on_line)
+    if rc != 0:
+        on_line(f"Could not create the remote venv with {py} (is its venv module installed?).")
+        return False
+    _ssh_stream(alias, f"{rpy} -m pip install --upgrade pip", on_line)
+    return True
+
+
 def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
     """One-time setup: rsync the local phidler + photonfdtd source checkouts to
     the remote and `pip install -e` both into the remote Python's environment,
@@ -382,16 +442,12 @@ def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
     base = _remote_path(remote_dir)  # leading ~ still expands; rest quoted
 
     # With the managed default interpreter, create the venv if it isn't there
-    # yet (so the user never has to set one up by hand). A user-supplied
-    # remote_python is assumed to already exist and is left untouched.
+    # yet (so the user never has to set one up by hand), picking a
+    # gdsfactory-compatible Python. A user-supplied remote_python is assumed to
+    # already exist and is left untouched.
     if cfg.uses_managed_venv():
-        venv_dir = _remote_path(f"{remote_dir}/.venv")
-        on_line("Ensuring a Python venv on the remote …")
-        rc = _ssh_stream(cfg.alias, f"test -x {rpy} || python3 -m venv {venv_dir}", on_line)
-        if rc != 0:
-            on_line("Could not create the remote venv (need python3 with the venv module).")
+        if not _ensure_remote_venv(cfg.alias, f"{remote_dir}/.venv", on_line):
             return False
-        _ssh_stream(cfg.alias, f"{rpy} -m pip install --upgrade pip", on_line)
 
     # Upload the local checkouts: always phidler, plus photonfdtd only when a
     # local override is set (otherwise it comes from GitHub, nothing to upload).

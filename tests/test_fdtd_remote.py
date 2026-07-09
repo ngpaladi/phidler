@@ -48,6 +48,15 @@ class FakeTransport:
             return _cp(0, stdout=REMOTE_DIR + "\n")
         if "fdtd_subprocess" in remote_cmd:
             return _cp(1, stderr="Traceback\nRuntimeError: boom\n") if self.fail_run else _cp(0)
+        # A typical server: bare `python3` is too old for gdsfactory, but a
+        # versioned python3.12 is available for the venv.
+        if remote_cmd.startswith("command -v "):
+            wanted = remote_cmd.split()[-1].strip("'\"")
+            return _cp(0, stdout=f"/usr/bin/{wanted}\n") if wanted == "python3.12" else _cp(1)
+        if "sys.version_info" in remote_cmd:
+            if ".venv/bin/python" in remote_cmd:
+                return _cp(1)  # the managed venv doesn't exist yet
+            return _cp(0, stdout="3.10\n")  # distro python3 too old
         return _cp(0, stdout="ok\n")  # mkdir, rm -rf, import-check
 
     def scp(self, src, dst):
@@ -228,8 +237,10 @@ def test_deploy_creates_a_venv_for_a_bare_host(monkeypatch):
     ok = fr.deploy_to_remote(RemoteConfig(alias="gpubox"), [].append)
 
     assert ok is True
-    venv_cmds = [c for c in t.stream_cmds if "python3 -m venv" in c]
-    assert len(venv_cmds) == 1 and "~/phidler-remote/.venv" in venv_cmds[0]
+    # built the venv with a gdsfactory-compatible python (3.12), not the old python3
+    venv_cmds = [c for c in t.stream_cmds if "-m venv" in c]
+    assert len(venv_cmds) == 1
+    assert "python3.12 -m venv" in venv_cmds[0] and "~/phidler-remote/.venv" in venv_cmds[0]
     # installs use the created venv's interpreter
     assert any("phidler-remote/.venv/bin/python -m pip install -e" in c for c in t.stream_cmds)
 
@@ -463,3 +474,60 @@ def test_run_survives_a_chatty_login_shell_banner(qapp, monkeypatch):
     fr.run_on_remote(_doc(), FdtdParams(), None, _cfg())
     run_cmd = next(c for c in t.stream_cmds if "fdtd_subprocess" in c)
     assert REMOTE_DIR in run_cmd  # used the real dir, not the banner text
+
+
+# -- gdsfactory-compatible remote Python selection --------------------------
+
+def test_pick_remote_python_prefers_a_versioned_interpreter(monkeypatch):
+    def ssh(alias, cmd, timeout=None):
+        if cmd.startswith("command -v"):
+            return _cp(0, "/usr/bin/python3.12\n") if "python3.12" in cmd else _cp(1)
+        return _cp(0, "3.10\n")  # bare python3 is too old
+    monkeypatch.setattr(fr, "_ssh", ssh)
+    assert fr._pick_remote_python("h", lambda s: None) == "python3.12"
+
+
+def test_pick_remote_python_uses_python3_when_in_range(monkeypatch):
+    def ssh(alias, cmd, timeout=None):
+        if cmd.startswith("command -v"):
+            return _cp(1)  # no versioned names present
+        return _cp(0, "3.11\n")  # but python3 itself is 3.11
+    monkeypatch.setattr(fr, "_ssh", ssh)
+    assert fr._pick_remote_python("h", lambda s: None) == "python3"
+
+
+def test_pick_remote_python_reports_when_none_is_new_enough(monkeypatch):
+    def ssh(alias, cmd, timeout=None):
+        if cmd.startswith("command -v"):
+            return _cp(1)
+        return _cp(0, "3.10\n")  # only an out-of-range python3
+    monkeypatch.setattr(fr, "_ssh", ssh)
+    lines = []
+    assert fr._pick_remote_python("h", lines.append) is None
+    assert any("3.11" in ln and "3.13" in ln for ln in lines)  # message states the required range
+
+
+def test_ensure_remote_venv_reuses_a_compatible_existing_venv(monkeypatch):
+    def ssh(alias, cmd, timeout=None):
+        if "sys.version_info" in cmd and ".venv/bin/python" in cmd:
+            return _cp(0, "3.12\n")  # an existing venv on a supported python
+        return _cp(0, "")
+    monkeypatch.setattr(fr, "_ssh", ssh)
+    streamed = []
+    monkeypatch.setattr(fr, "_ssh_stream", lambda a, c, cb: streamed.append(c) or 0)
+    assert fr._ensure_remote_venv("h", "~/d/.venv", lambda s: None) is True
+    assert not any("venv" in c for c in streamed)  # nothing rebuilt
+
+
+def test_ensure_remote_venv_fails_clearly_when_python_too_old(monkeypatch):
+    def ssh(alias, cmd, timeout=None):
+        if cmd.startswith("command -v"):
+            return _cp(1)  # no versioned python
+        if "sys.version_info" in cmd:
+            return _cp(1) if ".venv/bin/python" in cmd else _cp(0, "3.10\n")
+        return _cp(0, "")
+    monkeypatch.setattr(fr, "_ssh", ssh)
+    monkeypatch.setattr(fr, "_ssh_stream", lambda a, c, cb: 0)
+    lines = []
+    assert fr._ensure_remote_venv("h", "~/d/.venv", lines.append) is False
+    assert any("gdsfactory needs 3.11" in ln for ln in lines)
