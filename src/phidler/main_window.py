@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
@@ -26,11 +27,16 @@ from phidler.custom_components import load_custom_components
 from phidler.drc import run_drc
 from phidler.export_script import export_python_script
 from phidler.import_script import load_python_script
+from phidler.model.annotation import CalloutShape
 from phidler.model.commands import (
+    AddAnnotationCommand,
+    AddCalloutCommand,
     AddInstanceCommand,
     AddRouteCommand,
+    DeleteAnnotationCommand,
     DeleteInstanceCommand,
     DeleteRouteCommand,
+    EditAnnotationTextCommand,
     EditParamsCommand,
     MoveInstanceCommand,
     SetArrayCommand,
@@ -93,6 +99,10 @@ class MainWindow(QMainWindow):
         self.view.cursor_position_changed.connect(self._on_cursor_position_changed)
         self.view.placement_armed_changed.connect(self._on_placement_armed_changed)
         self.view.route_pick_cancelled.connect(self._on_route_pick_cancelled)
+        self.view.annotate_mode_changed.connect(self._on_annotate_mode_changed)
+        self.view.note_requested.connect(self._on_note_requested)
+        self.view.callout_requested.connect(self._on_callout_requested)
+        self.view.annotation_edit_requested.connect(self._on_annotation_edit_requested)
         self.scene.selectionChanged.connect(self._on_selection_changed)
         self.scene.port_clicked.connect(self._on_port_clicked)
 
@@ -428,6 +438,32 @@ class MainWindow(QMainWindow):
         )
         self.measure_action.toggled.connect(self.view.set_measure_mode)
 
+        # Annotation tools: a pinned text note, and two callout drawings that
+        # point out what a note is about. Each is a checkable mode; toggling one
+        # sets the view's annotate mode, and _on_annotate_mode_changed keeps the
+        # three buttons mutually exclusive and in sync with Esc/other tools.
+        toolbar = QToolBar("Annotate")
+        self.addToolBar(toolbar)
+
+        self.note_action = toolbar.addAction("Add Note")
+        self.note_action.setCheckable(True)
+        self.note_action.setToolTip("Click on the canvas to drop a text note. Double-click a note to edit it. (Esc to exit)")
+        self.note_action.toggled.connect(lambda on: self.view.set_annotate_mode("note" if on else ""))
+
+        self.callout_box_action = toolbar.addAction("Draw Box")
+        self.callout_box_action.setCheckable(True)
+        self.callout_box_action.setToolTip(
+            "Select a note, then drag a rectangle to mark the region it's about. (Esc to exit)"
+        )
+        self.callout_box_action.toggled.connect(lambda on: self.view.set_annotate_mode("box" if on else ""))
+
+        self.callout_arrow_action = toolbar.addAction("Draw Arrow")
+        self.callout_arrow_action.setCheckable(True)
+        self.callout_arrow_action.setToolTip(
+            "Select a note, then drag an arrow from it to the thing it points at. (Esc to exit)"
+        )
+        self.callout_arrow_action.toggled.connect(lambda on: self.view.set_annotate_mode("arrow" if on else ""))
+
         toolbar = QToolBar("Routing")
         self.addToolBar(toolbar)
 
@@ -747,10 +783,29 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Placed {component_spec} (instance #{command.inst_id})", 3000)
 
     def _selected_instance_ids(self) -> list[int]:
-        return [item.inst_id for item in self.scene.selectedItems() if not item.is_route]
+        # Filter by document membership (not item.is_route): the selection can
+        # also hold routes, the reference backdrop, and annotation items, whose
+        # ids aren't instance ids. Ids are unique across families (shared
+        # counter), so membership is an exact test.
+        return [
+            item.inst_id
+            for item in self.scene.selectedItems()
+            if getattr(item, "inst_id", None) in self.document.instances
+        ]
 
     def _selected_route_ids(self) -> list[int]:
-        return [item.inst_id for item in self.scene.selectedItems() if item.is_route]
+        return [
+            item.inst_id
+            for item in self.scene.selectedItems()
+            if getattr(item, "inst_id", None) in self.document.routes
+        ]
+
+    def _selected_annotation_ids(self) -> list[int]:
+        return [
+            item.ann_id
+            for item in self.scene.selectedItems()
+            if getattr(item, "ann_id", None) in self.document.annotations
+        ]
 
     def _on_routing_mode_changed(self, enabled: bool) -> None:
         self.route_action.setChecked(enabled)
@@ -782,6 +837,50 @@ class MainWindow(QMainWindow):
         start port to match and hint that a second Esc exits routing mode."""
         self._pending_route_port = None
         self.statusBar().showMessage("Route cancelled — pick a start port (Esc again to exit routing)", 3000)
+
+    # -- annotations (notes + callouts) -------------------------------------
+
+    def _on_annotate_mode_changed(self, mode: str) -> None:
+        """Keep the three annotate toolbar buttons mutually exclusive and in
+        sync with the view (which is the source of truth — Esc or another tool
+        can clear the mode without going through a button)."""
+        self.note_action.setChecked(mode == "note")
+        self.callout_box_action.setChecked(mode == "box")
+        self.callout_arrow_action.setChecked(mode == "arrow")
+        hints = {
+            "note": "Add note: click on the canvas to place it",
+            "box": "Draw box: select a note, then drag a rectangle around what it's about",
+            "arrow": "Draw arrow: select a note, then drag an arrow to what it points at",
+        }
+        if mode in hints:
+            self.statusBar().showMessage(hints[mode], 4000)
+
+    def _on_note_requested(self, x: float, y: float) -> None:
+        text, ok = QInputDialog.getMultiLineText(self, "Add note", "Note text:", "")
+        if not ok or not text.strip():
+            return
+        self.undo_stack.push(AddAnnotationCommand(self.document, self.scene, text.strip(), x, y))
+
+    def _on_callout_requested(self, kind: str, x0: float, y0: float, x1: float, y1: float) -> None:
+        ann_ids = self._selected_annotation_ids()
+        if len(ann_ids) != 1:
+            self.statusBar().showMessage("Select exactly one note first, then draw its callout.", 4000)
+            return
+        ann_id = ann_ids[0]
+        ann = self.document.annotations[ann_id]
+        # Store the drag relative to the note's pin so the callout moves with it.
+        shape = CalloutShape(kind=kind, points=[(x0 - ann.x, y0 - ann.y), (x1 - ann.x, y1 - ann.y)])
+        self.undo_stack.push(AddCalloutCommand(self.document, self.scene, ann_id, shape))
+        self.statusBar().showMessage(f"Added {kind} callout to note #{ann_id}", 2000)
+
+    def _on_annotation_edit_requested(self, ann_id: int) -> None:
+        ann = self.document.annotations.get(ann_id)
+        if ann is None:
+            return
+        text, ok = QInputDialog.getMultiLineText(self, "Edit note", "Note text:", ann.text)
+        if not ok or text.strip() == ann.text:
+            return
+        self.undo_stack.push(EditAnnotationTextCommand(self.document, self.scene, ann_id, ann.text, text.strip()))
 
     def _on_port_clicked(self, inst_id: int, port_name: str) -> None:
         if self._pending_route_port is None:
@@ -924,7 +1023,8 @@ class MainWindow(QMainWindow):
     def _delete_selected(self) -> None:
         inst_ids = self._selected_instance_ids()
         route_ids = self._selected_route_ids()
-        if not inst_ids and not route_ids:
+        annotation_ids = self._selected_annotation_ids()
+        if not inst_ids and not route_ids and not annotation_ids:
             return
         # Routes must be pushed before instances: QUndoStack undoes a
         # macro's children in reverse push order, so this way undo restores
@@ -938,8 +1038,12 @@ class MainWindow(QMainWindow):
             self.undo_stack.push(DeleteRouteCommand(self.document, self.scene, route_id))
         for inst_id in inst_ids:
             self.undo_stack.push(DeleteInstanceCommand(self.document, self.scene, inst_id))
+        for ann_id in annotation_ids:  # notes are independent, so order vs the above doesn't matter
+            self.undo_stack.push(DeleteAnnotationCommand(self.document, self.scene, ann_id))
         self.undo_stack.endMacro()
-        self.statusBar().showMessage(f"Deleted {len(inst_ids)} instance(s), {len(route_ids)} route(s)", 2000)
+        self.statusBar().showMessage(
+            f"Deleted {len(inst_ids)} instance(s), {len(route_ids)} route(s), {len(annotation_ids)} note(s)", 2000
+        )
 
     def _rotate_selected(self) -> None:
         ids = self._selected_instance_ids()
@@ -1223,6 +1327,7 @@ class MainWindow(QMainWindow):
             self.scene.remove_instance_item(inst_id)
         for route_id in route_ids:
             self.scene.remove_route_item(route_id)
+        self.scene.clear_annotation_items()  # clear_all() emptied the notes; drop their items too
         self.scene.clear_reference_item()
         self.scene.clear_drc_violations()
         self.undo_stack.clear()

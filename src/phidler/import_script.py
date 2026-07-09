@@ -277,6 +277,7 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
         scene.remove_instance_item(inst_id)
     for route_id in removed_route_ids:
         scene.remove_route_item(route_id)
+    scene.clear_annotation_items()  # clear_all() emptied the notes; drop their items too
     scene.clear_reference_item()
 
     var_to_id: dict[str, int] = {}

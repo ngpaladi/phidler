@@ -201,6 +201,12 @@ class _NullScene:
     def show_reference(self, *a, **k):
         pass
 
+    def add_annotation_item(self, *a, **k):
+        pass
+
+    def clear_annotation_items(self, *a, **k):
+        pass
+
 
 def _run_job(job_path: str) -> None:
     """Child-process entry point: rebuild the document from the saved project,

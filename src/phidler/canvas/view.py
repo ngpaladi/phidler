@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
     QGraphicsLineItem,
+    QGraphicsRectItem,
     QGraphicsSimpleTextItem,
     QGraphicsView,
 )
@@ -79,6 +80,12 @@ class LayoutView(QGraphicsView):
     context_menu_requested = Signal(QPoint)  # viewport-pixel position
     cursor_position_changed = Signal(float, float)  # scene x, y in microns
     route_pick_cancelled = Signal()  # Esc dropped a half-finished route's start port
+    # Annotation tools (notes + callouts). annotate_mode is "" | "note" | "box"
+    # | "arrow"; the requests carry scene µm for the window to turn into commands.
+    annotate_mode_changed = Signal(str)
+    note_requested = Signal(float, float)  # note pin x, y
+    callout_requested = Signal(str, float, float, float, float)  # kind, x0, y0, x1, y1
+    annotation_edit_requested = Signal(int)  # ann_id (double-clicked)
 
     def __init__(self, scene: LayoutScene, parent=None, undo_stack: QUndoStack | None = None) -> None:
         super().__init__(scene, parent)
@@ -103,6 +110,10 @@ class LayoutView(QGraphicsView):
         self._measure_items: list = []  # current annotation's QGraphicsItems
         self.source_mode = False
         self._source_markers: list = []  # accumulates across clicks, unlike measure mode
+        # Annotation drawing state: current tool and the in-progress callout drag.
+        self.annotate_mode = ""  # "" | "note" | "box" | "arrow"
+        self._callout_start: QPointF | None = None
+        self._callout_preview: QGraphicsItem | None = None
         # Routing feedback: a highlight over the port the cursor would snap to,
         # and a rubber-band track from the first picked port to the cursor.
         self._route_anchor: QPointF | None = None
@@ -125,6 +136,7 @@ class LayoutView(QGraphicsView):
         if enabled:
             self.set_measure_mode(False)
             self.set_source_mode(False)
+            self.set_annotate_mode("")
         self.scene().routing_mode = enabled
         self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
         if not enabled:
@@ -198,6 +210,7 @@ class LayoutView(QGraphicsView):
         if enabled:
             self.set_routing_mode(False)
             self.set_source_mode(False)
+            self.set_annotate_mode("")
             self.cancel_placement()
         else:
             self._clear_measurement()
@@ -217,6 +230,7 @@ class LayoutView(QGraphicsView):
         if enabled:
             self.set_routing_mode(False)
             self.set_measure_mode(False)
+            self.set_annotate_mode("")
             self.cancel_placement()
         self.source_mode = enabled
         self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
@@ -250,6 +264,45 @@ class LayoutView(QGraphicsView):
         raw_scene_pt = self.mapToScene(viewport_pos)
         scene_pt = self._nearest_port_scene_point(raw_scene_pt) or raw_scene_pt
         self.source_placement_requested.emit(scene_pt.x(), scene_pt.y())
+
+    # -- annotation modes (notes + callouts) --------------------------------
+
+    def set_annotate_mode(self, mode: str) -> None:
+        """Enter a note/callout tool, or "" to leave. "note" drops a pinned
+        note on click; "box"/"arrow" drag a callout onto the selected note.
+        Mutually exclusive with the other click-to-act modes, same as they are
+        with each other."""
+        mode = mode or ""
+        if mode:
+            self.set_routing_mode(False)
+            self.set_measure_mode(False)
+            self.set_source_mode(False)
+            self.cancel_placement()
+        self._cancel_callout_draw()
+        self.annotate_mode = mode
+        self.setCursor(Qt.CrossCursor if mode else Qt.ArrowCursor)
+        self.annotate_mode_changed.emit(mode)
+
+    def _update_callout_preview(self, end: QPointF) -> None:
+        if self._callout_start is None:
+            return
+        start = self._callout_start
+        if self._callout_preview is None:
+            item = QGraphicsRectItem() if self.annotate_mode == "box" else QGraphicsLineItem()
+            item.setPen(QPen(QColor("#f4b400"), 0, Qt.DashLine))
+            item.setZValue(2400.0)
+            self.scene().addItem(item)
+            self._callout_preview = item
+        if isinstance(self._callout_preview, QGraphicsRectItem):
+            self._callout_preview.setRect(QRectF(start, end).normalized())
+        else:
+            self._callout_preview.setLine(start.x(), start.y(), end.x(), end.y())
+
+    def _cancel_callout_draw(self) -> None:
+        self._callout_start = None
+        if self._callout_preview is not None:
+            self.scene().removeItem(self._callout_preview)
+            self._callout_preview = None
 
     def _clear_measurement(self) -> None:
         for item in self._measure_items:
@@ -357,6 +410,12 @@ class LayoutView(QGraphicsView):
         if self.source_mode:
             self.set_source_mode(False)
             return True
+        if self._callout_start is not None:
+            self._cancel_callout_draw()  # drop a half-drawn callout, stay in the tool
+            return True
+        if self.annotate_mode:
+            self.set_annotate_mode("")
+            return True
         return False
 
     def keyPressEvent(self, event) -> None:
@@ -364,6 +423,19 @@ class LayoutView(QGraphicsView):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        # Double-clicking a note edits its text. itemAt may land on the note's
+        # text child, so fall back to its parent for the ann_id.
+        item = self.itemAt(event.position().toPoint())
+        ann_id = getattr(item, "ann_id", None)
+        if ann_id is None and item is not None:
+            ann_id = getattr(item.parentItem(), "ann_id", None)
+        if ann_id is not None:
+            self.annotation_edit_requested.emit(ann_id)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def contextMenuEvent(self, event) -> None:
         self.context_menu_requested.emit(event.pos())
@@ -403,6 +475,18 @@ class LayoutView(QGraphicsView):
             self._handle_source_click(event.position().toPoint())
             event.accept()
             return
+        if self.annotate_mode == "note" and event.button() == Qt.LeftButton:
+            scene_pt = self.mapToScene(event.position().toPoint())
+            self.note_requested.emit(self.snap(scene_pt.x()), self.snap(scene_pt.y()))
+            event.accept()
+            return
+        if self.annotate_mode in ("box", "arrow") and event.button() == Qt.LeftButton:
+            # Start a callout drag; accept so RubberBandDrag doesn't also engage.
+            scene_pt = self.mapToScene(event.position().toPoint())
+            self._callout_start = QPointF(self.snap(scene_pt.x()), self.snap(scene_pt.y()))
+            self._update_callout_preview(self._callout_start)
+            event.accept()
+            return
         if self.scene().routing_mode and event.button() == Qt.LeftButton:
             # Handle routing clicks here, zoom-aware, rather than relying on a
             # click landing on an instance item's thin geometry within a fixed
@@ -439,6 +523,11 @@ class LayoutView(QGraphicsView):
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(delta.y()))
             event.accept()
             return
+        if self._callout_start is not None and (event.buttons() & Qt.LeftButton):
+            scene_pt = self.mapToScene(QPoint(int(pos.x()), int(pos.y())))
+            self._update_callout_preview(QPointF(self.snap(scene_pt.x()), self.snap(scene_pt.y())))
+            event.accept()
+            return
         if self.scene().routing_mode:
             scene_pt = self.mapToScene(QPoint(int(pos.x()), int(pos.y())))
             snap_pt = self._update_hover_port(scene_pt)
@@ -470,6 +559,17 @@ class LayoutView(QGraphicsView):
         if event.button() == Qt.MiddleButton and self._panning:
             self._panning = False
             self.setCursor(Qt.ArrowCursor)
+            event.accept()
+            return
+        if self._callout_start is not None and event.button() == Qt.LeftButton:
+            scene_pt = self.mapToScene(event.position().toPoint())
+            end = QPointF(self.snap(scene_pt.x()), self.snap(scene_pt.y()))
+            start = self._callout_start
+            kind = self.annotate_mode
+            self._cancel_callout_draw()
+            # Ignore a zero-size drag (a stray click) — nothing to point at.
+            if abs(end.x() - start.x()) > 1e-6 or abs(end.y() - start.y()) > 1e-6:
+                self.callout_requested.emit(kind, start.x(), start.y(), end.x(), end.y())
             event.accept()
             return
         super().mouseReleaseEvent(event)

@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsScene
 
 from phidler.model.document import LayoutDocument
 
+from .annotation_item import AnnotationItem
 from .polygon_item import InstanceItem
 
 _VIOLATION_PEN = QPen(QColor("#ff0000"), 0)
@@ -37,6 +38,7 @@ class LayoutScene(QGraphicsScene):
         self.document = document
         self.items_by_inst: dict[int, InstanceItem] = {}
         self.route_items: dict[int, InstanceItem] = {}
+        self.annotation_items: dict[int, AnnotationItem] = {}
         self.reference_item: InstanceItem | None = None
         self._dirty_inst_ids: set[int] = set()
         self.routing_mode = False
@@ -80,6 +82,29 @@ class LayoutScene(QGraphicsScene):
         if item is not None:
             self.removeItem(item)
 
+    def add_annotation_item(self, ann_id: int) -> AnnotationItem:
+        item = AnnotationItem(ann_id)
+        item.sync_from_document(self.document)
+        self.addItem(item)
+        self.annotation_items[ann_id] = item
+        return item
+
+    def remove_annotation_item(self, ann_id: int) -> None:
+        item = self.annotation_items.pop(ann_id, None)
+        if item is not None:
+            self.removeItem(item)
+
+    def refresh_annotation_item(self, ann_id: int) -> None:
+        """Re-pull a note's text/position/callouts after an edit, move, or
+        callout add (mirrors resync_geometry for instances)."""
+        item = self.annotation_items.get(ann_id)
+        if item is not None:
+            item.sync_from_document(self.document)
+
+    def clear_annotation_items(self) -> None:
+        for ann_id in list(self.annotation_items):
+            self.remove_annotation_item(ann_id)
+
     def show_reference(self) -> None:
         self.clear_reference_item()
         item = InstanceItem(-1, movable=False, selectable=False)
@@ -99,6 +124,7 @@ class LayoutScene(QGraphicsScene):
             self.remove_instance_item(inst_id)
         for route_id in list(self.route_items):
             self.remove_route_item(route_id)
+        self.clear_annotation_items()
         self.clear_reference_item()
         self.clear_drc_violations()
 

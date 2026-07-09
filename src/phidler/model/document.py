@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import gdsfactory as gf
 import klayout.db as kdb
 
+from .annotation import DEFAULT_ANNOTATION_COLOR, Annotation, CalloutShape
 from .layers import LayerInfo, LayerKey, layer_info_for
 from .placed_instance import ArraySpec, PlacedInstance, PlacedRoute
 
@@ -173,6 +174,11 @@ class LayoutDocument:
         self.top: gf.Component = gf.Component()
         self.instances: dict[int, PlacedInstance] = {}
         self.routes: dict[int, PlacedRoute] = {}
+        # Text notes + their callout drawings (a markup layer, never fabricated
+        # — kept out of self.top like the reference backdrop). Keyed by the same
+        # shared id counter as instances/routes, so ids never collide across
+        # families. See model/annotation.py.
+        self.annotations: dict[int, Annotation] = {}
         # Starts empty rather than pre-seeded with the active PDK's full ~47
         # layer map: layer_info_for() (called wherever geometry is actually
         # extracted) adds an entry the first time a layer is encountered,
@@ -781,18 +787,67 @@ class LayoutDocument:
             return {}
         return self._shapes_for_cell(self.reference)
 
+    # -- annotations (notes + callout drawings) -----------------------------
+
+    def add_annotation(
+        self,
+        text: str,
+        x: float,
+        y: float,
+        shapes: list[CalloutShape] | None = None,
+        color: str = DEFAULT_ANNOTATION_COLOR,
+        ann_id: int | None = None,
+    ) -> Annotation:
+        """Create a note pinned at ``(x, y)`` (µm). ``ann_id`` is supplied on
+        load/redo so a re-created note keeps its id (mirrors add_instance/
+        add_route); otherwise a fresh id is drawn from the shared counter."""
+        ann = Annotation(
+            id=ann_id if ann_id is not None else self.next_id(),
+            text=text,
+            x=x,
+            y=y,
+            shapes=list(shapes) if shapes else [],
+            color=color,
+        )
+        self.annotations[ann.id] = ann
+        return ann
+
+    def remove_annotation(self, ann_id: int) -> Annotation:
+        return self.annotations.pop(ann_id)
+
+    def restore_annotation(self, annotation: Annotation) -> None:
+        """Re-insert a previously-removed note (used by delete-undo), keeping
+        its object identity — and thus its shapes and id — intact."""
+        self.annotations[annotation.id] = annotation
+
+    def set_annotation_position(self, ann_id: int, x: float, y: float) -> None:
+        ann = self.annotations[ann_id]
+        ann.x, ann.y = x, y
+
+    def set_annotation_text(self, ann_id: int, text: str) -> None:
+        self.annotations[ann_id].text = text
+
+    def add_annotation_shape(self, ann_id: int, shape: CalloutShape) -> None:
+        self.annotations[ann_id].shapes.append(shape)
+
+    def remove_annotation_shape(self, ann_id: int, shape: CalloutShape) -> None:
+        self.annotations[ann_id].shapes.remove(shape)
+
     # -- whole-document reset (File > New, or before loading a project) -----
 
     def clear_all(self) -> tuple[list[int], list[int]]:
         """Removes every instance and route. Returns (removed_instance_ids,
         removed_route_ids) so the caller (which also owns the Qt scene
-        items) can remove the matching graphics items."""
+        items) can remove the matching graphics items. Annotations are cleared
+        too; the scene drops their items via clear_annotation_items() since they
+        aren't part of the returned tuple."""
         removed_instance_ids = list(self.instances)
         removed_route_ids = list(self.routes)
         for route_id in removed_route_ids:
             self.remove_route(route_id)
         for inst_id in removed_instance_ids:
             self.remove_instance(inst_id)
+        self.annotations.clear()
         self.clear_reference()
         self.custom_component_paths = []
         self.simulation_config = None

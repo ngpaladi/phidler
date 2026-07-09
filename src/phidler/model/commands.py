@@ -4,6 +4,7 @@ from typing import Any
 
 from PySide6.QtGui import QUndoCommand
 
+from .annotation import Annotation, CalloutShape
 from .document import LayoutDocument, Transform
 from .placed_instance import ArraySpec
 
@@ -301,3 +302,121 @@ class DeleteRouteCommand(QUndoCommand):
             self.error = exc
             return
         self.scene.add_route_item(self.route_id)
+
+
+# -- annotations (notes + callout drawings) --------------------------------
+#
+# These are pure-data (no live gdsfactory/klayout objects), so — unlike
+# AddInstanceCommand/AddRouteCommand — creation can't fail and there's no
+# .error dance: redo/undo just mutate document.annotations and re-sync the
+# matching scene item. Each command re-syncs via scene.refresh_annotation_item
+# (rebuilds the item's text + geometry) or add/remove_annotation_item.
+
+
+class AddAnnotationCommand(QUndoCommand):
+    def __init__(self, document: LayoutDocument, scene, text: str, x: float, y: float, color: str | None = None,
+                 label: str | None = None) -> None:
+        super().__init__(label or "Add note")
+        self.document = document
+        self.scene = scene
+        self.text = text
+        self.x = x
+        self.y = y
+        self.color = color
+        self.ann_id: int | None = None
+
+    def redo(self) -> None:
+        kwargs = {} if self.color is None else {"color": self.color}
+        ann = self.document.add_annotation(self.text, self.x, self.y, ann_id=self.ann_id, **kwargs)
+        self.ann_id = ann.id  # reuse the same id on any later redo (matches add_route)
+        self.scene.add_annotation_item(self.ann_id)
+
+    def undo(self) -> None:
+        if self.ann_id is None:
+            return
+        self.document.remove_annotation(self.ann_id)
+        self.scene.remove_annotation_item(self.ann_id)
+
+
+class DeleteAnnotationCommand(QUndoCommand):
+    def __init__(self, document: LayoutDocument, scene, ann_id: int, label: str | None = None) -> None:
+        super().__init__(label or "Delete note")
+        self.document = document
+        self.scene = scene
+        self.ann_id = ann_id
+        self._removed: Annotation | None = None
+
+    def redo(self) -> None:
+        self._removed = self.document.remove_annotation(self.ann_id)
+        self.scene.remove_annotation_item(self.ann_id)
+
+    def undo(self) -> None:
+        # Restore the same object, so its shapes/color/id all come back intact.
+        self.document.restore_annotation(self._removed)
+        self.scene.add_annotation_item(self.ann_id)
+
+
+class MoveAnnotationCommand(QUndoCommand):
+    """Wraps an already-applied note move (the item was dragged visually) so it
+    joins the undo stack — same shape as MoveInstanceCommand."""
+
+    def __init__(self, document: LayoutDocument, scene, ann_id: int,
+                 old_x: float, old_y: float, new_x: float, new_y: float, label: str | None = None) -> None:
+        super().__init__(label or "Move note")
+        self.document = document
+        self.scene = scene
+        self.ann_id = ann_id
+        self.old_x, self.old_y = old_x, old_y
+        self.new_x, self.new_y = new_x, new_y
+
+    def redo(self) -> None:
+        self._apply(self.new_x, self.new_y)
+
+    def undo(self) -> None:
+        self._apply(self.old_x, self.old_y)
+
+    def _apply(self, x: float, y: float) -> None:
+        self.document.set_annotation_position(self.ann_id, x, y)
+        self.scene.refresh_annotation_item(self.ann_id)
+
+
+class EditAnnotationTextCommand(QUndoCommand):
+    def __init__(self, document: LayoutDocument, scene, ann_id: int, old_text: str, new_text: str,
+                 label: str | None = None) -> None:
+        super().__init__(label or "Edit note text")
+        self.document = document
+        self.scene = scene
+        self.ann_id = ann_id
+        self.old_text = old_text
+        self.new_text = new_text
+
+    def redo(self) -> None:
+        self._apply(self.new_text)
+
+    def undo(self) -> None:
+        self._apply(self.old_text)
+
+    def _apply(self, text: str) -> None:
+        self.document.set_annotation_text(self.ann_id, text)
+        self.scene.refresh_annotation_item(self.ann_id)
+
+
+class AddCalloutCommand(QUndoCommand):
+    """Attach one callout drawing (rect/arrow) to an existing note. The shape's
+    points are already relative to the note's pin (see model/annotation.py)."""
+
+    def __init__(self, document: LayoutDocument, scene, ann_id: int, shape: CalloutShape,
+                 label: str | None = None) -> None:
+        super().__init__(label or f"Add {shape.kind} callout")
+        self.document = document
+        self.scene = scene
+        self.ann_id = ann_id
+        self.shape = shape
+
+    def redo(self) -> None:
+        self.document.add_annotation_shape(self.ann_id, self.shape)
+        self.scene.refresh_annotation_item(self.ann_id)
+
+    def undo(self) -> None:
+        self.document.remove_annotation_shape(self.ann_id, self.shape)
+        self.scene.refresh_annotation_item(self.ann_id)

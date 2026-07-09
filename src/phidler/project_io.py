@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .custom_components import load_custom_components
 from .fdtd_sim import SimulationConfig, SourceSpec
+from .model.annotation import DEFAULT_ANNOTATION_COLOR, CalloutShape
 from .model.document import EtchLayer, LayoutDocument, ProjectSettings
 from .model.layers import LayerInfo
 from .model.placed_instance import ArraySpec
@@ -46,6 +47,9 @@ def save_project(document: LayoutDocument, path: str) -> None:
             for route in document.routes.values()
         ],
         "layers": [asdict(info) for info in document.layers.values()],
+        # Notes + their callout drawings. asdict recurses into the CalloutShape
+        # list, so the whole markup layer serializes in one shot.
+        "annotations": [asdict(ann) for ann in document.annotations.values()],
         "reference_path": document.reference_path,
         "custom_component_paths": document.custom_component_paths,
         "project_settings": asdict(document.project_settings),
@@ -76,6 +80,7 @@ def load_project(path: str, document: LayoutDocument, scene) -> dict[str, Compon
         scene.remove_instance_item(inst_id)
     for route_id in removed_route_ids:
         scene.remove_route_item(route_id)
+    scene.clear_annotation_items()  # clear_all() emptied document.annotations; drop their items too
     scene.clear_reference_item()
 
     # Custom components only exist in the active PDK's cell registry
@@ -132,6 +137,22 @@ def load_project(path: str, document: LayoutDocument, scene) -> dict[str, Compon
         )
         scene.add_route_item(route_data["id"])
         max_id = max(max_id, route_data["id"])
+
+    for ann_data in data.get("annotations", []):  # absent in projects saved before notes -> []
+        shapes = [
+            CalloutShape(kind=s["kind"], points=[tuple(p) for p in s["points"]])
+            for s in ann_data.get("shapes", [])
+        ]
+        document.add_annotation(
+            ann_data["text"],
+            ann_data["x"],
+            ann_data["y"],
+            shapes=shapes,
+            color=ann_data.get("color", DEFAULT_ANNOTATION_COLOR),
+            ann_id=ann_data["id"],
+        )
+        scene.add_annotation_item(ann_data["id"])
+        max_id = max(max_id, ann_data["id"])
 
     for layer_data in data.get("layers", []):
         info = LayerInfo(**layer_data)
