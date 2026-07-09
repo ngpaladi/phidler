@@ -1,7 +1,27 @@
 """The launch window (recent-project picker) and its routing in MainWindow."""
 
+from phidler.app import main, project_file_arg
 from phidler.main_window import MainWindow
 from phidler.panels.startup_dialog import StartupDialog
+
+
+def test_project_file_arg_picks_the_project_by_extension():
+    # No project argument -> None (the startup picker path).
+    assert project_file_arg(["phidler"]) is None
+    assert project_file_arg(["phidler", "-style", "Fusion"]) is None
+    # A .phidler or .py argument is recognised, and Qt options/values around it
+    # (e.g. `-style Fusion`) are ignored rather than mistaken for the project.
+    assert project_file_arg(["phidler", "chip.phidler"]) == "chip.phidler"
+    assert project_file_arg(["phidler", "layout.py"]) == "layout.py"
+    assert project_file_arg(["phidler", "-style", "Fusion", "chip.phidler"]) == "chip.phidler"
+
+
+def test_main_fails_fast_on_a_missing_project_file(capsys):
+    # A bad path is rejected before any Qt/PDK setup, with a nonzero exit and a
+    # clear stderr message — not a GUI error dialog over a blank window.
+    rc = main(["phidler", "/no/such/project.phidler"])
+    assert rc == 2
+    assert "no such project file" in capsys.readouterr().err
 
 
 def test_startup_dialog_lists_recents_and_sets_recent_choice(qapp, tmp_path):

@@ -5,6 +5,11 @@
 # PySide6 wheel, causing an "undefined symbol" crash on import. Prepending
 # PySide6's own Qt lib dir to LD_LIBRARY_PATH makes the linker resolve the
 # matching version first.
+#
+# Usage: run.sh [PROJECT]
+#   PROJECT   optional .phidler project (or .py script) to open on launch;
+#             omit it to get the usual startup picker. All arguments are
+#             forwarded to `python -m phidler`, so Qt options work too.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
