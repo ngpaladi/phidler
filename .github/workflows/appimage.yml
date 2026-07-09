@@ -15,7 +15,9 @@ on:
       - "packaging/appimage/**"
       - ".github/workflows/appimage.yml"
   schedule:
-    - cron: "0 6 * * *"   # 06:00 UTC nightly
+    # 08:00 UTC = 03:00 America/New_York during EST. GitHub Actions cron is
+    # UTC-only (no DST), so in EDT (summer) this lands at 04:00 Eastern.
+    - cron: "0 8 * * *"
   workflow_dispatch:
 
 permissions:
