@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGraphicsScene,
     QGraphicsView,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -712,7 +713,7 @@ class RemoteConfigDialog(QDialog):
         self._op_thread: QThread | None = None
         self._op_worker: _RemoteOpWorker | None = None
 
-        from phidler.remote_config import load_remote_config
+        from phidler.remote_config import DEFAULT_REMOTE_DIR, load_remote_config
 
         cfg = load_remote_config()
 
@@ -722,36 +723,12 @@ class RemoteConfigDialog(QDialog):
         self.alias_edit = QLineEdit(cfg.alias)
         self.alias_edit.setPlaceholderText("host alias from ~/.ssh/config, e.g. gpubox")
         self.alias_edit.setToolTip(
-            "A Host entry from your ~/.ssh/config. Phidler runs `ssh <alias> …` and "
-            "lets your SSH config and agent/keys handle authentication — it stores no "
-            "passwords. Key-based (non-interactive) auth is required."
+            "A Host entry from your ~/.ssh/config. This is all you need — phidler "
+            "installs under a default directory and creates its own venv there on "
+            "setup. It runs `ssh <host> …` and lets your SSH config and agent/keys "
+            "handle authentication (no passwords stored; key-based auth required)."
         )
-        form.addRow("SSH host alias", self.alias_edit)
-
-        self.remote_dir_edit = QLineEdit(cfg.remote_dir)
-        self.remote_dir_edit.setPlaceholderText("e.g. ~/phidler-remote")
-        self.remote_dir_edit.setToolTip(
-            "Directory on the remote host where phidler's and photonfdtd's source "
-            "are uploaded and installed (created if missing)."
-        )
-        form.addRow("Remote directory", self.remote_dir_edit)
-
-        self.remote_python_edit = QLineEdit(cfg.remote_python)
-        self.remote_python_edit.setPlaceholderText("e.g. ~/phidler-remote/.venv/bin/python")
-        self.remote_python_edit.setToolTip(
-            "The Python interpreter on the remote (ideally a venv) that phidler is "
-            "installed into. Setup installs into this interpreter's environment; runs "
-            "invoke `<this> -m phidler.fdtd_subprocess`."
-        )
-        form.addRow("Remote Python", self.remote_python_edit)
-
-        self.local_pf_edit = QLineEdit(cfg.local_photonfdtd_dir)
-        self.local_pf_edit.setPlaceholderText("(optional) local photonfdtd checkout to upload")
-        self.local_pf_edit.setToolTip(
-            "Where the local photonfdtd source checkout lives, to upload during setup. "
-            "Leave blank to auto-detect it from the editable install."
-        )
-        form.addRow("Local photonfdtd", self.local_pf_edit)
+        form.addRow("SSH host", self.alias_edit)
 
         self.use_gpu_check = QCheckBox("Use GPU on the remote host")
         self.use_gpu_check.setChecked(cfg.use_gpu)
@@ -761,8 +738,43 @@ class RemoteConfigDialog(QDialog):
             "CPU, and the result reports the backend that actually ran."
         )
         form.addRow("Acceleration", self.use_gpu_check)
-
         layout.addLayout(form)
+
+        # Everything below is optional — a bare host uses these derived defaults.
+        # The group starts collapsed (unchecked) unless the user already set one.
+        self.advanced_group = QGroupBox("Advanced (optional) — override install location")
+        self.advanced_group.setCheckable(True)
+        self.advanced_group.setChecked(
+            bool(cfg.remote_dir or cfg.remote_python or cfg.local_photonfdtd_dir)
+        )
+        adv_form = QFormLayout(self.advanced_group)
+
+        self.remote_dir_edit = QLineEdit(cfg.remote_dir)
+        self.remote_dir_edit.setPlaceholderText(f"default: {DEFAULT_REMOTE_DIR}")
+        self.remote_dir_edit.setToolTip(
+            "Directory on the remote where phidler's and photonfdtd's source are "
+            f"uploaded and installed (created if missing). Blank uses {DEFAULT_REMOTE_DIR}."
+        )
+        adv_form.addRow("Remote directory", self.remote_dir_edit)
+
+        self.remote_python_edit = QLineEdit(cfg.remote_python)
+        self.remote_python_edit.setPlaceholderText("default: <remote directory>/.venv/bin/python (created on setup)")
+        self.remote_python_edit.setToolTip(
+            "The remote Python phidler is installed into and runs from. Blank means a "
+            "venv under the remote directory that 'Set up remote' creates for you; set "
+            "an explicit interpreter only if you want to install into an existing env."
+        )
+        adv_form.addRow("Remote Python", self.remote_python_edit)
+
+        self.local_pf_edit = QLineEdit(cfg.local_photonfdtd_dir)
+        self.local_pf_edit.setPlaceholderText("(optional) local photonfdtd checkout to upload")
+        self.local_pf_edit.setToolTip(
+            "Where the local photonfdtd source checkout lives, to upload during setup. "
+            "Leave blank to auto-detect it from the editable install."
+        )
+        adv_form.addRow("Local photonfdtd", self.local_pf_edit)
+
+        layout.addWidget(self.advanced_group)
 
         button_row = QHBoxLayout()
         self.test_button = QPushButton("Test connection")
@@ -792,12 +804,16 @@ class RemoteConfigDialog(QDialog):
     def _current_config(self):
         from phidler.remote_config import RemoteConfig
 
+        # When the Advanced group is collapsed, ignore its fields so a bare host
+        # falls back to the derived defaults (managed dir + venv), even if the
+        # boxes still hold previously-typed text.
+        advanced = self.advanced_group.isChecked()
         return RemoteConfig(
             alias=self.alias_edit.text().strip(),
-            remote_dir=self.remote_dir_edit.text().strip(),
-            remote_python=self.remote_python_edit.text().strip(),
+            remote_dir=self.remote_dir_edit.text().strip() if advanced else "",
+            remote_python=self.remote_python_edit.text().strip() if advanced else "",
             use_gpu=self.use_gpu_check.isChecked(),
-            local_photonfdtd_dir=self.local_pf_edit.text().strip(),
+            local_photonfdtd_dir=self.local_pf_edit.text().strip() if advanced else "",
         )
 
     def _on_save(self) -> None:

@@ -218,6 +218,33 @@ def test_deploy_reports_pip_failure(monkeypatch):
     assert fr.deploy_to_remote(_cfg(), lines.append) is False
 
 
+def test_deploy_creates_a_venv_for_a_bare_host(monkeypatch):
+    """With just a host (no remote_python override), setup must create the venv
+    itself under the default dir — the whole point of 'just put in a server'."""
+    t = FakeTransport()
+    _install(monkeypatch, t)
+    monkeypatch.setattr(fr, "_local_checkouts",
+                        lambda cfg: (Path("/local/phidler"), Path("/local/photonfdtd")))
+    ok = fr.deploy_to_remote(RemoteConfig(alias="gpubox"), [].append)
+
+    assert ok is True
+    venv_cmds = [c for c in t.stream_cmds if "python3 -m venv" in c]
+    assert len(venv_cmds) == 1 and "~/phidler-remote/.venv" in venv_cmds[0]
+    # installs use the created venv's interpreter
+    assert any("phidler-remote/.venv/bin/python -m pip install -e" in c for c in t.stream_cmds)
+
+
+def test_deploy_with_explicit_python_does_not_create_a_venv(monkeypatch):
+    t = FakeTransport()
+    _install(monkeypatch, t)
+    monkeypatch.setattr(fr, "_local_checkouts",
+                        lambda cfg: (Path("/local/phidler"), Path("/local/photonfdtd")))
+    ok = fr.deploy_to_remote(_cfg(), [].append)  # _cfg supplies an explicit remote_python
+
+    assert ok is True
+    assert not any("python3 -m venv" in c for c in t.stream_cmds)  # left the user's env alone
+
+
 def test_deploy_unconfigured_returns_false():
     lines = []
     assert fr.deploy_to_remote(RemoteConfig(), lines.append) is False

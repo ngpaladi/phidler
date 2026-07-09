@@ -18,6 +18,11 @@ from PySide6.QtCore import QSettings
 _ORG, _APP = "phidler", "phidler"
 _PREFIX = "remote"
 
+# Default install location on the remote when the user doesn't override it, so
+# all they have to enter is a host. Deploy creates a venv under here and phidler
+# runs out of it, so remote_dir + remote_python are both derived from this.
+DEFAULT_REMOTE_DIR = "~/phidler-remote"
+
 
 @dataclass
 class RemoteConfig:
@@ -25,10 +30,11 @@ class RemoteConfig:
 
     `alias` is a host alias from the user's ~/.ssh/config (phidler shells out to
     `ssh <alias> …` and lets SSH config + agent/keys handle auth — it stores no
-    secrets). `remote_dir` is where phidler rsyncs the phidler + photonfdtd
-    source checkouts and installs them. `remote_python` is the venv interpreter
-    on the remote where they're pip-installed (so `<remote_python> -m
-    phidler.fdtd_subprocess` resolves). `use_gpu` requests the remote GPU
+    secrets) and is the *only* required field. `remote_dir` is where phidler
+    rsyncs the phidler + photonfdtd source checkouts and installs them; blank
+    means DEFAULT_REMOTE_DIR. `remote_python` is the interpreter runs invoke
+    (`<remote_python> -m phidler.fdtd_subprocess`); blank means a managed venv
+    under `remote_dir` that deploy creates. `use_gpu` requests the remote GPU
     backend independently of the local machine's GPU. `local_photonfdtd_dir`
     overrides where deploy finds the local photonfdtd checkout to rsync — needed
     because a user offloading FDTD may have no importable local photonfdtd."""
@@ -39,9 +45,24 @@ class RemoteConfig:
     use_gpu: bool = False
     local_photonfdtd_dir: str = ""
 
+    def resolved_remote_dir(self) -> str:
+        """The install dir to use — the override, or the default under $HOME."""
+        return self.remote_dir or DEFAULT_REMOTE_DIR
+
+    def resolved_remote_python(self) -> str:
+        """The interpreter runs use — the override, or the venv deploy creates
+        under the (resolved) remote dir."""
+        return self.remote_python or f"{self.resolved_remote_dir()}/.venv/bin/python"
+
+    def uses_managed_venv(self) -> bool:
+        """True when we're using the auto-created venv (no explicit
+        remote_python), so deploy should create it rather than assume it exists."""
+        return not self.remote_python
+
     def is_configured(self) -> bool:
-        """Enough set to attempt a run: a host and an interpreter to run."""
-        return bool(self.alias and self.remote_python)
+        """Enough set to attempt a run: just a host. The install dir and
+        interpreter fall back to a managed venv under the remote home."""
+        return bool(self.alias)
 
 
 def _settings(settings: QSettings | None) -> QSettings:

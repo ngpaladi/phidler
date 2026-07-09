@@ -40,7 +40,30 @@ def test_unset_config_is_defaults(tmp_path):
     assert loaded.is_configured() is False
 
 
-def test_is_configured_needs_alias_and_python():
-    assert RemoteConfig(alias="h", remote_python="p").is_configured() is True
-    assert RemoteConfig(alias="h").is_configured() is False
-    assert RemoteConfig(remote_python="p").is_configured() is False
+def test_is_configured_needs_only_a_host():
+    # A host alone is enough now — install dir + interpreter are derived.
+    assert RemoteConfig(alias="h").is_configured() is True
+    assert RemoteConfig().is_configured() is False
+    assert RemoteConfig(remote_python="p").is_configured() is False  # no host
+
+
+def test_derived_dir_and_python_from_a_bare_host():
+    from phidler.remote_config import DEFAULT_REMOTE_DIR
+
+    cfg = RemoteConfig(alias="h")
+    assert cfg.resolved_remote_dir() == DEFAULT_REMOTE_DIR
+    assert cfg.resolved_remote_python() == f"{DEFAULT_REMOTE_DIR}/.venv/bin/python"
+    assert cfg.uses_managed_venv() is True
+
+
+def test_overrides_win_over_the_derived_defaults():
+    cfg = RemoteConfig(alias="h", remote_dir="~/custom", remote_python="/opt/py/bin/python")
+    assert cfg.resolved_remote_dir() == "~/custom"
+    assert cfg.resolved_remote_python() == "/opt/py/bin/python"
+    assert cfg.uses_managed_venv() is False  # explicit interpreter -> deploy won't create it
+
+
+def test_derived_python_follows_a_custom_dir():
+    cfg = RemoteConfig(alias="h", remote_dir="~/custom")
+    assert cfg.resolved_remote_python() == "~/custom/.venv/bin/python"
+    assert cfg.uses_managed_venv() is True

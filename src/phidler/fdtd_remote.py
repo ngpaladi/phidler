@@ -189,9 +189,9 @@ def check_remote(cfg: RemoteConfig) -> tuple[bool, str]:
     Returns (ok, message). Never raises — connection/auth errors come back as
     (False, <reason>) so the dialog can show them."""
     if not cfg.is_configured():
-        return False, "Set a host alias and a remote Python interpreter first."
+        return False, "Set an SSH host first."
     payload = "import phidler, photonfdtd; print('ok')"
-    remote_cmd = f"{_remote_path(cfg.remote_python)} -c {shlex.quote(payload)}"
+    remote_cmd = f"{_remote_path(cfg.resolved_remote_python())} -c {shlex.quote(payload)}"
     try:
         proc = _ssh(cfg.alias, remote_cmd, timeout=_CONNECT_TIMEOUT_S)
     except subprocess.TimeoutExpired:
@@ -216,7 +216,7 @@ def run_on_remote(
     Raises RuntimeError (with the remote's error message) on any transport or
     solve failure."""
     if cfg is None or not cfg.is_configured():
-        raise RuntimeError("No remote server is configured (set a host alias and remote Python).")
+        raise RuntimeError("No remote server is configured (set an SSH host).")
 
     with tempfile.TemporaryDirectory(prefix="phidler_fdtd_") as tmp_name:
         tmp = Path(tmp_name)
@@ -234,7 +234,7 @@ def run_on_remote(
             _push_bundle(cfg.alias, tmp, remote_dir)
 
             remote_job = f"{remote_dir}/job.json"  # remote_dir is an absolute mktemp path
-            run_cmd = f"{_remote_path(cfg.remote_python)} -m phidler.fdtd_subprocess {shlex.quote(remote_job)}"
+            run_cmd = f"{_remote_path(cfg.resolved_remote_python())} -m phidler.fdtd_subprocess {shlex.quote(remote_job)}"
             # Stream the remote run: the deployed child prints the same progress
             # markers to stdout, which arrive here line-by-line over SSH. Parse
             # them for the progress bar; keep other lines as an error tail.
@@ -291,17 +291,16 @@ def _push_bundle(alias: str, local_tmp: Path, remote_dir: str) -> None:
 
 def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
     """One-time setup: rsync the local phidler + photonfdtd source checkouts to
-    the remote and `pip install -e` both into cfg.remote_python's environment,
+    the remote and `pip install -e` both into the remote Python's environment,
     streaming all output to `on_line`. Returns True on success.
 
-    The remote venv must already exist (phidler installs *into* it, it doesn't
-    create it). photonfdtd is installed first because it isn't on PyPI, so
-    phidler's [fdtd] extra can't pull it."""
+    With just a host configured, this installs under DEFAULT_REMOTE_DIR and
+    creates a venv there itself. If the user overrode remote_python, that
+    interpreter must already exist (phidler installs *into* it). photonfdtd is
+    installed first because it isn't on PyPI, so phidler's [fdtd] extra can't
+    pull it."""
     if not cfg.is_configured():
-        on_line("Set a host alias and a remote Python interpreter first.")
-        return False
-    if not cfg.remote_dir:
-        on_line("Set a remote directory to install into first.")
+        on_line("Set an SSH host first.")
         return False
 
     try:
@@ -310,26 +309,40 @@ def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
         on_line(str(exc))
         return False
 
+    remote_dir = cfg.resolved_remote_dir()
     on_line(f"Local phidler:    {phidler_root}")
     on_line(f"Local photonfdtd: {photonfdtd_root}")
-    on_line(f"Creating remote directory {cfg.remote_dir} …")
-    mk = _ssh(cfg.alias, f"mkdir -p {_remote_path(cfg.remote_dir)}", timeout=_CONNECT_TIMEOUT_S)
+    on_line(f"Creating remote directory {remote_dir} …")
+    mk = _ssh(cfg.alias, f"mkdir -p {_remote_path(remote_dir)}", timeout=_CONNECT_TIMEOUT_S)
     if mk.returncode != 0:
         on_line(_remote_error(mk))
         return False
 
+    rpy = _remote_path(cfg.resolved_remote_python())
+    base = _remote_path(remote_dir)  # leading ~ still expands; rest quoted
+
+    # With the managed default interpreter, create the venv if it isn't there
+    # yet (so the user never has to set one up by hand). A user-supplied
+    # remote_python is assumed to already exist and is left untouched.
+    if cfg.uses_managed_venv():
+        venv_dir = _remote_path(f"{remote_dir}/.venv")
+        on_line("Ensuring a Python venv on the remote …")
+        rc = _ssh_stream(cfg.alias, f"test -x {rpy} || python3 -m venv {venv_dir}", on_line)
+        if rc != 0:
+            on_line("Could not create the remote venv (need python3 with the venv module).")
+            return False
+        _ssh_stream(cfg.alias, f"{rpy} -m pip install --upgrade pip", on_line)
+
     for label, root in (("photonfdtd", photonfdtd_root), ("phidler", phidler_root)):
         # rsync the checkout *directory* into remote_dir, yielding
         # remote_dir/<root.name> (no trailing slash on src → copy the dir itself).
-        dest = f"{cfg.alias}:{cfg.remote_dir}/"
-        on_line(f"Uploading {label} source → {cfg.remote_dir}/{root.name} …")
+        dest = f"{cfg.alias}:{remote_dir}/"
+        on_line(f"Uploading {label} source → {remote_dir}/{root.name} …")
         rs = _rsync(str(root).rstrip("/"), dest, _RSYNC_EXCLUDES)
         if rs.returncode != 0:
             on_line(f"Upload failed: {_remote_error(rs)}")
             return False
 
-    rpy = _remote_path(cfg.remote_python)
-    base = _remote_path(cfg.remote_dir)  # leading ~ still expands; rest quoted
     # photonfdtd first (not on PyPI), then phidler with its fdtd extra. The
     # install targets are <base>/<name>, with <name> (incl. the "[fdtd]" extra,
     # whose brackets are shell glob chars) quoted separately so it stays literal.
