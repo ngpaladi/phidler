@@ -59,23 +59,37 @@ PHOTONFDTD_GIT_URL = "git+https://github.com/ngpaladi/photonfdtd.git"
 # tests). Each builds an argv and runs it; callers handle the return code.
 # ---------------------------------------------------------------------------
 
+def _sourced(remote_cmd: str) -> str:
+    """Wrap a remote command so it runs with the user's ~/.bashrc loaded first.
+    A plain `ssh host cmd` is non-interactive and doesn't read ~/.bashrc, so
+    tools the user puts on PATH there — a versioned python3.12, pyenv/conda, a
+    module system — are invisible to setup and runs. Sourcing it fixes that.
+
+    The sourcing's own output is discarded (>/dev/null 2>&1) so it can't pollute
+    a command whose stdout we parse, which also means a chatty ~/.bashrc can't
+    reintroduce the "is your shell clean?" corruption. A missing ~/.bashrc is a
+    no-op."""
+    return f"{{ [ -f ~/.bashrc ] && . ~/.bashrc; }} >/dev/null 2>&1; {remote_cmd}"
+
+
 def _ssh(alias: str, remote_cmd: str, timeout: float | None = None) -> subprocess.CompletedProcess:
-    """Run one command on the remote host. `remote_cmd` is passed as a single
-    argument: ssh re-joins trailing argv and the *remote* shell re-splits it, so
-    any command containing spaces/paths must already be a shlex-quoted string."""
+    """Run one command on the remote host, with ~/.bashrc loaded first (see
+    _sourced). `remote_cmd` is passed as a single argument: ssh re-joins trailing
+    argv and the *remote* shell re-splits it, so any command containing
+    spaces/paths must already be a shlex-quoted string."""
     return subprocess.run(
-        ["ssh", *_SSH_OPTS, alias, remote_cmd],
+        ["ssh", *_SSH_OPTS, alias, _sourced(remote_cmd)],
         capture_output=True, text=True, timeout=timeout,
     )
 
 
 def _ssh_stream(alias: str, remote_cmd: str, on_line: Callable[[str], None]) -> int:
-    """Run a (long, chatty) remote command, forwarding each output line to
-    `on_line` as it arrives. Used by deploy_to_remote so pip/build/CUDA output
-    shows live. Returns the exit code. stderr is merged into stdout so errors
-    interleave in order."""
+    """Run a (long, chatty) remote command with ~/.bashrc loaded first (see
+    _sourced), forwarding each output line to `on_line` as it arrives. Used by
+    deploy_to_remote so pip/build/CUDA output shows live. Returns the exit code.
+    stderr is merged into stdout so errors interleave in order."""
     proc = subprocess.Popen(
-        ["ssh", *_SSH_OPTS, alias, remote_cmd],
+        ["ssh", *_SSH_OPTS, alias, _sourced(remote_cmd)],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
     )
     assert proc.stdout is not None
@@ -117,7 +131,7 @@ def _tar_upload_dir(
     remote_cmd = f"mkdir -p {_remote_path(remote_dir)} && tar xzf - -C {_remote_path(remote_dir)}"
     sender = subprocess.Popen(tar_cmd, stdout=subprocess.PIPE)
     receiver = subprocess.Popen(
-        ["ssh", *_SSH_OPTS, alias, remote_cmd],
+        ["ssh", *_SSH_OPTS, alias, _sourced(remote_cmd)],
         stdin=sender.stdout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     assert sender.stdout is not None

@@ -531,3 +531,10 @@ def test_ensure_remote_venv_fails_clearly_when_python_too_old(monkeypatch):
     lines = []
     assert fr._ensure_remote_venv("h", "~/d/.venv", lines.append) is False
     assert any("gdsfactory needs 3.11" in ln for ln in lines)
+
+
+def test_sourced_loads_bashrc_and_suppresses_its_output():
+    wrapped = fr._sourced("command -v python3.12")
+    assert ". ~/.bashrc" in wrapped           # loads the user's env first
+    assert ">/dev/null 2>&1" in wrapped        # but hides its output (parse-safe)
+    assert wrapped.endswith("; command -v python3.12")
