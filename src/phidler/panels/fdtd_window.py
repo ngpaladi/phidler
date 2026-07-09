@@ -767,10 +767,11 @@ class RemoteConfigDialog(QDialog):
         adv_form.addRow("Remote Python", self.remote_python_edit)
 
         self.local_pf_edit = QLineEdit(cfg.local_photonfdtd_dir)
-        self.local_pf_edit.setPlaceholderText("(optional) local photonfdtd checkout to upload")
+        self.local_pf_edit.setPlaceholderText("(optional) blank installs photonfdtd from GitHub")
         self.local_pf_edit.setToolTip(
-            "Where the local photonfdtd source checkout lives, to upload during setup. "
-            "Leave blank to auto-detect it from the editable install."
+            "Where a local photonfdtd source checkout lives, to upload and install "
+            "during setup. Leave blank to install photonfdtd from its public GitHub "
+            "repo instead — the usual case, since you needn't have it locally."
         )
         adv_form.addRow("Local photonfdtd", self.local_pf_edit)
 

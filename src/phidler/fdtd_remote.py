@@ -46,6 +46,13 @@ _CONNECT_TIMEOUT_S = 15
 # platform-specific .venv or stale egg-info would corrupt it.
 _RSYNC_EXCLUDES = (".venv", ".git", "__pycache__", "*.egg-info", "build", "dist")
 
+# photonfdtd isn't on PyPI, so deploy installs it from its public GitHub repo by
+# default (no local checkout needed on the machine offloading the run). A user
+# who wants a specific local/dev photonfdtd overrides this with
+# RemoteConfig.local_photonfdtd_dir. https (not ssh) so the remote needs no
+# GitHub credentials for the public repo.
+PHOTONFDTD_GIT_URL = "git+https://github.com/ngpaladi/photonfdtd.git"
+
 
 # ---------------------------------------------------------------------------
 # Thin transport layer (the only functions that touch the network — mocked in
@@ -155,29 +162,24 @@ def _editable_checkout_dir(package: str) -> Path | None:
         return None
 
 
-def _local_checkouts(cfg: RemoteConfig) -> tuple[Path, Path]:
-    """(phidler_root, photonfdtd_root) to rsync. photonfdtd honours an explicit
-    config override first — a user offloading FDTD may have no *importable*
-    local photonfdtd, so import-based discovery can't be the only path."""
+def _local_checkouts(cfg: RemoteConfig) -> tuple[Path, Path | None]:
+    """(phidler_root, photonfdtd_local) to deploy. phidler is always the local
+    editable checkout (the user's working copy). photonfdtd_local is the
+    configured override checkout to upload, or None — meaning install photonfdtd
+    from GitHub (PHOTONFDTD_GIT_URL) instead of needing a local checkout at all,
+    which a machine that only offloads FDTD often won't have."""
     phidler_root = _editable_checkout_dir("phidler")
     if phidler_root is None:
         raise RuntimeError(
             "Can't locate the local phidler source checkout to deploy "
             "(phidler isn't an editable 'pip install -e' install)."
         )
+    photonfdtd_local: Path | None = None
     if cfg.local_photonfdtd_dir:
-        photonfdtd_root = Path(cfg.local_photonfdtd_dir).expanduser()
-        if not photonfdtd_root.exists():
-            raise RuntimeError(f"Configured photonfdtd checkout does not exist: {photonfdtd_root}")
-    else:
-        photonfdtd_root = _editable_checkout_dir("photonfdtd")
-        if photonfdtd_root is None:
-            raise RuntimeError(
-                "Can't locate the local photonfdtd source checkout to deploy. "
-                "Set its path in the remote configuration (it isn't an editable "
-                "install here, so phidler can't find it automatically)."
-            )
-    return phidler_root, photonfdtd_root
+        photonfdtd_local = Path(cfg.local_photonfdtd_dir).expanduser()
+        if not photonfdtd_local.exists():
+            raise RuntimeError(f"Configured photonfdtd checkout does not exist: {photonfdtd_local}")
+    return phidler_root, photonfdtd_local
 
 
 # ---------------------------------------------------------------------------
@@ -304,14 +306,17 @@ def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
         return False
 
     try:
-        phidler_root, photonfdtd_root = _local_checkouts(cfg)
+        phidler_root, photonfdtd_local = _local_checkouts(cfg)
     except RuntimeError as exc:
         on_line(str(exc))
         return False
 
     remote_dir = cfg.resolved_remote_dir()
     on_line(f"Local phidler:    {phidler_root}")
-    on_line(f"Local photonfdtd: {photonfdtd_root}")
+    on_line(
+        f"Local photonfdtd: {photonfdtd_local}" if photonfdtd_local
+        else f"photonfdtd: from GitHub ({PHOTONFDTD_GIT_URL})"
+    )
     on_line(f"Creating remote directory {remote_dir} …")
     mk = _ssh(cfg.alias, f"mkdir -p {_remote_path(remote_dir)}", timeout=_CONNECT_TIMEOUT_S)
     if mk.returncode != 0:
@@ -333,7 +338,12 @@ def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
             return False
         _ssh_stream(cfg.alias, f"{rpy} -m pip install --upgrade pip", on_line)
 
-    for label, root in (("photonfdtd", photonfdtd_root), ("phidler", phidler_root)):
+    # Upload the local checkouts: always phidler, plus photonfdtd only when a
+    # local override is set (otherwise it comes from GitHub, nothing to upload).
+    uploads = [("phidler", phidler_root)]
+    if photonfdtd_local is not None:
+        uploads.insert(0, ("photonfdtd", photonfdtd_local))
+    for label, root in uploads:
         # rsync the checkout *directory* into remote_dir, yielding
         # remote_dir/<root.name> (no trailing slash on src → copy the dir itself).
         dest = f"{cfg.alias}:{remote_dir}/"
@@ -343,15 +353,20 @@ def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
             on_line(f"Upload failed: {_remote_error(rs)}")
             return False
 
-    # photonfdtd first (not on PyPI), then phidler with its fdtd extra. The
-    # install targets are <base>/<name>, with <name> (incl. the "[fdtd]" extra,
-    # whose brackets are shell glob chars) quoted separately so it stays literal.
+    # photonfdtd first (not on PyPI) — from GitHub by default, or the uploaded
+    # local checkout if overridden — then phidler with its fdtd extra. Install
+    # targets under <base>/<name>; the "[fdtd]" extra's brackets are shell glob
+    # chars, so quote the target separately to keep it literal.
+    if photonfdtd_local is not None:
+        pf_cmd = f"{rpy} -m pip install -e {base}/{shlex.quote(photonfdtd_local.name)}"
+    else:
+        pf_cmd = f"{rpy} -m pip install {shlex.quote(PHOTONFDTD_GIT_URL)}"
     installs = [
-        ("photonfdtd", f"{rpy} -m pip install -e {base}/{shlex.quote(photonfdtd_root.name)}"),
+        ("photonfdtd", pf_cmd),
         ("phidler", f"{rpy} -m pip install -e {base}/{shlex.quote(phidler_root.name + '[fdtd]')}"),
     ]
     for label, cmd in installs:
-        on_line(f"\nInstalling {label} on the remote (pip install -e) …")
+        on_line(f"\nInstalling {label} on the remote …")
         rc = _ssh_stream(cfg.alias, cmd, on_line)
         if rc != 0:
             on_line(f"pip install of {label} failed (exit {rc}).")

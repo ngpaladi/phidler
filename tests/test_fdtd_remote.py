@@ -245,6 +245,41 @@ def test_deploy_with_explicit_python_does_not_create_a_venv(monkeypatch):
     assert not any("python3 -m venv" in c for c in t.stream_cmds)  # left the user's env alone
 
 
+def test_deploy_pulls_photonfdtd_from_github_by_default(monkeypatch):
+    """With no local photonfdtd override, setup installs photonfdtd from its
+    GitHub URL and uploads only the phidler checkout (nothing to rsync for a
+    pip-from-git dependency)."""
+    t = FakeTransport()
+    _install(monkeypatch, t)
+    monkeypatch.setattr(fr, "_local_checkouts", lambda cfg: (Path("/local/phidler"), None))
+    ok = fr.deploy_to_remote(_cfg(), [].append)
+
+    assert ok is True
+    # only phidler uploaded — photonfdtd comes from git, not rsync
+    assert {Path(c[0]).name for c in t.rsync_calls} == {"phidler"}
+    pf_install = next(c for c in t.stream_cmds if fr.PHOTONFDTD_GIT_URL in c)
+    assert "pip install" in pf_install and "-e" not in pf_install.split(fr.PHOTONFDTD_GIT_URL)[0]
+    assert any("[fdtd]" in c for c in t.stream_cmds)  # phidler still installed with its extra
+
+
+def test_local_checkouts_defaults_photonfdtd_to_github(qapp):
+    """Without an override, photonfdtd is None (→ install from GitHub); phidler
+    is still located from its editable install."""
+    phidler_root, photonfdtd_local = fr._local_checkouts(RemoteConfig(alias="h"))
+    assert phidler_root is not None
+    assert photonfdtd_local is None
+
+
+def test_local_checkouts_honours_a_local_override(qapp, tmp_path):
+    _phidler, photonfdtd_local = fr._local_checkouts(
+        RemoteConfig(alias="h", local_photonfdtd_dir=str(tmp_path))
+    )
+    assert photonfdtd_local == tmp_path
+
+    with pytest.raises(RuntimeError, match="does not exist"):
+        fr._local_checkouts(RemoteConfig(alias="h", local_photonfdtd_dir="/no/such/photonfdtd"))
+
+
 def test_deploy_unconfigured_returns_false():
     lines = []
     assert fr.deploy_to_remote(RemoteConfig(), lines.append) is False
