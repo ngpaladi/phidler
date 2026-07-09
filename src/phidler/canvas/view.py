@@ -415,8 +415,18 @@ class LayoutView(QGraphicsView):
             event.accept()
             return
         super().mousePressEvent(event)
+        # Snapshot only movable *instances* — routes and the reference backdrop
+        # are selectable InstanceItems too, but their inst_id is a route id / -1
+        # that get_transform() can't resolve (it looks up document.instances,
+        # which shares one id counter with routes so the membership test is
+        # exact). Selecting one in a stack used to raise KeyError here and abort
+        # the whole press, breaking selection. getattr guards any other
+        # selectable item that has no inst_id at all.
+        document = self.scene().document
         self._drag_start_transforms = {
-            item.inst_id: self.scene().document.get_transform(item.inst_id) for item in self.scene().selectedItems()
+            item.inst_id: document.get_transform(item.inst_id)
+            for item in self.scene().selectedItems()
+            if getattr(item, "inst_id", None) in document.instances
         }
 
     def mouseMoveEvent(self, event) -> None:
