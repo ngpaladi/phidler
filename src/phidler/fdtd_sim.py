@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import math
 import os
+import shutil
+import tempfile
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -240,6 +242,16 @@ class FdtdParams:
     # qualitative field movie this app shows. float64 is bit-for-bit the old
     # behavior if a run ever needs it.
     precision: str = "float32"
+    # Out-of-core (disk-streamed) tiled stepping (photonfdtd >=0.3): the full
+    # field/CPML arrays live in memmapped scratch files and the domain is
+    # stepped a slab at a time, so peak RAM is bounded by a tile instead of the
+    # whole grid — the way to run a grid too big for RAM (it trades RAM for disk
+    # and speed). NumPy backend only, so it overrides use_gpu/use_numba.
+    out_of_core: bool = False
+    # Spatial stride for the recorded field movie: keep every Nth cell on each
+    # axis, cutting stored-movie memory by downsample**2 in the z=0 plane. 1 is
+    # full resolution; 2–4 is plenty for the qualitative movie on a big region.
+    monitor_downsample: int = 1
 
     def resolved_cell_size_um(self) -> float:
         # λ/15 is a deliberately coarse default — fewer cells (so faster, less
@@ -430,6 +442,123 @@ def estimate_memory_gb(cell_count: int) -> float:
     many cells — the thing that makes a big grid run out of memory. Scales with
     cells (see _SOLVE_BYTES_PER_CELL); independent of timesteps."""
     return int(cell_count) * _SOLVE_BYTES_PER_CELL / 1e9
+
+
+# Out-of-core on-disk working set per cell: the six field components + the
+# update coefficient field + the CPML psi arrays, all streamed to memmapped
+# scratch files at float32. Rounded up from the arrays run_out_of_core creates.
+_OOC_DISK_BYTES_PER_CELL = 56
+# Leave headroom below total RAM (and free disk) for the OS, the GUI process,
+# Python/gdsfactory overhead, and allocation spikes the flat per-cell estimate
+# doesn't capture. A run estimated above this fraction is refused up front.
+_MEMORY_SAFETY_FRACTION = 0.8
+
+
+def total_ram_gb() -> float:
+    """Total physical RAM in GB, or 0.0 if it can't be determined (then the
+    feasibility guard is skipped rather than guessing)."""
+    try:
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1e9
+    except (ValueError, AttributeError, OSError):
+        return 0.0
+
+
+def estimate_out_of_core_disk_gb(cell_count: int) -> float:
+    """Scratch disk (GB) an out-of-core run needs for its memmapped field/CPML
+    arrays — bounded by the grid size, not the timestep count."""
+    return int(cell_count) * _OOC_DISK_BYTES_PER_CELL / 1e9
+
+
+def check_run_feasible(
+    cell_count: int, params: FdtdParams, workdir: str | None = None
+) -> None:
+    """Raise RuntimeError (with actionable guidance) if a run this large can't
+    fit — called *before* from_gdsfactory allocates the full grid, so an
+    over-large layout fails fast with a clear message instead of thrashing swap
+    and freezing the machine. In-core runs are checked against RAM; out-of-core
+    runs against free scratch disk (their peak RAM is a bounded tile). If the
+    machine size can't be read (total_ram_gb()/disk == 0) the check is skipped."""
+    if params.out_of_core:
+        need_disk = estimate_out_of_core_disk_gb(cell_count)
+        try:
+            free_disk = shutil.disk_usage(workdir or tempfile.gettempdir()).free / 1e9
+        except OSError:
+            free_disk = 0.0
+        if free_disk and need_disk > free_disk * _MEMORY_SAFETY_FRACTION:
+            raise RuntimeError(
+                f"This out-of-core simulation needs about {need_disk:.0f} GB of scratch "
+                f"disk for its {cell_count:,}-cell grid, but only {free_disk:.0f} GB is "
+                "free. Simulate a smaller selected region or use a coarser cell size."
+            )
+        return
+    need_ram = estimate_memory_gb(cell_count)
+    ram = total_ram_gb()
+    if ram and need_ram > ram * _MEMORY_SAFETY_FRACTION:
+        raise RuntimeError(
+            f"This simulation needs about {need_ram:.0f} GB of memory for its "
+            f"{cell_count:,}-cell grid, but this machine has {ram:.0f} GB. Simulate a "
+            "smaller selected region, use a coarser cell size, or enable out-of-core "
+            "(disk-streamed) stepping for a grid too big for RAM."
+        )
+
+
+def feasible_cell_budget(
+    params: FdtdParams, workdir: str | None = None, target_fraction: float = 0.6
+) -> int:
+    """The largest grid (in cells) that comfortably fits this machine for the
+    run's mode: RAM for an in-core run, free scratch disk for out-of-core. Kept
+    below check_run_feasible's refusal ceiling (target_fraction < the guard's
+    safety fraction) so a region sized to this budget actually runs. Returns a
+    large fallback if the machine size can't be read, so suggestions still work."""
+    if params.out_of_core:
+        try:
+            free = shutil.disk_usage(workdir or tempfile.gettempdir()).free / 1e9
+        except OSError:
+            free = 0.0
+        per_cell = _OOC_DISK_BYTES_PER_CELL
+        capacity = free
+    else:
+        capacity = total_ram_gb()
+        per_cell = _SOLVE_BYTES_PER_CELL
+    if not capacity:
+        return 200_000_000  # unknown machine: a sane, runnable default
+    return max(1, int(capacity * target_fraction * 1e9 / per_cell))
+
+
+def _default_region_center_um(document: LayoutDocument, params: FdtdParams) -> tuple[float, float]:
+    """Where a suggested region should sit: the sources' centroid (the physics
+    of interest), or the layout centre if no sources are placed yet."""
+    xs = [s.x_um for s in params.sources]
+    ys = [s.y_um for s in params.sources]
+    if xs:
+        return (sum(xs) / len(xs), sum(ys) / len(ys))
+    left, bottom, right, top = _layout_bbox_um_tuple(document)
+    return ((left + right) / 2.0, (bottom + top) / 2.0)
+
+
+def suggest_region_um(
+    document: LayoutDocument,
+    params: FdtdParams,
+    max_cells: int,
+    center_um: tuple[float, float] | None = None,
+) -> tuple[float, float, float, float]:
+    """A runnable square xy region (left, bottom, right, top in µm) centred on
+    ``center_um`` (default: the sources' centroid, see _default_region_center_um)
+    whose grid fits within ``max_cells`` — the way to turn "the whole chip is too
+    big" into a look at the interesting part. Shrinks by the grid's area ratio
+    until it fits (cells scale with the region's area, z fixed)."""
+    cx, cy = center_um if center_um is not None else _default_region_center_um(document, params)
+    cell_um = params.resolved_cell_size_um()
+    side = max(cell_um * 8.0, (max_cells ** 0.5) * cell_um)  # generous start, then shrink to fit
+    region = (cx - side / 2, cy - side / 2, cx + side / 2, cy + side / 2)
+    for _ in range(60):
+        half = side / 2.0
+        region = (cx - half, cy - half, cx + half, cy + half)
+        cells = estimate_grid_cell_count(document, params, region_um=region)
+        if cells <= max_cells:
+            break
+        side *= max(0.5, (max_cells / cells) ** 0.5 * 0.98)  # 0.98 margin so it lands under, not on
+    return region
 
 
 def build_mode_solver(settings: ProjectSettings, params: ModeProfileParams = ModeProfileParams()) -> Any:
@@ -714,6 +843,9 @@ def build_simulation(
     so the platform picker (Silicon, SiN, LN, LT) drives this too.
     """
     pf = _import_photonfdtd()
+    # Fail fast if the grid can't fit RAM (or scratch disk, out-of-core) — before
+    # from_gdsfactory tries to allocate the full eps/field arrays and OOMs.
+    check_run_feasible(estimate_grid_cell_count(document, params, region_um), params)
     left, bottom, right, top = region_um if region_um is not None else _layout_bbox_um_tuple(document)
     # An explicit region only grids that xy window (structures outside it are
     # clipped) — the way to keep a large layout's FDTD run from running out of
@@ -752,8 +884,10 @@ def build_simulation(
         cell_size=cell_size_m,
         padding=(padding_m, padding_m, padding_m),
         run_time=params.resolved_run_time_fs() * 1e-15,
-        use_gpu=params.use_gpu,
-        use_numba=params.use_numba,
+        # Out-of-core stepping is NumPy-only, so it overrides the accel backends
+        # (photonfdtd's run_out_of_core rejects a gpu/numba Simulation).
+        use_gpu=params.use_gpu and not params.out_of_core,
+        use_numba=params.use_numba and not params.out_of_core,
         precision=params.precision,
         xy_bounds=xy_bounds,
     )
@@ -775,7 +909,15 @@ def build_simulation(
     # z=0 is mid-core height: from_gdsfactory centres the stack, so the core
     # sits symmetrically across z=0 and the guided mode peaks there.
     sim.add_monitor(
-        pf.FieldMonitor(name="field", components=("Ez",), interval=params.monitor_interval, plane_z=0.0)
+        pf.FieldMonitor(
+            name="field",
+            components=("Ez",),
+            interval=params.monitor_interval,
+            plane_z=0.0,
+            # Spatial stride shrinks the stored movie by downsample**2 (the z=0
+            # plane is already 2D) — cheap way to keep a big region's movie small.
+            downsample=params.monitor_downsample,
+        )
     )
 
     return sim
@@ -822,8 +964,14 @@ def limit_solver_threads(renice: bool = False) -> int:
     return n_threads
 
 
-def run_simulation(sim: Any) -> Any:
+def run_simulation(sim: Any, out_of_core: bool = False, tile_cells: int | None = None) -> Any:
     """Trivial wrapper kept separate from build_simulation so a threading
     layer only has to call this one function — the actual compute, with
-    no Qt/threading concerns mixed in, stays directly unit-testable."""
+    no Qt/threading concerns mixed in, stays directly unit-testable.
+
+    ``out_of_core`` streams the field/CPML arrays to disk and steps the domain
+    in slabs so peak RAM is bounded by a tile (photonfdtd >=0.3); ``tile_cells``
+    is the planes-per-tile knob (None lets photonfdtd pick grid.shape[0]//8)."""
+    if out_of_core:
+        return sim.run(out_of_core=True, tile_cells=tile_cells)
     return sim.run()

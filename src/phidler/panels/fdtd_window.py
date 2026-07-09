@@ -54,9 +54,11 @@ from phidler.fdtd_sim import (
     SourceSpec,
     build_mode_solver,
     build_simulation,
+    check_run_feasible,
     estimate_grid_cell_count,
     estimate_memory_gb,
     estimate_run_seconds,
+    feasible_cell_budget,
     gpu_available,
     gpu_backend_name,
     limit_solver_threads,
@@ -66,6 +68,7 @@ from phidler.fdtd_sim import (
     photon_energy_ev_from_wavelength_um,
     run_simulation,
     solve_mode_profile,
+    suggest_region_um,
     wavelength_um_from_photon_energy_ev,
 )
 from phidler.model.document import LayoutDocument, shapes_for_cell
@@ -73,6 +76,10 @@ from phidler.model.document import LayoutDocument, shapes_for_cell
 _RUN_TIME_WARNING_SECONDS = 5.0
 _MEMORY_WARNING_GB = 4.0  # warn before a run whose solve working set is this large
 _REGION_MARGIN_UM = 2.0  # breathing room added around a "selection only" region
+# Upper bound on the auto-suggested region when a layout is too big to run whole:
+# picked so the region both fits memory and finishes in a reasonable time (a
+# biggest-that-fits region would run but be painfully slow). ~a 120 µm window.
+_SUGGESTED_MAX_CELLS = 40_000_000
 
 _TABLE_COLUMNS = [
     "X (µm)",
@@ -629,12 +636,13 @@ class FdtdWorker(QObject):
                     self.document, self.params, self.region_um, self.remote_cfg,
                     progress_callback=self.progress.emit,
                 )
-            elif self.params.use_gpu:
+            elif self.params.use_gpu and not self.params.out_of_core:
                 # The GPU (CuPy) backend can't tear down in a worker thread
                 # without crashing, and freezes the UI on the main thread — so
                 # run it in a child process and just wait on it here. CuPy lives
                 # in the child (clean teardown), this thread only blocks on the
-                # subprocess, so the UI stays responsive.
+                # subprocess, so the UI stays responsive. (out_of_core is
+                # NumPy-only, so it falls through to the in-process branch.)
                 from phidler.fdtd_subprocess import run_in_subprocess
 
                 sim, result, elapsed = run_in_subprocess(
@@ -642,17 +650,19 @@ class FdtdWorker(QObject):
                     progress_callback=self.progress.emit,
                 )
             else:
-                # In-process CPU/numba solve: it shares this (GUI) process, so
-                # cap numba's parallel kernel to leave the desktop some cores —
-                # otherwise a long run pins every core and freezes the whole
-                # machine (mouse still moves) until it finishes. renice=False:
-                # this thread is discarded after the run, but lowering the GUI
-                # process's own priority would slow the UI, so only cap threads.
+                # In-process CPU/numba solve (also the out-of-core path): it
+                # shares this (GUI) process, so cap numba's parallel kernel to
+                # leave the desktop some cores — otherwise a long run pins every
+                # core and freezes the whole machine (mouse still moves) until it
+                # finishes. renice=False: this thread is discarded after the run,
+                # but lowering the GUI process's own priority would slow the UI,
+                # so only cap threads. Out-of-core keeps peak RAM bounded to a
+                # tile, so a grid too big for RAM can still run here.
                 limit_solver_threads(renice=False)
                 t0 = time.time()
                 sim = build_simulation(self.document, self.params, region_um=self.region_um)
                 sim.progress_callback = self.progress.emit
-                result = run_simulation(sim)
+                result = run_simulation(sim, out_of_core=self.params.out_of_core)
                 elapsed = time.time() - t0
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -1195,8 +1205,16 @@ class FdtdWindow(QMainWindow):
                 "Numba acceleration needs the numba package (pip install numba) — "
                 "not installed in this environment."
             )
+        self.run_low_memory_check = QCheckBox("Low memory (disk)")
+        self.run_low_memory_check.setToolTip(
+            "Out-of-core stepping: stream the field arrays to scratch disk and step "
+            "the grid a slab at a time, so peak RAM stays bounded by one tile and a "
+            "grid too big for memory can still run. NumPy-only (overrides GPU/Numba) "
+            "and slower — for when a run would otherwise run out of memory."
+        )
         accel_layout.addWidget(self.run_gpu_check)
         accel_layout.addWidget(self.run_numba_check)
+        accel_layout.addWidget(self.run_low_memory_check)
         accel_layout.addStretch(1)
         form.addRow("Acceleration", accel_widget)
 
@@ -1623,6 +1641,7 @@ class FdtdWindow(QMainWindow):
             clad_index=self.run_clad_row.clad_index(),
             use_gpu=self.run_gpu_check.isChecked(),
             use_numba=self.run_numba_check.isChecked(),
+            out_of_core=self.run_low_memory_check.isChecked(),
         )
 
     def _selected_region_um(self):
@@ -1652,6 +1671,38 @@ class FdtdWindow(QMainWindow):
         """Open the remote-server setup dialog (host, paths, test/deploy)."""
         dialog = RemoteConfigDialog(self)
         dialog.exec()
+
+    def _offer_feasible_region(self, params, region_um, cell_count):
+        """If a run this size can't fit (RAM in-core, scratch disk out-of-core),
+        offer to simulate a runnable region around the sources (or the current
+        selection) instead of launching a doomed run. Returns
+        ``(region_um, cell_count, confirmed)`` to proceed with — possibly the
+        shrunk region — or ``None`` if the user declined. ``confirmed`` is True
+        when the user accepted the suggested region (so the caller can skip the
+        redundant large-run warning). Split out so it's testable by monkeypatching
+        QMessageBox rather than driving the modal dialog."""
+        try:
+            check_run_feasible(cell_count, params)
+        except RuntimeError as exc:
+            center = None
+            if region_um is not None:  # an already-selected region was still too big
+                center = ((region_um[0] + region_um[2]) / 2, (region_um[1] + region_um[3]) / 2)
+            # Cap the suggestion so it both fits and runs in reasonable time, not
+            # just "the biggest thing that fits in memory" (which is still slow).
+            budget = min(feasible_cell_budget(params), _SUGGESTED_MAX_CELLS)
+            suggested = suggest_region_um(self.document, params, budget, center_um=center)
+            w, h = suggested[2] - suggested[0], suggested[3] - suggested[1]
+            where = "the selection" if region_um is not None else "the sources"
+            reply = QMessageBox.question(
+                self, "Layout too large to simulate whole",
+                f"{exc}\n\nSimulate a {w:.0f}×{h:.0f} µm region around {where} instead?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+            )
+            if reply != QMessageBox.Yes:
+                return None
+            new_count = estimate_grid_cell_count(self.document, params, region_um=suggested)
+            return suggested, new_count, True
+        return region_um, cell_count, False
 
     def _on_run_clicked(self) -> None:
         params = self._current_params()
@@ -1694,6 +1745,14 @@ class FdtdWindow(QMainWindow):
             QMessageBox.warning(self, "Cannot run simulation", str(exc))
             return
 
+        # If the grid is too big to run (a whole large chip like the TDC example
+        # is billions of cells), don't launch a doomed run — offer a runnable
+        # region around the sources (or the current selection) instead.
+        resolved = self._offer_feasible_region(params, region_um, cell_count)
+        if resolved is None:  # user declined the offer
+            return
+        region_um, cell_count, region_confirmed = resolved
+
         cell_size_m = params.resolved_cell_size_um() * 1e-6
         courant = 0.99
         dt = courant / (299_792_458.0 * (3 ** 0.5) / cell_size_m)
@@ -1728,6 +1787,8 @@ class FdtdWindow(QMainWindow):
                 )
                 if reply != QMessageBox.Yes:
                     return
+        elif region_confirmed:
+            pass  # user already accepted this (feasibility-sized) region — don't double-prompt
         elif selected_seconds > _RUN_TIME_WARNING_SECONDS or memory_gb > _MEMORY_WARNING_GB:
             t_numba = estimate_run_seconds(grid, n_steps, "numba")
             t_gpu = estimate_run_seconds(grid, n_steps, "gpu")

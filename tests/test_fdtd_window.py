@@ -782,3 +782,37 @@ def test_install_prompt_approved_triggers_install(qapp, monkeypatch):
     win._offer_photonfdtd_install()
 
     assert ran  # approving kicks off the install
+
+
+# -- feasibility-sized region offer (big layout -> runnable region) --------- #
+
+
+def test_offer_feasible_region_shrinks_an_oversized_run(qapp, monkeypatch):
+    from phidler.fdtd_sim import check_run_feasible
+
+    win = MainWindow()
+    fdtd_win = FdtdWindow(_tiny_document(), win.view)
+    params = FdtdParams(cell_size_um=0.1, run_time_fs=2.0)
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+
+    resolved = fdtd_win._offer_feasible_region(params, None, 10**12)  # ~absurdly large grid
+    assert resolved is not None
+    region, cell_count, confirmed = resolved
+    assert region is not None and confirmed is True
+    check_run_feasible(cell_count, params)  # the shrunk region actually fits — no raise
+
+
+def test_offer_feasible_region_declined_returns_none(qapp, monkeypatch):
+    win = MainWindow()
+    fdtd_win = FdtdWindow(_tiny_document(), win.view)
+    params = FdtdParams(cell_size_um=0.1, run_time_fs=2.0)
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No))
+    assert fdtd_win._offer_feasible_region(params, None, 10**12) is None
+
+
+def test_offer_feasible_region_passes_a_feasible_run_through_unchanged(qapp):
+    win = MainWindow()
+    fdtd_win = FdtdWindow(_tiny_document(), win.view)
+    params = FdtdParams(cell_size_um=0.1, run_time_fs=2.0)
+    # A small, already-feasible grid is returned untouched and unconfirmed.
+    assert fdtd_win._offer_feasible_region(params, None, 1_000_000) == (None, 1_000_000, False)

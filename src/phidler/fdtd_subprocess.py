@@ -246,7 +246,10 @@ def _run_job(job_path: str) -> None:
     # Stream progress out as stdout markers; the parent (local subprocess or
     # remote over SSH) parses them to drive its progress bar.
     sim.progress_callback = emit_progress_marker
-    result = run_simulation(sim)
+    # Honour out-of-core (disk-streamed) stepping on the remote/nereid path too,
+    # so a large job can run on a box with modest RAM (build_simulation already
+    # forced the NumPy backend it requires).
+    result = run_simulation(sim, out_of_core=params.out_of_core)
 
     coords = sim.grid.coords
     np.savez(
