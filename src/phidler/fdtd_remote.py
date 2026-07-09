@@ -102,6 +102,56 @@ def _rsync(src: str, dst: str, excludes: tuple[str, ...] = ()) -> subprocess.Com
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
+def _tar_upload_dir(
+    alias: str, local_root: Path, remote_dir: str, excludes: tuple[str, ...] = ()
+) -> tuple[int, str]:
+    """Copy a directory tree to ``remote_dir/<local_root.name>`` by piping a
+    gzip'd tar through ssh (`tar c … | ssh host 'tar x …'`). Unlike rsync, the
+    payload rides the remote command's *stdin*, so a noisy remote login shell
+    that prints to stdout can't corrupt it — which is exactly the rsync failure
+    "protocol version mismatch -- is your shell clean?". Only needs tar on both
+    ends (no remote rsync). Returns (returncode, combined_output)."""
+    tar_cmd = ["tar", "czf", "-", "-C", str(local_root.parent)]
+    tar_cmd += [f"--exclude={ex}" for ex in excludes]  # tar patterns are unanchored, so ".venv" etc. match at any depth
+    tar_cmd.append(local_root.name)
+    remote_cmd = f"mkdir -p {_remote_path(remote_dir)} && tar xzf - -C {_remote_path(remote_dir)}"
+    sender = subprocess.Popen(tar_cmd, stdout=subprocess.PIPE)
+    receiver = subprocess.Popen(
+        ["ssh", *_SSH_OPTS, alias, remote_cmd],
+        stdin=sender.stdout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    assert sender.stdout is not None
+    sender.stdout.close()  # so the local tar sees SIGPIPE if ssh dies
+    out, _ = receiver.communicate()
+    sender.wait()
+    return (receiver.returncode or sender.returncode), out or ""
+
+
+def _upload_tree(
+    alias: str, local_root: Path, remote_dir: str, excludes: tuple[str, ...],
+    on_line: Callable[[str], None],
+) -> bool:
+    """Upload a source dir to ``remote_dir/<name>``, robust to a remote login
+    shell that isn't "clean". Tries rsync (fast, incremental); on any failure
+    (including rsync missing, or the shell-noise protocol error) falls back to
+    tar-over-ssh, which survives shell startup output. Returns True on success."""
+    try:
+        rs = _rsync(str(local_root).rstrip("/"), f"{alias}:{remote_dir}/", excludes)
+        if rs.returncode == 0:
+            return True
+        reason = _remote_error(rs)
+    except FileNotFoundError:
+        reason = "rsync is not installed locally"
+    on_line(f"rsync upload failed ({reason}); retrying with tar over ssh …")
+
+    rc, out = _tar_upload_dir(alias, local_root, remote_dir, excludes)
+    if rc != 0:
+        last = (out.strip().splitlines() or ["tar/ssh exited %d" % rc])[-1]
+        on_line(f"Upload failed: {last}")
+        return False
+    return True
+
+
 def _remote_path(path: str) -> str:
     """Quote a path for the remote shell while still letting a leading ``~/``
     expand. Plain ``shlex.quote`` wraps the whole string in single quotes, which
@@ -228,7 +278,10 @@ def run_on_remote(
         # so concurrent/successive runs never collide; cleaned in `finally`.
         mk = _check(_ssh(cfg.alias, "mktemp -d -t phidler_fdtd.XXXXXX", timeout=_CONNECT_TIMEOUT_S),
                     "Creating remote work directory")
-        remote_dir = mk.stdout.strip()
+        # Take the last non-empty line: a chatty remote login shell may print a
+        # banner/MOTD before mktemp's output, and the created dir is the last line.
+        mk_lines = [ln.strip() for ln in mk.stdout.splitlines() if ln.strip()]
+        remote_dir = mk_lines[-1] if mk_lines else ""
         if not remote_dir:
             raise RuntimeError("Remote mktemp returned no directory.")
 
@@ -282,10 +335,12 @@ def _push_bundle(alias: str, local_tmp: Path, remote_dir: str) -> None:
         proc = _rsync(f"{local_tmp}/", f"{alias}:{remote_dir}/")
         if proc.returncode == 0:
             return
-        # rsync ran but failed for a non-"missing binary" reason — surface it.
-        raise RuntimeError(f"Uploading the job to the remote failed: {_remote_error(proc)}")
     except FileNotFoundError:
-        pass  # rsync not installed locally — fall back to scp
+        pass  # rsync not installed locally
+    # rsync unavailable or failed — e.g. an unclean remote login shell breaks its
+    # protocol ("is your shell clean?"). Fall back to scp, which uses the SFTP
+    # subsystem and so isn't corrupted by shell startup output. Two small files
+    # either way, so the cost of not-incremental is nil.
     for name in ("job.json", "job.phidler"):
         _check(_scp(str(local_tmp / name), f"{alias}:{remote_dir}/{name}"),
                f"Uploading {name}")
@@ -344,13 +399,11 @@ def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
     if photonfdtd_local is not None:
         uploads.insert(0, ("photonfdtd", photonfdtd_local))
     for label, root in uploads:
-        # rsync the checkout *directory* into remote_dir, yielding
-        # remote_dir/<root.name> (no trailing slash on src → copy the dir itself).
-        dest = f"{cfg.alias}:{remote_dir}/"
+        # Copy the checkout *directory* into remote_dir, yielding
+        # remote_dir/<root.name>. rsync first, tar-over-ssh fallback if the
+        # remote shell isn't clean (the reported "protocol mismatch" failure).
         on_line(f"Uploading {label} source → {remote_dir}/{root.name} …")
-        rs = _rsync(str(root).rstrip("/"), dest, _RSYNC_EXCLUDES)
-        if rs.returncode != 0:
-            on_line(f"Upload failed: {_remote_error(rs)}")
+        if not _upload_tree(cfg.alias, root, remote_dir, _RSYNC_EXCLUDES, on_line):
             return False
 
     # photonfdtd first (not on PyPI) — from GitHub by default, or the uploaded

@@ -394,3 +394,72 @@ def test_remote_config_dialog_refuses_to_close_mid_operation(qapp):
     dlg.reject()
     qapp.processEvents()
     assert rejected
+
+
+# -- resilience to an unclean remote shell / missing rsync ------------------
+
+def test_upload_tree_falls_back_to_tar_when_rsync_fails(monkeypatch):
+    monkeypatch.setattr(fr, "_rsync", lambda *a, **k: _cp(23, stderr="protocol version mismatch"))
+    tar_args = {}
+    monkeypatch.setattr(fr, "_tar_upload_dir",
+                        lambda alias, root, rd, ex: tar_args.update(alias=alias, root=root, rd=rd) or (0, "ok"))
+    lines = []
+    ok = fr._upload_tree("gpubox", Path("/local/phidler"), "~/phidler-remote", (".venv",), lines.append)
+    assert ok is True
+    assert tar_args == {"alias": "gpubox", "root": Path("/local/phidler"), "rd": "~/phidler-remote"}
+    assert any("tar over ssh" in ln for ln in lines)
+
+
+def test_upload_tree_falls_back_to_tar_when_rsync_missing(monkeypatch):
+    def _missing(*a, **k):
+        raise FileNotFoundError("rsync")
+    monkeypatch.setattr(fr, "_rsync", _missing)
+    monkeypatch.setattr(fr, "_tar_upload_dir", lambda *a: (0, ""))
+    assert fr._upload_tree("h", Path("/x"), "~/d", (), lambda s: None) is True
+
+
+def test_upload_tree_reports_when_tar_also_fails(monkeypatch):
+    monkeypatch.setattr(fr, "_rsync", lambda *a, **k: _cp(1))
+    monkeypatch.setattr(fr, "_tar_upload_dir", lambda *a: (2, "tar: broken pipe"))
+    lines = []
+    assert fr._upload_tree("h", Path("/x"), "~/d", (), lines.append) is False
+    assert any("Upload failed" in ln for ln in lines)
+
+
+def test_deploy_uses_tar_fallback_when_rsync_is_unclean(monkeypatch):
+    t = FakeTransport()
+    _install(monkeypatch, t)
+    monkeypatch.setattr(fr, "_rsync", lambda *a, **k: _cp(23, stderr="is your shell clean?"))
+    tar_uploads = []
+    monkeypatch.setattr(fr, "_tar_upload_dir",
+                        lambda alias, root, rd, ex: tar_uploads.append(root.name) or (0, ""))
+    monkeypatch.setattr(fr, "_local_checkouts", lambda cfg: (Path("/local/phidler"), None))
+    assert fr.deploy_to_remote(_cfg(), [].append) is True
+    assert tar_uploads == ["phidler"]  # uploaded via the tar fallback, not rsync
+
+
+def test_run_pushes_bundle_via_scp_when_rsync_is_unclean(qapp, monkeypatch):
+    t = FakeTransport()
+    _install(monkeypatch, t)
+    monkeypatch.setattr(fr, "_rsync", lambda *a, **k: _cp(23, stderr="protocol mismatch"))
+    fr.run_on_remote(_doc(), FdtdParams(), None, _cfg())
+    pushed = [dst for (_src, dst) in t.scp_calls if str(dst).endswith(("job.json", "job.phidler"))]
+    assert len(pushed) == 2  # both bundle files fell back to scp, no RuntimeError
+
+
+def test_run_survives_a_chatty_login_shell_banner(qapp, monkeypatch):
+    t = FakeTransport()
+    orig = t.ssh
+
+    def noisy(alias, cmd, timeout=None):
+        if "mktemp" in cmd:  # a banner/MOTD before mktemp's actual output
+            return _cp(0, stdout=f"Welcome to gpubox!\nLast login: today\n{REMOTE_DIR}\n")
+        return orig(alias, cmd, timeout)
+
+    monkeypatch.setattr(fr, "_ssh", noisy)
+    monkeypatch.setattr(fr, "_scp", t.scp)
+    monkeypatch.setattr(fr, "_rsync", t.rsync)
+    monkeypatch.setattr(fr, "_ssh_stream", t.stream)
+    fr.run_on_remote(_doc(), FdtdParams(), None, _cfg())
+    run_cmd = next(c for c in t.stream_cmds if "fdtd_subprocess" in c)
+    assert REMOTE_DIR in run_cmd  # used the real dir, not the banner text
