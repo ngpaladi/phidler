@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
-from .model.document import LayoutDocument, ProjectSettings
+from .model.document import DEFAULT_WAVELENGTH_UM, LayoutDocument, ProjectSettings
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +189,7 @@ class SourceSpec:
     x_um: float
     y_um: float
     kind: str = "dipole"  # "dipole" | "single_photon" | "scripted" | "cherenkov"
-    wavelength_um: float = 1.55
+    wavelength_um: float = DEFAULT_WAVELENGTH_UM
     photon_count: int = 1
     core_width_um: float | None = None
     fwhm_fs: float = 3.0
@@ -219,7 +219,7 @@ class ScriptedWaveform:
 
 @dataclass(frozen=True)
 class FdtdParams:
-    wavelength_um: float = 1.55
+    wavelength_um: float = DEFAULT_WAVELENGTH_UM
     cell_size_um: float | None = None  # defaults to wavelength_um / 15
     run_time_fs: float | None = None  # defaults to a few pulse widths
     padding_um: float = 0.5
@@ -279,7 +279,7 @@ class SimulationConfig:
     than overwriting them with this dataclass's placeholders."""
 
     # Propagation (FDTD) tab
-    wavelength_um: float = 1.55
+    wavelength_um: float = DEFAULT_WAVELENGTH_UM
     cell_size_um: float | None = None  # None -> FdtdParams' λ/15 default
     run_time_fs: float | None = None  # None -> FdtdParams' pulse-width default
     clad_index: float | None = None  # None -> project_settings.clad_index
@@ -289,7 +289,7 @@ class SimulationConfig:
     sources: tuple[SourceSpec, ...] = ()
 
     # Vertical mode profile tab
-    mode_wavelength_um: float = 1.55
+    mode_wavelength_um: float = DEFAULT_WAVELENGTH_UM
     mode_core_width_um: float = 0.5
     mode_num_modes: int = 1
     mode_clad_index: float | None = None  # None -> project_settings.clad_index
@@ -297,7 +297,7 @@ class SimulationConfig:
 
 @dataclass(frozen=True)
 class ModeProfileParams:
-    wavelength_um: float = 1.55
+    wavelength_um: float = DEFAULT_WAVELENGTH_UM
     core_width_um: float = 0.5
     cell_size_um: float = 0.02
     num_modes: int = 1

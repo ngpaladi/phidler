@@ -590,3 +590,18 @@ def test_limit_solver_threads_applies_to_numba_when_present():
     numba = pytest.importorskip("numba")
     applied = limit_solver_threads(renice=False)
     assert numba.get_num_threads() == applied
+
+
+def test_simulation_wavelength_default_matches_the_project_default():
+    """The FDTD/mode-solver wavelength defaults must equal the project's
+    wavelength default — a project designed at wavelength X should simulate at X
+    by default, not at a separately-hardcoded value that could drift."""
+    from phidler.fdtd_sim import SimulationConfig
+    from phidler.model.document import DEFAULT_WAVELENGTH_UM, ProjectSettings
+
+    project_default = ProjectSettings().wavelength_um
+    assert project_default == DEFAULT_WAVELENGTH_UM
+    assert FdtdParams().wavelength_um == project_default
+    assert ModeProfileParams().wavelength_um == project_default
+    assert SimulationConfig().wavelength_um == project_default
+    assert SimulationConfig().mode_wavelength_um == project_default

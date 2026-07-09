@@ -108,6 +108,13 @@ def flip_transform(transform: "Transform", axis: str) -> "Transform":
     )
 
 
+# The project's design wavelength default (µm). Single source of truth: the
+# FDTD/mode-solver wavelength defaults in fdtd_sim reference this too, so the
+# simulation defaults to the same wavelength the project is designed for and the
+# two can't drift apart.
+DEFAULT_WAVELENGTH_UM = 1.55
+
+
 @dataclass(frozen=True)
 class EtchLayer:
     """A partial-etch (rib/slab) drawing layer. Geometry drawn on GDS
@@ -149,7 +156,7 @@ class ProjectSettings:
     # decays to nothing before reaching the domain boundary regardless of the
     # finite thickness chosen for a real process.
     clad_infinite: bool = False
-    wavelength_um: float = 1.55
+    wavelength_um: float = DEFAULT_WAVELENGTH_UM
     cross_section: str = "strip"
     # Partial-etch (rib/slab) layers, drawn on top of the full-height core
     # (layer (1, 0)). Empty -> a plain strip waveguide, the original behaviour.
