@@ -66,29 +66,29 @@ tests/                       # all run under QT_QPA_PLATFORM=offscreen
 - Corner-drag scale keeps the **diagonally opposite corner** fixed in absolute scene coordinates. The `mag` and `(x, y)` satisfying "opposite corner unchanged, dragged corner tracks cursor" are solved once at drag-start. Anchoring at the instance's local origin (where the transform math pivots) does not have this property for components like `straight` whose origin sits near the bounding box edge.
 - Rotation is a **delta angle** (mouse sweep since drag start, added to the angle at press-time), not an absolute target. The scene-frame `atan2` angle and `DCplxTrans`/`QTransform.rotate()` move in the same direction, so no sign correction is needed for the Y-flip.
 - `LayoutScene` uses a fixed 100mm×100mm `sceneRect`. `QGraphicsView` auto-sizing from content bounds collapses to `(0, 0)` when content fits the viewport, which breaks panning entirely; the fixed rect is what avoids that.
-- Geometry is pulled from gdsfactory once per place/edit/import — never during a drag — so dragging only touches Qt item transforms.
+- Geometry is pulled from gdsfactory once per place/edit/import (never during a drag), so dragging only touches Qt item transforms.
 - Polygon holes render via odd-even fill (`QPainterPath`), not `QGraphicsPolygonItem` which drops holes.
 - Qt-side transform math is verified numerically against `klayout.db.DCplxTrans` in `tests/test_gds_roundtrip.py` and `tests/test_holes.py`. `fitInView`'s interaction with the Y-flip and `QComboBox.findData()`'s unreliable tuple matching were both verified empirically before use.
 - The component catalog only includes names registered in the active PDK and excludes `ComponentAllAngle` factories, which require `add_ref_off_grid()`.
-- Routes use `gdsfactory.functions.get_polygons(ref)`, returning already-absolute top-cell coordinates — no additional Qt-side transform needed, unlike instances.
+- Routes use `gdsfactory.functions.get_polygons(ref)`, which returns already-absolute top-cell coordinates, so no additional Qt-side transform is needed, unlike instances.
 - The reference GDS backdrop is a standalone `gf.Component`, never added to the document's top cell, so it can't appear in GDS export.
 - `QUndoStack.push()` inserts a command even if its `redo()` raises. `AddRouteCommand`/`EditParamsCommand` guard this with an internal `.error` flag. The delete macro pushes routes before instances so undo restores instances before routes need them back.
 - `QApplication.sendEvent` with a `QContextMenuEvent` segfaults under the offscreen platform. Tests call event-handler overrides directly as plain methods; hover-preview tests emit `itemEntered` directly instead of injecting a synthetic mouse-move.
-- The scripting console uses `code.InteractiveInterpreter` for multi-line support. Each call needs the full accumulated buffer — the interpreter has no memory between calls. `quit()`/`exit()` raise `SystemExit` that propagates through `runsource()` uncaught; all calls wrap it in `except SystemExit`.
-- Console mutations render on the canvas immediately but don't refresh the Layers/DRC panels — those only update on `undo_stack.indexChanged`, which the console bypasses by design.
-- The AI assistant (`ai/`) deliberately has no mutation path of its own: its main MCP tool, `run_python`, calls the same `ConsolePanel.run_python_from_agent` a typed line would, so Claude's edits go through the one interpreter and echo into the one console. The server runs in a background thread, so `GuiInvoker` hops every tool call onto the Qt thread (a queued signal plus a `Future`) before it touches the document. Both the server and the `claude` subprocess start lazily on the first switch to "Ask Claude", so constructing a `MainWindow` — which every GUI test does — starts neither. `ai_available()` gates the whole thing on the `mcp` extra and the `claude` binary; without them the import never happens and the Console is a plain REPL.
+- The scripting console uses `code.InteractiveInterpreter` for multi-line support. Each call needs the full accumulated buffer, since the interpreter has no memory between calls. `quit()`/`exit()` raise `SystemExit` that propagates through `runsource()` uncaught, so all calls wrap it in `except SystemExit`.
+- Console mutations render on the canvas immediately but don't refresh the Layers/DRC panels; those only update on `undo_stack.indexChanged`, which the console bypasses by design.
+- The AI assistant (`ai/`) deliberately has no mutation path of its own: its main MCP tool, `run_python`, calls the same `ConsolePanel.run_python_from_agent` a typed line would, so Claude's edits go through the one interpreter and echo into the one console. The server runs in a background thread, so `GuiInvoker` hops every tool call onto the Qt thread (a queued signal plus a `Future`) before it touches the document. Both the server and the `claude` subprocess start lazily on the first switch to "Ask Claude", so constructing a `MainWindow` (which every GUI test does) starts neither. `ai_available()` gates the whole thing on the `mcp` extra and the `claude` binary; without them the import never happens and the Console is a plain REPL.
 - Project Settings is triggered via `QTimer.singleShot(0, window._new_project)` from `app.main()`, not from `MainWindow.__init__`. `_new_project()` opens a blocking modal; triggering it during construction would hang every test that instantiates `MainWindow`. `_new_project()` is split into a dialog-showing wrapper and a testable `_reset_to_new_project(settings)` core.
 - The suggested single-mode waveguide width uses a two-step effective-index method (bisection for vertical confinement, then lateral cutoff). EIM runs narrow for high-index-contrast platforms: ~319nm for 220nm SOI at 1550nm, versus ~450-500nm commonly used. The dialog's disclaimer says this explicitly.
 - LN `core_index` (2.211 at 1550nm) is from the Zelmon, Small & Jundt (1997) Sellmeier fit. LT index (2.14) is a standard literature value with a single source.
 - `import_script.py` inspects only direct top-level statements (`tree.body`), not a recursive `ast.walk()`. A loop body statically matches the same assignment shape as a single instance; the iteration count is unknowable at parse time, so unrecognized top-level forms raise `ScriptParseError` instead of silently reconstructing the wrong number of instances.
 - Port-to-port snapping uses `kdb.DCplxTrans` for absolute port positions, the same primitive as instance geometry. During drag, positions are computed against the instance's live Qt transform via `LayoutDocument.get_absolute_ports_for_transform`, not the still-stale document transform.
 - `hasFocus()` never becomes true under `QT_QPA_PLATFORM=offscreen`. The regression test for `PropertiesPanel._is_editing_transform` monkeypatches the guard method directly.
-- The measure label uses `QGraphicsItem.ItemIgnoresTransformations` for constant on-screen text size. The flag must be accessed on the base class — `label.ItemIgnoresTransformations` on a `QGraphicsSimpleTextItem` instance raises `AttributeError`.
+- The measure label uses `QGraphicsItem.ItemIgnoresTransformations` for constant on-screen text size. The flag must be accessed on the base class; `label.ItemIgnoresTransformations` on a `QGraphicsSimpleTextItem` instance raises `AttributeError`.
 - Measure-click port snapping reuses `InstanceItem.nearest_port` with the same hit-radius as routing, to keep thresholds consistent.
-- `QRectF.top()`/`bottom()` return whatever min/max order the rect was constructed with — not geometric top/bottom. `_selected_scene_bboxes` calls `.normalized()` explicitly. With the canvas Y-flip, larger scene-y renders higher on screen, so `Align Top` reads `box.bottom()` internally — `test_align_top_uses_the_visual_screen_direction_not_qrectf_naming` guards this.
+- `QRectF.top()`/`bottom()` return whatever min/max order the rect was constructed with, not geometric top/bottom. `_selected_scene_bboxes` calls `.normalized()` explicitly. With the canvas Y-flip, larger scene-y renders higher on screen, so `Align Top` reads `box.bottom()` internally; `test_align_top_uses_the_visual_screen_direction_not_qrectf_naming` guards this.
 - Align/Distribute moves each instance by a single scalar shift along one axis (`target − current_edge_or_center`). `mapRectToScene` gives the correct axis-aligned bbox for any rotation/scale, so no per-instance transform decomposition is needed.
 - FDTD logic is split into a pure-compute core (`fdtd_sim.py`, no Qt or threading) and thin Qt wrappers (`FdtdWorker`/`ModeWorker` in `fdtd_window.py`). `fdtd_sim.py` is fully unit-testable without a display.
-- The simulation runs true 3D — `z_size=0.0` (quasi-2D collapse) was removed because it made cladding thickness inert: the single z-slice resolved core/cladding contrast by XY footprint alone, not vertical position. Cost: ~6×10⁻⁸s/cell-step.
+- The simulation runs true 3D. `z_size=0.0` (quasi-2D collapse) was removed because it made cladding thickness inert: the single z-slice resolved core/cladding contrast by XY footprint alone, not vertical position. Cost: ~6×10⁻⁸s/cell-step.
 - Background slabs covering only above/below the core's z-range left the core's own z-range stamped as vacuum (eps_r=1) outside the waveguide polygon. Fixed by adding a third slab spanning the core z-range, stamped first so the waveguide polygon wins on top.
 - `photonfdtd.ModeSolver` (2D scalar-Helmholtz cross-section eigenmode solver) powers the Vertical Mode Profile tab. `mode_confinement()` converts the edge/peak amplitude ratio to "well confined" / "cladding may be too thin". Eigensolve cost is superlinear in grid size; the UI defaults (`cell_size_um=0.02`) stay well under a second.
 - `photonfdtd.sources.SinglePhotonSource` amplitude is scaled by `sqrt(photon_count)`, not by stacking N copies, so energy scales linearly with photon count. Stacking N coherent copies at the same position would scale energy as N².
@@ -113,7 +113,7 @@ Run the suite with `./run_tests.sh`. It runs headlessly under
   `tests/test_scale.py`. This caught 25 unregistered catalog entries and
   4 `ComponentAllAngle` factories needing a different placement API.
 - Transactional correctness for all four mutating operations (place, edit,
-  route, delete) — each has a regression test covering the "raises
+  route, delete): each has a regression test covering the "raises
   partway through" case that previously left corrupted state.
 - Save/load round-trips by replaying the document's recipe (component spec
   + kwargs + transform, port pairs for routes), tolerating missing
@@ -134,11 +134,11 @@ The logic for each of these is tested, but correctness of appearance and
 feel can't be assessed headlessly:
 
 - Right-click context menu, status bar cursor readout, grid controls, zoom
-  to fit/selection, hover preview — whether they're visually correct and
+  to fit/selection, hover preview: whether they're visually correct and
   feel right.
 - Drag responsiveness, pan/zoom comfort, color legibility, routing
   click-to-pick-a-port feel.
-- On-canvas transform handles and Project Settings dialog — logic is
+- On-canvas transform handles and Project Settings dialog. The logic is
   tested (including corner-drag via real `QTest` drag), but on-screen
   appearance and grab comfort need a human.
 
@@ -147,13 +147,13 @@ feel can't be assessed headlessly:
 Launch `./run.sh` and try:
 
 1. Place a few different components from the palette (try a ring, an MMI,
-   a grating coupler — not just a straight waveguide), drag one or several
+   a grating coupler, not just a straight waveguide), drag one or several
    selected at once, rotate/mirror, undo/redo.
 2. Edit a selected instance's parameters (including the cross_section
    dropdown) in the Properties panel and watch it regenerate.
 3. Toggle "Route", pick a cross-section, click a port on one component then
    a port on another, confirm a route appears and is selectable/deletable.
-4. Right-click the canvas — confirm the context menu appears under the
+4. Right-click the canvas and confirm the context menu appears under the
    cursor and its actions work.
 5. Watch the status bar while moving the mouse over the canvas; adjust the
    grid pitch/snap controls in the toolbar.
