@@ -27,20 +27,35 @@ docs = [
 # package) — install it from its own checkout first
 # (pip install -e /path/to/photonfdtd), then this version constraint will
 # already be satisfied and `pip install -e ".[fdtd]"` won't need network
-# access for it. Phidler tracks photonfdtd 0.2.x (CuPy GPU backend).
+# access for it. Phidler tracks photonfdtd 0.4.x, which adds a differentiable
+# JAX backend and anisotropic subpixel smoothing on top of the 0.3 out-of-core
+# stepper and 0.2 CuPy GPU backend — the FDTD window surfaces the JAX and
+# subpixel options (see panels/fdtd_window.py).
 #
 # The GPU backend is optional and not pinned here — install CuPy yourself to
 # match your hardware: the CUDA build for NVIDIA (pip install cupy-cuda12x) or
 # the ROCm build for AMD (pip install cupy-rocm-5-0). photonfdtd uses only
 # generic CuPy array ops, so either works; leaving CuPy out just runs on CPU.
+# The JAX backend is likewise optional and unpinned — install jax yourself
+# (pip install jax) to enable the "JAX" acceleration checkbox; without it the
+# checkbox stays disabled and the other backends are unaffected.
 fdtd = [
-    "photonfdtd>=0.2.0",
+    "photonfdtd>=0.4.0",
     "matplotlib>=3.7",
     # Numba JIT-compiles photonfdtd's field-update kernel (parallel, cached to
     # disk) — ~5x faster than the plain NumPy engine and, unlike the CuPy GPU
     # backend, runs in the worker thread so the UI stays responsive. Enabled by
     # default when importable.
     "numba>=0.59",
+]
+# Optional AI assistant: an in-process MCP server exposes phidler's live
+# scripting session, and the Console panel's "Ask Claude" mode drives the
+# Claude Code CLI (`claude`, installed separately) against it — every AI edit
+# runs through the same Python console the user types into. Entirely optional:
+# without `mcp` (or the `claude` binary) the app runs exactly as before and the
+# AI mode is disabled with an explanatory tooltip. See src/phidler/ai/.
+ai = [
+    "mcp>=1.2",
 ]
 # Offload FDTD runs to a remote nereid-server over gRPC (phidler.fdtd_nereid).
 # Only grpcio + protobuf are needed at runtime; the generated stubs in

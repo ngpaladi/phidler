@@ -149,6 +149,37 @@ def numba_available() -> bool:
         return False
 
 
+def jax_available() -> bool:
+    """Whether photonfdtd's differentiable JAX backend can run here — it needs
+    the ``jax`` package (photonfdtd 0.4+ ships the stepper, but importing it
+    without jax raises). Unlike numba/gpu, photonfdtd does *not* silently fall
+    back for JAX: it raises if use_jax is set without jax, so the FDTD window
+    only enables the JAX checkbox when this is True."""
+    try:
+        import jax  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def resolve_accel_flags(params) -> tuple[bool, bool]:
+    """The (use_gpu, use_numba) actually passed to photonfdtd's from_gdsfactory,
+    resolving the mutually-exclusive backends so a conflicting combination never
+    reaches photonfdtd (which raises on one). Priority:
+
+      * out-of-core is NumPy-only, so it drops both accelerators;
+      * JAX is exclusive of GPU and Numba (build_simulation applies JAX itself
+        by rebuilding the Simulation), so it drops both;
+      * subpixel smoothing is unsupported on Numba, so it drops Numba.
+
+    Kept a pure function (no photonfdtd import) so the precedence is unit-tested
+    directly. ``params`` is an FdtdParams."""
+    oc = params.out_of_core
+    eff_gpu = params.use_gpu and not oc and not params.use_jax
+    eff_numba = params.use_numba and not oc and not params.use_jax and not params.subpixel
+    return eff_gpu, eff_numba
+
+
 def wavelength_um_from_photon_energy_ev(energy_ev: float) -> float:
     """E = hc/lambda -> lambda = hc/E."""
     if energy_ev <= 0:
@@ -237,6 +268,18 @@ class FdtdParams:
     # unavailable backend surfaces photonfdtd's own error via the worker.
     use_gpu: bool = False
     use_numba: bool = False
+    # photonfdtd 0.4's differentiable JAX backend (functional stepper). It's
+    # exclusive of the GPU/Numba backends — build_simulation drops those when
+    # this is set — and runs in-process in the worker thread like the NumPy/
+    # Numba path. Needs the jax package (see jax_available()).
+    use_jax: bool = False
+    # Anisotropic subpixel smoothing of material interfaces (photonfdtd 0.4).
+    # Sub-cell-accurate permittivity at boundaries — more accurate for a given
+    # cell size, at some setup cost. Works on the NumPy/GPU/JAX backends but not
+    # Numba, so build_simulation drops Numba when this is on. subpixel_factor is
+    # the per-axis oversampling used to estimate each boundary cell's fill.
+    subpixel: bool = False
+    subpixel_factor: int = 3
     # Field precision. float32 halves the field/CPML/monitor memory and is
     # faster, at single-precision accuracy — more than enough for the
     # qualitative field movie this app shows. float64 is bit-for-bit the old
@@ -285,6 +328,10 @@ class SimulationConfig:
     clad_index: float | None = None  # None -> project_settings.clad_index
     use_gpu: bool = False
     use_numba: bool = False
+    # photonfdtd 0.4 backends. New fields default False so projects saved by an
+    # older phidler (which never wrote them) load unchanged.
+    use_jax: bool = False
+    subpixel: bool = False
     region_selected_only: bool = False
     sources: tuple[SourceSpec, ...] = ()
 
@@ -862,6 +909,14 @@ def build_simulation(
     cell_size_m = params.resolved_cell_size_um() * 1e-6
     padding_m = params.padding_um * 1e-6
 
+    # Resolve mutually-exclusive backends before handing flags to photonfdtd,
+    # which raises on a conflicting combination (see resolve_accel_flags). JAX
+    # and subpixel aren't parameters of from_gdsfactory, so from_gdsfactory
+    # builds the grid+structures on the plain backend and we rebuild the
+    # Simulation with those flags below.
+    oc = params.out_of_core
+    eff_gpu, eff_numba = resolve_accel_flags(params)
+
     sim = pf.from_gdsfactory(
         document.top,
         # Full-height core plus any partial-height rib/slab etch layers. Keyed by
@@ -886,11 +941,30 @@ def build_simulation(
         run_time=params.resolved_run_time_fs() * 1e-15,
         # Out-of-core stepping is NumPy-only, so it overrides the accel backends
         # (photonfdtd's run_out_of_core rejects a gpu/numba Simulation).
-        use_gpu=params.use_gpu and not params.out_of_core,
-        use_numba=params.use_numba and not params.out_of_core,
+        use_gpu=eff_gpu,
+        use_numba=eff_numba,
         precision=params.precision,
         xy_bounds=xy_bounds,
     )
+
+    # JAX / subpixel aren't from_gdsfactory parameters, so rebuild the
+    # Simulation from the grid+structures it produced with those flags set.
+    # The first construction runs on the cheap default backend; this second one
+    # does the real work (installs the JAX stepper and/or precomputes the
+    # smoothed permittivity). Out-of-core stays plain NumPy, so it's skipped.
+    if (params.use_jax or params.subpixel) and not oc:
+        sim = pf.Simulation(
+            grid=sim.grid,
+            structures=sim.structures,
+            sources=[],
+            monitors=[],
+            run_time=sim.run_time,
+            courant=sim.courant,
+            use_jax=params.use_jax,
+            subpixel=params.subpixel,
+            subpixel_factor=params.subpixel_factor,
+            precision=params.precision,
+        )
 
     sources = params.sources
     if not sources:

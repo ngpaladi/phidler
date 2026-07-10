@@ -62,6 +62,7 @@ from phidler.fdtd_sim import (
     feasible_cell_budget,
     gpu_available,
     gpu_backend_name,
+    jax_available,
     limit_solver_threads,
     mode_confinement,
     nearest_z_index,
@@ -1222,6 +1223,23 @@ class FdtdWindow(QMainWindow):
                 "Numba acceleration needs the numba package (pip install numba) — "
                 "not installed in this environment."
             )
+        # photonfdtd 0.4's differentiable JAX backend. Exclusive of GPU/Numba
+        # (photonfdtd raises otherwise), so ticking it clears those — see
+        # _on_jax_toggled. Disabled unless jax is importable, since (unlike
+        # GPU/Numba) photonfdtd does not silently fall back for JAX.
+        self.run_jax_check = QCheckBox("JAX")
+        if jax_available():
+            self.run_jax_check.setToolTip(
+                "Run on photonfdtd's differentiable JAX backend (0.4+). Exclusive "
+                "of GPU/Numba; runs in the background like Numba. First run traces "
+                "and compiles the stepper, so it's slower; cached after."
+            )
+        else:
+            self.run_jax_check.setEnabled(False)
+            self.run_jax_check.setToolTip(
+                "The JAX backend needs the jax package (pip install jax) — not "
+                "installed in this environment."
+            )
         self.run_low_memory_check = QCheckBox("Low memory (disk)")
         self.run_low_memory_check.setToolTip(
             "Out-of-core stepping: stream the field arrays to scratch disk and step "
@@ -1231,9 +1249,33 @@ class FdtdWindow(QMainWindow):
         )
         accel_layout.addWidget(self.run_gpu_check)
         accel_layout.addWidget(self.run_numba_check)
+        accel_layout.addWidget(self.run_jax_check)
         accel_layout.addWidget(self.run_low_memory_check)
         accel_layout.addStretch(1)
         form.addRow("Acceleration", accel_widget)
+
+        # Anisotropic subpixel smoothing (photonfdtd 0.4): sub-cell-accurate
+        # permittivity at material interfaces — more accurate for a given cell
+        # size. Incompatible with the Numba backend (photonfdtd raises), so
+        # ticking it clears Numba, and vice versa (see _on_subpixel_toggled).
+        self.run_subpixel_check = QCheckBox("Subpixel smoothing (more accurate)")
+        self.run_subpixel_check.setToolTip(
+            "Anisotropic subpixel smoothing of material interfaces (photonfdtd "
+            "0.4): sub-cell-accurate permittivity at boundaries, so a given cell "
+            "size resolves the geometry more faithfully — at some setup cost. "
+            "Works on the NumPy, GPU and JAX backends, but not Numba."
+        )
+        form.addRow("Accuracy", self.run_subpixel_check)
+
+        # Keep the mutually-exclusive backends consistent so a conflicting
+        # combination never reaches photonfdtd (which raises on one). Each
+        # handler only clears *other* boxes when its own is switched on, so the
+        # resulting re-entrant toggled() signals (which arrive with checked=
+        # False) are no-ops and can't loop.
+        self.run_jax_check.toggled.connect(self._on_jax_toggled)
+        self.run_gpu_check.toggled.connect(self._on_gpu_toggled)
+        self.run_numba_check.toggled.connect(self._on_numba_toggled)
+        self.run_subpixel_check.toggled.connect(self._on_subpixel_toggled)
 
         self.run_region_check = QCheckBox("Simulate selected components only")
         self.run_region_check.setToolTip(
@@ -1595,6 +1637,8 @@ class FdtdWindow(QMainWindow):
             clad_index=params.clad_index,
             use_gpu=params.use_gpu,
             use_numba=params.use_numba,
+            use_jax=params.use_jax,
+            subpixel=params.subpixel,
             region_selected_only=self.run_region_check.isChecked(),
             sources=params.sources,
             mode_wavelength_um=self.mode_wavelength_spin.value(),
@@ -1621,6 +1665,11 @@ class FdtdWindow(QMainWindow):
             self.run_gpu_check.setChecked(config.use_gpu)
         if self.run_numba_check.isEnabled():
             self.run_numba_check.setChecked(config.use_numba)
+        # New in 0.4; getattr keeps projects saved by an older phidler (whose
+        # SimulationConfig had no such field) loading cleanly.
+        if self.run_jax_check.isEnabled():
+            self.run_jax_check.setChecked(getattr(config, "use_jax", False))
+        self.run_subpixel_check.setChecked(getattr(config, "subpixel", False))
         self.run_region_check.setChecked(config.region_selected_only)
         for spec in config.sources:
             self._restore_source(spec)
@@ -1647,6 +1696,30 @@ class FdtdWindow(QMainWindow):
         self.source_table.item(row, _COL_TRACK_DIR).setText(f"{spec.direction_deg}")
         self.source_table.item(row, _COL_TRACK_LEN).setText(f"{spec.cherenkov_length_um}")
 
+    # -- backend exclusivity ---------------------------------------------------
+
+    def _on_jax_toggled(self, checked: bool) -> None:
+        # JAX is exclusive of the GPU and Numba backends.
+        if checked:
+            self.run_gpu_check.setChecked(False)
+            self.run_numba_check.setChecked(False)
+
+    def _on_gpu_toggled(self, checked: bool) -> None:
+        # GPU is exclusive of JAX.
+        if checked:
+            self.run_jax_check.setChecked(False)
+
+    def _on_numba_toggled(self, checked: bool) -> None:
+        # Numba is exclusive of JAX and can't do subpixel smoothing.
+        if checked:
+            self.run_jax_check.setChecked(False)
+            self.run_subpixel_check.setChecked(False)
+
+    def _on_subpixel_toggled(self, checked: bool) -> None:
+        # Subpixel smoothing is unsupported on the Numba backend.
+        if checked:
+            self.run_numba_check.setChecked(False)
+
     # -- running the simulation ------------------------------------------------
 
     def _current_params(self) -> FdtdParams:
@@ -1658,6 +1731,8 @@ class FdtdWindow(QMainWindow):
             clad_index=self.run_clad_row.clad_index(),
             use_gpu=self.run_gpu_check.isChecked(),
             use_numba=self.run_numba_check.isChecked(),
+            use_jax=self.run_jax_check.isChecked(),
+            subpixel=self.run_subpixel_check.isChecked(),
             out_of_core=self.run_low_memory_check.isChecked(),
         )
 
@@ -1883,8 +1958,12 @@ class FdtdWindow(QMainWindow):
             backend = f"GPU ({gpu_kind})" if gpu_kind and gpu_kind != "GPU" else "GPU"
         elif getattr(sim, "use_numba", False):
             backend = "Numba"
+        elif getattr(sim, "use_jax", False):
+            backend = "JAX"
         else:
             backend = "CPU"
+        if getattr(sim, "subpixel", False):
+            backend += " + subpixel"
         self.run_status_label.setText(
             f"Done on {backend} in {elapsed:.2f} s — {n_frames} frames, grid {gx}×{gy}×{gz}"
         )

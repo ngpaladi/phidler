@@ -18,7 +18,12 @@ def _tiny_document() -> LayoutDocument:
     return doc
 
 
-def _pump_until(predicate, max_iters: int = 300, sleep_s: float = 0.02) -> bool:
+# 1000 iters * 20 ms = up to 20 s. Generous headroom because the first mode/FDTD
+# solve in a fresh process pays photonfdtd 0.4's one-time cost (Numba kernel
+# compilation, cached to disk afterwards) on top of the solve itself — well over
+# the old 6 s ceiling on a cold cache. The predicate returns as soon as the
+# thread finishes, so already-fast solves don't wait the full budget.
+def _pump_until(predicate, max_iters: int = 1000, sleep_s: float = 0.02) -> bool:
     import time
 
     for _ in range(max_iters):

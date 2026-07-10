@@ -347,11 +347,130 @@ class MainWindow(QMainWindow):
             "route": route,
         }
         self.console_panel = ConsolePanel(namespace)
+        self._build_ai_assistant()
 
         dock = QDockWidget("Console", self)
         dock.setWidget(self.console_panel)
         self.addDockWidget(Qt.BottomDockWidgetArea, dock)
         self.console_toggle_action = dock.toggleViewAction()
+
+    def _build_ai_assistant(self) -> None:
+        """Optionally offer the AI assistant in the Console: an in-process MCP
+        server exposing this live session, plus a ClaudeSession the Console's
+        "Ask Claude" mode drives against it. Entirely best-effort — any missing
+        dependency (the ``mcp`` extra or the ``claude`` binary) just leaves the
+        Console as a plain Python console.
+
+        The server/session are built *lazily* (see _activate_ai): constructing a
+        MainWindow doesn't start a network server or a subprocess — that only
+        happens the first time a user switches the Console to "Ask Claude".
+        """
+        self._mcp_server = None
+        self._claude_session = None
+        self._gui_invoker = None
+
+        from phidler import ai
+
+        if not ai.ai_available():
+            reason = ai.unavailable_reason()
+            if reason:
+                self.statusBar().showMessage(reason, 8000)
+            return
+
+        self.console_panel.set_claude_provider(self._activate_ai)
+
+    def _activate_ai(self):
+        """Build (once) and return the ClaudeSession, starting the in-process MCP
+        server on first call. Returns None if it can't start. Invoked lazily by
+        the Console when the user first selects "Ask Claude"."""
+        if self._claude_session is not None:
+            return self._claude_session
+        try:
+            from phidler.ai.claude_session import ClaudeSession
+            from phidler.ai.mcp_server import GuiInvoker, PhidlerMcpServer
+
+            self._gui_invoker = GuiInvoker(self)
+            self._mcp_server = PhidlerMcpServer(
+                self._gui_invoker,
+                run_python=self.console_panel.run_python_from_agent,
+                describe_session=self._ai_describe_session,
+                list_components=self._ai_list_components,
+            )
+            self._mcp_server.start()
+            self._claude_session = ClaudeSession(
+                self._mcp_server.mcp_config_json(),
+                self._mcp_server.allowed_tool_names(),
+                parent=self,
+            )
+            self.statusBar().showMessage("AI assistant ready", 4000)
+            return self._claude_session
+        except Exception as exc:  # noqa: BLE001 - never let it break the console
+            self._mcp_server = self._claude_session = self._gui_invoker = None
+            self.statusBar().showMessage(f"AI assistant unavailable: {exc}", 8000)
+            return None
+
+    def _ai_describe_session(self) -> str:
+        """Human-readable summary of the live project for the MCP describe_session
+        tool. Runs on the GUI thread (via the server's invoker)."""
+        doc = self.document
+        ps = doc.project_settings
+        lines = [
+            f"Platform: {ps.platform_name} (core n={ps.core_index}, "
+            f"cladding n={ps.clad_index}, core thickness {ps.thickness_um} µm).",
+            "",
+            f"Instances ({len(doc.instances)}):",
+        ]
+        for inst in doc.instances.values():
+            t = doc.get_transform(inst.id)
+            ports = [p[0] for p in doc.get_ports_for_instance(inst.id)]
+            kw = f" {inst.kwargs}" if inst.kwargs else ""
+            lines.append(
+                f"  #{inst.id} {inst.component_spec}{kw} at ({t.x:.3f}, {t.y:.3f}) "
+                f"rot={t.rotation}° mirror={t.mirror}; ports: {', '.join(ports) or '(none)'}"
+            )
+        if not doc.instances:
+            lines.append("  (none yet)")
+        lines.append("")
+        lines.append(f"Routes ({len(doc.routes)}):")
+        for r in doc.routes.values():
+            lines.append(
+                f"  #{r.id} {r.cross_section}: #{r.instance_id_a}:{r.port_name_a} → "
+                f"#{r.instance_id_b}:{r.port_name_b} (len {r.length:.2f} µm)"
+            )
+        if not doc.routes:
+            lines.append("  (none yet)")
+        lines.append("")
+        lines.append(
+            "Edit via run_python using: place(spec, x=, y=, rotation=, mirror=, "
+            "**kwargs) -> instance, route(inst_a_id, port_a, inst_b_id, port_b, "
+            "cross_section='strip'), and doc (the LayoutDocument). "
+            "Call list_components to discover placeable component names."
+        )
+        return "\n".join(lines)
+
+    def _ai_list_components(self, filter: str = "") -> list[str]:
+        """Placeable component names (optionally substring-filtered) for the MCP
+        list_components tool."""
+        from phidler.pdk_catalog import build_catalog
+
+        needle = filter.strip().lower()
+        names: list[str] = []
+        for specs in build_catalog().values():
+            for spec in specs:
+                if not needle or needle in spec.name.lower():
+                    names.append(spec.name)
+        return sorted(set(names))
+
+    def closeEvent(self, event) -> None:
+        # Best-effort teardown of the optional AI assistant. The MCP server
+        # thread is a daemon and the claude process is parented to this window,
+        # so both would die with the app anyway; this just shuts them down
+        # promptly and cleanly.
+        if getattr(self, "_claude_session", None) is not None:
+            self._claude_session.cancel()
+        if getattr(self, "_mcp_server", None) is not None:
+            self._mcp_server.stop()
+        super().closeEvent(event)
 
     def _build_transform_overlay(self) -> None:
         self.transform_handles = TransformHandleSet(self.scene, self.document, self.undo_stack)
