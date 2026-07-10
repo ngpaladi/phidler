@@ -972,6 +972,7 @@ class MainWindow(QMainWindow):
 
         self.view.context_menu_requested.connect(self._show_canvas_context_menu)
         self.view.overlap_hint.connect(lambda msg: self.statusBar().showMessage(msg, 4000))
+        self.view.select_mode_changed.connect(lambda msg: self.statusBar().showMessage(msg, 2000))
 
     def _on_cursor_position_changed(self, x: float, y: float) -> None:
         self._last_canvas_pos_um = (x, y)  # so toolbar/quick placements land where you're looking

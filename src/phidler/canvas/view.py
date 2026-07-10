@@ -80,6 +80,7 @@ class LayoutView(QGraphicsView):
     context_menu_requested = Signal(QPoint)  # viewport-pixel position
     cursor_position_changed = Signal(float, float)  # scene x, y in microns
     overlap_hint = Signal(str)  # transient status text when a click lands on stacked items
+    select_mode_changed = Signal(str)  # "window"/"crossing" hint while a rubber-band drag is live
     route_pick_cancelled = Signal()  # Esc dropped a half-finished route's start port
     # Annotation tools (notes + callouts). annotate_mode is "" | "note" | "box"
     # | "arrow"; the requests carry scene µm for the window to turn into commands.
@@ -103,6 +104,11 @@ class LayoutView(QGraphicsView):
         self._n_eff: float = 1.0      # phase index for µm↔time conversion
         self._panning = False
         self._pan_last_pos = QPointF()
+        # KiCad-style rubber-band selection. _rubber_origin is the viewport point
+        # a rubber-band drag began at (None when not rubber-banding); the drag's
+        # x direction relative to it chooses window vs crossing selection.
+        self._rubber_origin: QPoint | None = None
+        self._rubber_mode = None  # last Qt.ItemSelectionMode applied this drag
         self._drag_start_transforms: dict[int, Transform] = {}
         self._dimmed_route_ids: set[int] = set()  # routes faded during a drag (recomputed on drop)
         self.armed_component: str | None = None
@@ -544,6 +550,14 @@ class LayoutView(QGraphicsView):
             event.accept()
             return
 
+        pos = event.position().toPoint()
+        stack = self.selectable_items_at(pos)
+        # A left-press on empty canvas starts a rubber-band selection; remember
+        # where, so the drag's horizontal direction can pick window vs crossing
+        # (see mouseMoveEvent). Clicking an item instead starts a move, not a band.
+        self._rubber_origin = pos if (event.button() == Qt.LeftButton and not stack) else None
+        self._rubber_mode = None
+
         super().mousePressEvent(event)
         # Snapshot only movable *instances* — routes and the reference backdrop
         # are selectable InstanceItems too, but their inst_id is a route id / -1
@@ -562,12 +576,10 @@ class LayoutView(QGraphicsView):
         # If the click landed on a stack of selectable items, tell the user how
         # to reach the ones underneath. Only on a plain left-click (a rubber-band
         # on empty canvas hits nothing, so nothing is emitted there).
-        if event.button() == Qt.LeftButton:
-            stack = self.selectable_items_at(event.position().toPoint())
-            if len(stack) >= 2:
-                self.overlap_hint.emit(
-                    f"{len(stack)} items here — Alt+click to cycle, or right-click to pick one"
-                )
+        if event.button() == Qt.LeftButton and len(stack) >= 2:
+            self.overlap_hint.emit(
+                f"{len(stack)} items here — Alt+click to cycle, or right-click to pick one"
+            )
 
     def mouseMoveEvent(self, event) -> None:
         pos = event.position() if hasattr(event, "position") else event.pos()
@@ -590,6 +602,12 @@ class LayoutView(QGraphicsView):
             self._update_route_preview(snap_pt or scene_pt)
             super().mouseMoveEvent(event)
             return
+        # KiCad-style rubber band: dragging right of the start selects only items
+        # the box fully encloses (window); dragging left selects items the box
+        # merely touches (crossing). Flip Qt's rubberBandSelectionMode live —
+        # before super() recomputes the selection — as the drag crosses its start.
+        if self._rubber_origin is not None and (event.buttons() & Qt.LeftButton):
+            self._update_rubber_band_mode(QPoint(int(pos.x()), int(pos.y())))
         super().mouseMoveEvent(event)
         # Live snap: re-apply the same port/grid snap the drop uses, every move,
         # so the selection visibly snaps mid-drag instead of jumping on release.
@@ -611,6 +629,24 @@ class LayoutView(QGraphicsView):
         scene_pt = self.mapToScene(viewport_pos)
         self.cursor_position_changed.emit(scene_pt.x(), scene_pt.y())
 
+    def _update_rubber_band_mode(self, cur: QPoint) -> None:
+        """Choose window vs crossing selection from the drag's x-direction and
+        apply it to Qt's rubber band. Window (drag right, or no horizontal move
+        yet) needs the whole item bounding box inside the band; crossing (drag
+        left) selects anything the band touches. Only emits a hint on a change."""
+        window = cur.x() >= self._rubber_origin.x()
+        mode = Qt.ContainsItemBoundingRect if window else Qt.IntersectsItemBoundingRect
+        if mode != self._rubber_mode:
+            self._rubber_mode = mode
+            self.setRubberBandSelectionMode(mode)
+            self.select_mode_changed.emit(
+                "Window select — fully enclose items" if window else "Crossing select — touch to select"
+            )
+
+    def _end_rubber_band(self) -> None:
+        self._rubber_origin = None
+        self._rubber_mode = None
+
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MiddleButton and self._panning:
             self._panning = False
@@ -629,6 +665,7 @@ class LayoutView(QGraphicsView):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+        self._end_rubber_band()  # rubber-band drag (if any) is over
         scene = self.scene()
 
         self._snap_dragged_items()

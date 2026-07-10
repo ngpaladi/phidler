@@ -53,7 +53,9 @@ then exits routing mode on a second press.
 | Action | Gesture |
 | --- | --- |
 | Select | Left-click a component or route |
-| Rubber-band select | Left-drag on empty canvas |
+| Rubber-band select (window) | Left-drag on empty canvas, **left → right** — selects only fully-enclosed items |
+| Rubber-band select (crossing) | Left-drag on empty canvas, **right → left** — also selects items the box touches |
+| Select an item under others | `Alt`-click cycles down the stack (or right-click → Select under cursor) |
 | Add to selection | `Shift`-click / `Ctrl`-click |
 | Move | Left-drag a selected component |
 | Pan | Middle-mouse drag |

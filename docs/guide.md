@@ -176,7 +176,12 @@ automatically.
 ## Editing on the canvas
 
 - **Select**: click an item. Rubber-band drag to select multiple, or
-  **Edit > Select All** (`Ctrl+A`).
+  **Edit > Select All** (`Ctrl+A`). The rubber band works like KiCad: drag
+  **left → right** to select only items the box *fully encloses* (a *window*
+  select), or **right → left** to also grab anything the box merely *touches* (a
+  *crossing* select). The status bar names the mode as you drag. To reach an item
+  buried under others, **Alt+click** cycles down through the stack, or right-click
+  and pick it from **Select under cursor**.
 - **Move**: drag a selected item. Dragging a port close to another
   instance's port snaps them into exact alignment; otherwise the move
   snaps to the grid. Snapping is applied live as you drag, not just on drop.
