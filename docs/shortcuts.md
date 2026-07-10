@@ -3,7 +3,7 @@
 A quick reference for keyboard shortcuts, mouse navigation, and what lives in
 each menu.
 
-> On **macOS**, use **⌘ (Command)** wherever this page says **Ctrl** — Qt maps
+> On **macOS**, use **⌘ (Command)** wherever this page says **Ctrl**. Qt maps
 > the standard shortcuts (Save, Copy, Undo, …) to ⌘ automatically.
 
 ## Keyboard shortcuts
@@ -45,7 +45,7 @@ each menu.
 | --- | --- |
 | Cancel the current action (routing, placement, measure) | `Esc` |
 
-`Esc` backs out one step at a time — it cancels a half-finished route first,
+`Esc` backs out one step at a time. It cancels a half-finished route first,
 then exits routing mode on a second press.
 
 ## Mouse & canvas navigation

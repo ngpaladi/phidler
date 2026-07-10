@@ -1,7 +1,7 @@
 # Development
 
-This page is for anyone modifying or contributing to Phidler — for using
-the app, see the [User Guide](guide.md).
+This page is for anyone modifying or contributing to Phidler. If you just want
+to use the app, head to the [User Guide](guide.md) instead.
 
 ## Environment notes
 
@@ -12,7 +12,7 @@ package manager your distro uses), the dynamic linker can resolve it
 around this by prepending PySide6's own Qt lib directory to
 `LD_LIBRARY_PATH` before launching, so the linker finds the matching
 version first. If you ever run the app a different way (not via those
-scripts) and hit this crash, set the same environment variable yourself —
+scripts) and hit this crash, set the same environment variable yourself.
 `run.sh` derives the path the same way:
 
 ```
