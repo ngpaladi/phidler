@@ -386,7 +386,7 @@ def test_remote_dialog_has_a_backend_selector(qapp):
 
     dlg = RemoteConfigDialog()
     values = [dlg.backend_combo.itemData(i) for i in range(dlg.backend_combo.count())]
-    assert values == ["cpu", "jax", "cupy"]
+    assert values == ["auto", "cpu", "jax", "cupy"]
 
     dlg.alias_edit.setText("gpubox")
     dlg.backend_combo.setCurrentIndex(values.index("jax"))
@@ -452,6 +452,69 @@ def test_smart_setup_installs_when_not_ready(qapp, monkeypatch):
 
     assert deployed == [True]  # installed because the first probe failed
     assert "Remote is ready" in dlg.log.toPlainText()
+
+
+def test_auto_setup_adopts_the_probe_recommendation(qapp, monkeypatch):
+    """With Auto selected, the remote hardware probe's recommendation (streamed as
+    PHIDLER_RECOMMEND=…) is adopted as the concrete backend and saved."""
+    import time
+
+    # Not ready first; ready after the fake install. The fake deploy emits the
+    # probe's recommendation line, exactly as the real one streams it.
+    results = iter([(False, "not ready"), (True, "ready")])
+    monkeypatch.setattr(fr, "check_remote", lambda cfg: next(results))
+
+    def fake_deploy(cfg, on_line):
+        on_line("Detecting remote hardware …")
+        on_line("PHIDLER_RECOMMEND=jax")
+        return True
+
+    monkeypatch.setattr(fr, "deploy_to_remote", fake_deploy)
+    import phidler.remote_config as rc
+
+    saved = []
+    monkeypatch.setattr(rc, "save_remote_config", lambda cfg, *a, **k: saved.append(cfg))
+
+    from phidler.panels.fdtd_window import RemoteConfigDialog
+
+    dlg = RemoteConfigDialog()
+    dlg.alias_edit.setText("gpubox")
+    # Ensure Auto is selected.
+    dlg.backend_combo.setCurrentIndex([dlg.backend_combo.itemData(i) for i in range(dlg.backend_combo.count())].index("auto"))
+    dlg._start_op("setup")
+    for _ in range(300):
+        qapp.processEvents()
+        if dlg._op_thread is None:
+            break
+        time.sleep(0.01)
+
+    assert dlg._detected_backend == "jax"
+    assert dlg.backend_combo.currentData() == "jax"  # combo adopted the concrete backend
+    assert saved and saved[-1].backend == "jax"  # saved as concrete, not "auto"
+
+
+def test_deploy_runs_the_hardware_probe(monkeypatch, tmp_path):
+    """deploy_to_remote invokes phidler.remote_setup_probe on the remote to set up
+    the ideal accelerator."""
+    cfg = RemoteConfig(alias="h", remote_python="/x/py", backend="auto")
+
+    # Make the upfront steps succeed cheaply.
+    monkeypatch.setattr(fr, "_local_checkouts", lambda c: (Path("/local/phidler"), None))
+    monkeypatch.setattr(fr, "_ssh", lambda alias, cmd, timeout=None: _cp(0, "ok"))
+    monkeypatch.setattr(fr, "_upload_tree", lambda *a, **k: True)
+    monkeypatch.setattr(fr, "check_remote", lambda c: (True, "ok"))
+
+    commands = []
+
+    def fake_stream(alias, cmd, on_line):
+        commands.append(cmd)
+        return 0
+
+    monkeypatch.setattr(fr, "_ssh_stream", fake_stream)
+
+    ok = fr.deploy_to_remote(cfg, lambda line: None)
+    assert ok
+    assert any("remote_setup_probe" in c and "--backend auto" in c and "--install" in c for c in commands)
 
 
 def test_summarize_remote_backends_parses_the_probe_line():

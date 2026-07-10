@@ -737,6 +737,7 @@ class RemoteConfigDialog(QDialog):
         self.resize(620, 480)
         self._op_thread: QThread | None = None
         self._op_worker: _RemoteOpWorker | None = None
+        self._detected_backend: str | None = None  # concrete backend the probe picked
 
         from phidler.remote_config import DEFAULT_REMOTE_DIR, load_remote_config
 
@@ -760,17 +761,20 @@ class RemoteConfigDialog(QDialog):
         # matters. "Connect & set up" reports which of these the remote actually
         # has installed.
         self.backend_combo = QComboBox()
+        self.backend_combo.addItem("Auto — detect on the remote (recommended)", "auto")
         self.backend_combo.addItem("CPU (Numba)", "cpu")
-        self.backend_combo.addItem("GPU — JAX (recommended)", "jax")
+        self.backend_combo.addItem("GPU — JAX", "jax")
         self.backend_combo.addItem("GPU — CuPy (legacy)", "cupy")
-        idx = self.backend_combo.findData(cfg.resolved_backend())
+        # Show the stored backend; a fresh config defaults to Auto.
+        stored = cfg.backend if cfg.backend in ("auto", "cpu", "jax", "cupy") else cfg.resolved_backend()
+        idx = self.backend_combo.findData(stored)
         self.backend_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.backend_combo.setToolTip(
-            "Accelerator for the remote solve. GPU (JAX) is the recommended GPU "
-            "path (photonfdtd 0.9 runs JAX on the GPU via XLA); CuPy is the legacy "
-            "GPU backend. The remote needs the matching package installed — "
-            "'Connect & set up' reports which are available there. A backend the "
-            "remote lacks surfaces a clear error instead of running."
+            "Accelerator for the remote solve. Auto inspects the remote's GPU during "
+            "'Connect & set up' and installs the ideal backend (JAX on CUDA 12, CuPy "
+            "on CUDA 11 / ROCm, or CPU/Numba with no GPU), then remembers the choice. "
+            "Or pin a specific one: GPU — JAX is the recommended GPU path (photonfdtd "
+            "0.9 runs JAX on the GPU via XLA); CuPy is the legacy GPU backend."
         )
         form.addRow("Acceleration", self.backend_combo)
         layout.addLayout(form)
@@ -881,11 +885,13 @@ class RemoteConfigDialog(QDialog):
             return
         self._set_busy(True)
         self._last_op = op
+        self._detected_backend = None  # filled from the probe's PHIDLER_RECOMMEND line
         self._op_thread = QThread(self)
         self._op_worker = _RemoteOpWorker(self._current_config(), op, force)
         self._op_worker.moveToThread(self._op_thread)
         self._op_thread.started.connect(self._op_worker.run)
         self._op_worker.line.connect(self._append)
+        self._op_worker.line.connect(self._scan_line)
         self._op_worker.done.connect(self._on_op_done)
         self._op_worker.done.connect(self._op_thread.quit)
         self._op_thread.finished.connect(self._op_worker.deleteLater)
@@ -897,15 +903,32 @@ class RemoteConfigDialog(QDialog):
         # here — do NOT wait() on the thread: its event loop hasn't returned yet
         # (the queued quit() runs after this slot), so waiting would deadlock.
         # A successful "Connect & set up" saves the config, so the one click also
-        # persists the host/backend — no separate Save step needed.
+        # persists the host/backend — no separate Save step needed. When the user
+        # chose Auto, the remote probe reported a concrete backend; adopt it (in
+        # the combo and the saved config) so runs use what was actually installed.
         if ok and getattr(self, "_last_op", None) == "setup":
             from phidler.remote_config import save_remote_config
 
+            if self.backend_combo.currentData() == "auto" and self._detected_backend:
+                idx = self.backend_combo.findData(self._detected_backend)
+                if idx >= 0:
+                    self.backend_combo.setCurrentIndex(idx)
+                self._append(f"\nAuto-selected the '{self._detected_backend}' backend for this remote.")
             save_remote_config(self._current_config())
             self._append("\nReady. Settings saved — close this dialog and run.")
         else:
             self._append("\nDone." if ok else "\nFinished with errors.")
         self._set_busy(False)
+
+    def _scan_line(self, text: str) -> None:
+        """Watch the streamed setup output for the hardware probe's recommendation
+        (PHIDLER_RECOMMEND=<backend>), so an Auto setup can adopt the concrete
+        backend the remote actually installed."""
+        marker = "PHIDLER_RECOMMEND="
+        if marker in text:
+            value = text.split(marker, 1)[1].strip().split()[0]
+            if value in ("cpu", "jax", "cupy"):
+                self._detected_backend = value
 
     def _on_op_thread_finished(self) -> None:
         # The worker thread's event loop has actually exited now, so it's safe to

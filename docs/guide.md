@@ -741,15 +741,19 @@ back, while the UI here stays responsive. Tick **Run on remote server** and clic
    only required field. Phidler shells out to `ssh`/`scp`/`rsync` and lets your
    SSH config and agent/keys handle authentication; it stores no passwords
    (key-based, non-interactive auth is required).
-2. Pick the remote **Acceleration**: **CPU (Numba)**, **GPU — JAX**
-   (recommended; photonfdtd 0.9 runs JAX on the GPU through XLA), or
-   **GPU — CuPy** (legacy). This is the *remote's* hardware, independent of what
-   this machine has.
+2. Pick the remote **Acceleration**, or leave it on **Auto**. Auto inspects the
+   remote's GPU during setup and installs the ideal backend for it — JAX on an
+   NVIDIA CUDA 12 box (the recommended GPU path; photonfdtd 0.9 runs JAX on the
+   GPU through XLA), CuPy on CUDA 11 or an AMD/ROCm card, or plain CPU/Numba when
+   there's no GPU — then remembers what it chose. You can also pin a specific one
+   (**CPU (Numba)**, **GPU — JAX**, **GPU — CuPy**). Either way it's the
+   *remote's* hardware that matters, not this machine's.
 3. Click **Connect && set up**. That one button tests the connection, installs
    phidler + photonfdtd on the remote if they aren't there yet (a one-time step,
-   streamed into the log), verifies, reports which accelerators the remote
-   actually has, and saves. Click it again any time; it only reinstalls when
-   needed (or when you tick **Force reinstall**, e.g. after updating a package).
+   streamed into the log), detects the remote's hardware and installs the ideal
+   accelerator, verifies, and saves. Click it again any time; it only reinstalls
+   when needed (or when you tick **Force reinstall**, e.g. after updating a
+   package).
 
 The install location is derived for you (a managed venv under `~/phidler-remote`);
 open **Advanced** only if you want to install into a specific directory or an

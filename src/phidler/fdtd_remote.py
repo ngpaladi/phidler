@@ -540,6 +540,22 @@ def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
             on_line(f"pip install of {label} failed (exit {rc}).")
             return False
 
+    # Detect the remote's GPU and install the ideal accelerator for it (JAX on
+    # CUDA 12, CuPy on CUDA 11 / ROCm, or nothing for a CPU-only host). Runs the
+    # phidler.remote_setup_probe module just installed above. The accelerator is
+    # optional, so a failure here is logged but doesn't fail the whole setup —
+    # phidler itself is installed and CPU/Numba always works.
+    backend_choice = cfg.backend or "auto"
+    on_line("\nDetecting remote hardware and setting up the ideal accelerator …")
+    probe_cmd = f"{rpy} -m phidler.remote_setup_probe --backend {shlex.quote(backend_choice)} --install"
+    probe_rc = _ssh_stream(cfg.alias, probe_cmd, on_line)
+    if probe_rc != 0:
+        on_line(
+            "Accelerator setup didn't complete (exit "
+            f"{probe_rc}); the remote will still run on CPU/Numba. Install a GPU "
+            "package by hand if you need it."
+        )
+
     on_line("\nVerifying the remote install …")
     ok, msg = check_remote(cfg)
     on_line(msg)
