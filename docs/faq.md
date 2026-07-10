@@ -117,29 +117,33 @@ simulator.
 
 ### Can I use an AMD GPU, not just NVIDIA?
 
-Yes. GPU acceleration goes through CuPy, and Phidler works with either the CUDA
-build (NVIDIA, `pip install cupy-cuda12x`) or the ROCm build (AMD,
-`pip install cupy-rocm-5-0`). The status line tells you which backend actually
-ran (`Done on GPU (CUDA)…` / `…(ROCm)…`).
+Yes. As of photonfdtd 0.9 the GPU path is JAX, so the simplest route for either
+vendor is a GPU-capable jax (`pip install "jax[cuda12]"` for NVIDIA); tick **JAX**
+and it runs on the GPU through XLA. The older **GPU (CuPy)** box still covers AMD
+via CuPy's ROCm build (`pip install cupy-rocm-5-0`) or NVIDIA via the CUDA build
+(`pip install cupy-cuda12x`), but it's deprecated now, so prefer JAX. Either way
+the status line tells you which backend actually ran.
 
 ### The GPU checkbox is greyed out
 
-CuPy isn't installed, or its build doesn't match your driver. Install the
-[right CuPy wheel](guide.md#fdtd-simulation) for your GPU. Numba (a CPU
-just-in-time compiler) is a lighter alternative, and it's on by default when
-installed.
+That's the legacy **GPU (CuPy)** box, greyed out because CuPy isn't installed (or
+its build doesn't match your driver). You don't need it for GPU work anymore.
+Install a GPU jax instead (`pip install "jax[cuda12]"`) and use the **JAX** box.
+Numba (a CPU just-in-time compiler) is a lighter alternative, and it's on by
+default when installed.
 
 ### What are the JAX and Subpixel smoothing options?
 
-Both come from photonfdtd 0.4. **JAX** is a third acceleration backend
-(photonfdtd's differentiable stepper); it behaves like Numba — background run,
-slow first compile, fast after — and is greyed out unless the `jax` package is
-installed. **Subpixel smoothing** is an accuracy option: it gives cells that
-straddle a material edge a blended permittivity so a slanted or curved boundary
-isn't forced onto the grid, letting a given cell size resolve your geometry more
-faithfully. JAX is exclusive of GPU/Numba, and subpixel works everywhere except
-Numba, so the checkboxes clear each other where they'd conflict. See
-[Speed](guide.md#speed) and [A sharper run](guide.md#a-sharper-run-subpixel-smoothing).
+**JAX** is photonfdtd's differentiable stepper and, since 0.9, the recommended way
+to use the GPU: it runs on the GPU through XLA when one is visible and on the CPU
+otherwise, always in the background (slow first compile, fast after). It's greyed
+out unless the `jax` package is installed. **Subpixel smoothing** is an accuracy
+option: it gives cells that straddle a material edge a blended permittivity so a
+slanted or curved boundary isn't forced onto the grid, letting a given cell size
+resolve your geometry more faithfully. JAX is exclusive of the GPU/Numba boxes,
+and subpixel works everywhere except Numba, so the checkboxes clear each other
+where they'd conflict. See [Speed](guide.md#speed) and
+[A sharper run](guide.md#a-sharper-run-subpixel-smoothing).
 
 ### A run is going to be huge — will it freeze the app?
 

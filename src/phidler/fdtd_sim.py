@@ -154,10 +154,27 @@ def jax_available() -> bool:
     the ``jax`` package (photonfdtd 0.4+ ships the stepper, but importing it
     without jax raises). Unlike numba/gpu, photonfdtd does *not* silently fall
     back for JAX: it raises if use_jax is set without jax, so the FDTD window
-    only enables the JAX checkbox when this is True."""
+    only enables the JAX checkbox when this is True.
+
+    As of photonfdtd 0.9 JAX is also the recommended *GPU* backend: it runs on
+    the GPU through XLA (see jax_gpu_available), superseding the CuPy use_gpu
+    path, which is now deprecated. On a CPU-only jax it runs on the CPU."""
     try:
         import jax  # noqa: F401
         return True
+    except Exception:
+        return False
+
+
+def jax_gpu_available() -> bool:
+    """Whether JAX will run on a GPU here — i.e. XLA sees a GPU device. photonfdtd
+    0.9 makes JAX the GPU backend (via XLA), so this is how the UI tells the user
+    that ticking JAX means "run on the GPU" rather than the CPU. False when jax
+    isn't installed or is a CPU-only build."""
+    try:
+        import jax
+
+        return len(jax.devices("gpu")) > 0
     except Exception:
         return False
 

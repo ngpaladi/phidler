@@ -670,22 +670,21 @@ Propagation runs use a few accelerators so they don't crawl:
   plain NumPy engine) and runs in the background, so the window stays
   responsive. The very first run compiles the kernel and is slower; that's
   cached to disk, so every run after is fast.
-- **GPU** (CuPy) is far faster still and is left off by default mainly because
-  of its ~1 s startup, which only pays off on larger runs. It runs in a
-  separate process now (its own GPU context), so, unlike before, it no longer
-  freezes the UI or risks crashing the app; the worker just waits on the child.
-  Both GPU vendors work through the same code path: install CuPy's CUDA build
-  for an **NVIDIA** GPU (`pip install cupy-cuda12x`) or its ROCm build for an
-  **AMD** GPU (`pip install cupy-rocm-5-0`). photonfdtd uses only generic CuPy
-  array ops, so either drives the solve. The status line reports which backend
-  actually ran (**"Done on GPU (CUDA)…"** / **"…GPU (ROCm)…"** vs
-  **"…on Numba…"**), so a GPU request that quietly fell back to CPU is visible.
 - **JAX** (the **Acceleration** row, shown when the `jax` package is installed)
-  is a third backend — photonfdtd's differentiable stepper. Like Numba, it runs
-  in the background and is slow only on its first run, where it traces and
-  compiles the kernel before caching it. It's exclusive of GPU and Numba, so
-  ticking it clears those; reach for it when you specifically want the JAX path,
-  otherwise Numba or GPU is the simpler default.
+  is the way to use the **GPU** as of photonfdtd 0.9. Tick it and, if JAX sees a
+  GPU, the solve runs there through XLA; if not, it runs on the CPU. Either way
+  it stays in the worker thread, so the window stays responsive. The first run
+  traces and compiles the stepper (slower), then that's cached. The box reads
+  **JAX (GPU)** when a GPU is visible; to get the GPU build, install a CUDA jax
+  (e.g. `pip install "jax[cuda12]"`). It's exclusive of the GPU and Numba boxes,
+  so ticking it clears those.
+- **GPU (CuPy)** is the older GPU path, now **deprecated** in photonfdtd 0.9 in
+  favour of JAX. It still works if you have CuPy installed (the CUDA build,
+  `pip install cupy-cuda12x`, or the ROCm build for AMD,
+  `pip install cupy-rocm-5-0`) and runs in a separate process so it can't freeze
+  the app, but prefer JAX unless you specifically need CuPy. Whichever ran, the
+  status line names it (**"Done on GPU (CUDA)…"** / **"…on JAX…"** /
+  **"…on Numba…"**), so a request that quietly fell back to CPU is visible.
 - The propagation domain keeps only as much **cladding** as the mode's
   evanescent field actually needs (a few decay lengths, scaled by your
   platform's index contrast), rather than the full cladding the mode solver

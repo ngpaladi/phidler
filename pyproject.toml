@@ -27,25 +27,25 @@ docs = [
 # package) — install it from its own checkout first
 # (pip install -e /path/to/photonfdtd), then this version constraint will
 # already be satisfied and `pip install -e ".[fdtd]"` won't need network
-# access for it. Phidler tracks photonfdtd 0.4.x, which adds a differentiable
-# JAX backend and anisotropic subpixel smoothing on top of the 0.3 out-of-core
-# stepper and 0.2 CuPy GPU backend — the FDTD window surfaces the JAX and
-# subpixel options (see panels/fdtd_window.py).
+# access for it. Phidler tracks photonfdtd 0.9.x. Since 0.4 it has gained the
+# differentiable JAX backend and anisotropic subpixel smoothing; 0.9 makes JAX
+# the GPU backend (it runs on the GPU through XLA) and deprecates the old CuPy
+# use_gpu path. The FDTD window surfaces the JAX (GPU) and subpixel options and
+# marks the CuPy GPU box as legacy (see panels/fdtd_window.py).
 #
-# The GPU backend is optional and not pinned here — install CuPy yourself to
-# match your hardware: the CUDA build for NVIDIA (pip install cupy-cuda12x) or
-# the ROCm build for AMD (pip install cupy-rocm-5-0). photonfdtd uses only
-# generic CuPy array ops, so either works; leaving CuPy out just runs on CPU.
-# The JAX backend is likewise optional and unpinned — install jax yourself
-# (pip install jax) to enable the "JAX" acceleration checkbox; without it the
-# checkbox stays disabled and the other backends are unaffected.
+# GPU acceleration is optional and unpinned. Prefer JAX: install a GPU-capable
+# jax (e.g. pip install "jax[cuda12]" for an NVIDIA GPU, or plain `pip install
+# jax` for CPU) to enable the "JAX (GPU)" checkbox. The legacy CuPy path is also
+# unpinned — install CuPy to match your hardware (pip install cupy-cuda12x for
+# NVIDIA, cupy-rocm-5-0 for AMD) if you specifically need it. Leaving both out
+# just runs on CPU (NumPy/Numba).
 fdtd = [
-    "photonfdtd>=0.4.0",
+    "photonfdtd>=0.9.1",
     "matplotlib>=3.7",
     # Numba JIT-compiles photonfdtd's field-update kernel (parallel, cached to
-    # disk) — ~5x faster than the plain NumPy engine and, unlike the CuPy GPU
-    # backend, runs in the worker thread so the UI stays responsive. Enabled by
-    # default when importable.
+    # disk) — ~5x faster than the plain NumPy engine and, like JAX, runs in the
+    # worker thread so the UI stays responsive. Enabled by default when
+    # importable.
     "numba>=0.59",
 ]
 # Optional AI assistant: an in-process MCP server exposes phidler's live

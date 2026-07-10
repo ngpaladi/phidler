@@ -63,6 +63,7 @@ from phidler.fdtd_sim import (
     gpu_available,
     gpu_backend_name,
     jax_available,
+    jax_gpu_available,
     limit_solver_threads,
     mode_confinement,
     nearest_z_index,
@@ -1193,19 +1194,25 @@ class FdtdWindow(QMainWindow):
         # GPU/Numba are disabled unless their backend is actually importable —
         # photonfdtd silently ignores the request otherwise (it ANDs use_gpu
         # with availability), so a stray check would quietly run on the CPU.
-        self.run_gpu_check = QCheckBox("GPU")
+        # Legacy CuPy GPU path. As of photonfdtd 0.9 this is deprecated in favour
+        # of JAX, which runs on the GPU through XLA (and is differentiable) — see
+        # the JAX box below. Kept for CuPy-only setups (e.g. AMD/ROCm); a run on
+        # it prints photonfdtd's own deprecation notice.
+        self.run_gpu_check = QCheckBox("GPU (CuPy)")
         if gpu_available():
             backend = gpu_backend_name()  # "CUDA" (NVIDIA) or "ROCm" (AMD)
             self.run_gpu_check.setToolTip(
-                f"Run on the GPU via photonfdtd's CuPy backend ({backend})."
+                f"Run on the GPU via photonfdtd's legacy CuPy backend ({backend}). "
+                "Deprecated in photonfdtd 0.9 — prefer JAX for the GPU (it runs on "
+                "the GPU too, via XLA, and stays in the worker thread)."
             )
         else:
             self.run_gpu_check.setEnabled(False)
             self.run_gpu_check.setToolTip(
-                "GPU acceleration needs CuPy — either the CUDA build for an "
-                "NVIDIA GPU (pip install cupy-cuda12x) or the ROCm build for an "
-                "AMD GPU (pip install cupy-rocm-5-0). Not available in this "
-                "environment."
+                "The legacy CuPy GPU backend needs CuPy — the CUDA build "
+                "(pip install cupy-cuda12x) or the ROCm build "
+                "(pip install cupy-rocm-5-0). Not installed here. For GPU work, "
+                "prefer JAX (pip install jax) — the recommended GPU backend now."
             )
         self.run_numba_check = QCheckBox("Numba")
         if numba_available():
@@ -1223,22 +1230,32 @@ class FdtdWindow(QMainWindow):
                 "Numba acceleration needs the numba package (pip install numba) — "
                 "not installed in this environment."
             )
-        # photonfdtd 0.4's differentiable JAX backend. Exclusive of GPU/Numba
-        # (photonfdtd raises otherwise), so ticking it clears those — see
-        # _on_jax_toggled. Disabled unless jax is importable, since (unlike
-        # GPU/Numba) photonfdtd does not silently fall back for JAX.
-        self.run_jax_check = QCheckBox("JAX")
+        # photonfdtd's differentiable JAX backend, and (since 0.9) the recommended
+        # way to use the GPU: JAX runs on the GPU through XLA when one is present,
+        # otherwise on the CPU. Exclusive of GPU/Numba (photonfdtd raises
+        # otherwise), so ticking it clears those — see _on_jax_toggled. Disabled
+        # unless jax is importable, since (unlike GPU/Numba) photonfdtd does not
+        # silently fall back for JAX.
+        _jax_on_gpu = jax_available() and jax_gpu_available()
+        self.run_jax_check = QCheckBox("JAX (GPU)" if _jax_on_gpu else "JAX")
         if jax_available():
+            where = (
+                "Runs on your GPU through XLA. "
+                if _jax_on_gpu
+                else "Runs on the CPU (no GPU visible to JAX). "
+            )
             self.run_jax_check.setToolTip(
-                "Run on photonfdtd's differentiable JAX backend (0.4+). Exclusive "
-                "of GPU/Numba; runs in the background like Numba. First run traces "
-                "and compiles the stepper, so it's slower; cached after."
+                "Run on photonfdtd's differentiable JAX backend — the recommended "
+                "GPU path as of photonfdtd 0.9. " + where + "Stays in the worker "
+                "thread so the UI stays responsive; the first run traces and "
+                "compiles the stepper, so it's slower, then it's cached."
             )
         else:
             self.run_jax_check.setEnabled(False)
             self.run_jax_check.setToolTip(
-                "The JAX backend needs the jax package (pip install jax) — not "
-                "installed in this environment."
+                "The JAX backend needs the jax package (pip install jax, or a CUDA "
+                "build like 'pip install jax[cuda12]' for the GPU) — not installed "
+                "in this environment. This is now the recommended GPU backend."
             )
         self.run_low_memory_check = QCheckBox("Low memory (disk)")
         self.run_low_memory_check.setToolTip(
@@ -1860,7 +1877,15 @@ class FdtdWindow(QMainWindow):
 
         grid = (cell_count, 1, 1)
         memory_gb = estimate_memory_gb(cell_count)
-        selected = "gpu" if params.use_gpu else ("numba" if params.use_numba else "numpy")
+        # JAX on a GPU runs at roughly the GPU tier; JAX on a CPU-only build is
+        # closer to the NumPy tier, so estimate it as NumPy (the fall-through).
+        jax_on_gpu = params.use_jax and jax_gpu_available()
+        if params.use_gpu or jax_on_gpu:
+            selected = "gpu"
+        elif params.use_numba:
+            selected = "numba"
+        else:
+            selected = "numpy"
         selected_seconds = estimate_run_seconds(grid, n_steps, backend=selected)
 
         # The run-time estimates are calibrated on *local* hardware, so they're
@@ -1909,7 +1934,8 @@ class FdtdWindow(QMainWindow):
         if remote:
             self.run_status_label.setText("Running on remote server…")
         else:
-            self.run_status_label.setText("Running on GPU…" if params.use_gpu else "Running…")
+            on_gpu = params.use_gpu or (params.use_jax and jax_gpu_available())
+            self.run_status_label.setText("Running on GPU…" if on_gpu else "Running…")
         self._field_image_initialized = False
 
         # Start the progress bar busy (indeterminate): there's a startup phase —
