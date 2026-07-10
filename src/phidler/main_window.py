@@ -919,6 +919,7 @@ class MainWindow(QMainWindow):
         self.fullscreen_action.triggered.connect(self._toggle_fullscreen)
 
         self.view.context_menu_requested.connect(self._show_canvas_context_menu)
+        self.view.overlap_hint.connect(lambda msg: self.statusBar().showMessage(msg, 4000))
 
     def _on_cursor_position_changed(self, x: float, y: float) -> None:
         self._last_canvas_pos_um = (x, y)  # so toolbar/quick placements land where you're looking
@@ -1433,10 +1434,16 @@ class MainWindow(QMainWindow):
         else:
             self.showFullScreen()
 
-    def _build_canvas_context_menu(self) -> QMenu:
+    def _build_canvas_context_menu(self, pos: QPoint | None = None) -> QMenu:
         """Split from _show_canvas_context_menu so tests can exercise menu
-        construction without calling the blocking QMenu.exec()."""
+        construction without calling the blocking QMenu.exec().
+
+        When ``pos`` (a viewport point) lands on 2+ overlapping selectable items,
+        the menu leads with a "Select under cursor" submenu listing each one, so
+        an item buried under others can be picked by name."""
         menu = QMenu(self)
+        if pos is not None:
+            self._add_select_under_cursor_menu(menu, pos)
         menu.addAction(self.rotate_action)
         menu.addAction(self.flip_h_action)
         menu.addAction(self.flip_v_action)
@@ -1459,8 +1466,50 @@ class MainWindow(QMainWindow):
         return menu
 
     def _show_canvas_context_menu(self, pos: QPoint) -> None:
-        menu = self._build_canvas_context_menu()
+        menu = self._build_canvas_context_menu(pos)
         menu.exec(self.view.viewport().mapToGlobal(pos))
+
+    def _add_select_under_cursor_menu(self, menu: QMenu, pos: QPoint) -> None:
+        """Prepend a "Select under cursor" submenu to ``menu`` if 2+ selectable
+        items overlap at ``pos``. Each entry selects just that item, so a buried
+        component is reachable without cycling (Alt+click) to it."""
+        stack = self.view.selectable_items_at(pos)
+        if len(stack) < 2:
+            return
+        # Build the submenu with an explicit parent rather than menu.addMenu(str):
+        # the string overload hands the returned QMenu to Python ownership, and
+        # shiboken then collects it out from under the still-open menu. Parenting
+        # to `menu` keeps C++ owning it for the menu's lifetime.
+        submenu = QMenu("Select under cursor", menu)
+        for item in stack:
+            action = submenu.addAction(self._item_display_label(item))
+            action.triggered.connect(lambda _checked=False, it=item: self._select_only(it))
+        menu.addMenu(submenu)
+        menu.addSeparator()
+
+    def _item_display_label(self, item) -> str:
+        """A human label for a scene item in the "Select under cursor" list:
+        component name for an instance, cross-section for a route, a snippet for
+        a note. The id disambiguates two of the same kind stacked together."""
+        doc = self.document
+        inst_id = getattr(item, "inst_id", None)
+        ann_id = getattr(item, "ann_id", None)
+        if inst_id in doc.instances:
+            inst = doc.instances[inst_id]
+            return f"{inst.component_spec}  (#{inst_id})"
+        if inst_id in doc.routes:
+            route = doc.routes[inst_id]
+            return f"route  ({route.cross_section}, #{inst_id})"
+        if ann_id in doc.annotations:
+            text = doc.annotations[ann_id].text.strip().splitlines()
+            head = (text[0][:24] if text else "").strip()
+            return f"note  ({head!r}, #{ann_id})" if head else f"note  (#{ann_id})"
+        return "item"
+
+    def _select_only(self, item) -> None:
+        """Make ``item`` the sole selection (used by the picker submenu)."""
+        self.scene.clearSelection()
+        item.setSelected(True)
 
     def _export_gds(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Export GDS", "layout.gds", "GDS files (*.gds)")

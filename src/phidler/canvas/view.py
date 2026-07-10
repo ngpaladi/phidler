@@ -79,6 +79,7 @@ class LayoutView(QGraphicsView):
     source_placement_requested = Signal(float, float)  # scene x, y in microns
     context_menu_requested = Signal(QPoint)  # viewport-pixel position
     cursor_position_changed = Signal(float, float)  # scene x, y in microns
+    overlap_hint = Signal(str)  # transient status text when a click lands on stacked items
     route_pick_cancelled = Signal()  # Esc dropped a half-finished route's start port
     # Annotation tools (notes + callouts). annotate_mode is "" | "note" | "box"
     # | "arrow"; the requests carry scene µm for the window to turn into commands.
@@ -452,6 +453,41 @@ class LayoutView(QGraphicsView):
 
     # -- pan (middle-mouse-drag) -----------------------------------------
 
+    def selectable_items_at(self, viewport_pos: QPoint) -> list:
+        """The user's own selectable items (instances, routes, notes) under a
+        viewport point, top-most first — the z-ordered stack a click landed on.
+
+        Filters ``QGraphicsView.items(pos)`` (which is already returned top-to-
+        bottom) down to items that resolve to a real document object, so ports,
+        the dimmed reference backdrop, DRC overlays, source/measure markers and
+        the like never appear in the stack."""
+        doc = self.scene().document
+        out = []
+        for item in self.items(viewport_pos):
+            inst_id = getattr(item, "inst_id", None)
+            ann_id = getattr(item, "ann_id", None)
+            if inst_id in doc.instances or inst_id in doc.routes or ann_id in doc.annotations:
+                out.append(item)
+        return out
+
+    def cycle_select_at(self, viewport_pos: QPoint):
+        """Select the next item below the current one in the overlapping stack
+        under ``viewport_pos``, wrapping from the bottom back to the top. With
+        nothing in the stack selected yet, selects the top-most. Returns the
+        newly selected item (or None if nothing selectable is there)."""
+        stack = self.selectable_items_at(viewport_pos)
+        scene = self.scene()
+        if not stack:
+            scene.clearSelection()
+            return None
+        selected = set(scene.selectedItems())
+        # Index of the first stack member that's currently selected; step past it.
+        idx = next((i for i, item in enumerate(stack) if item in selected), None)
+        nxt = stack[0] if idx is None else stack[(idx + 1) % len(stack)]
+        scene.clearSelection()
+        nxt.setSelected(True)
+        return nxt
+
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MiddleButton:
             self._panning = True
@@ -498,6 +534,16 @@ class LayoutView(QGraphicsView):
                 self.scene().port_clicked.emit(*hit)
             event.accept()
             return
+        # Alt+left-click cycles down through overlapping items instead of always
+        # re-picking the topmost one, so a component hidden under another (a
+        # heater over a waveguide, a via over metal) is reachable. Discrete
+        # select-behind: it selects, but doesn't start a drag (that's a normal
+        # click), so holding Alt never conflicts with dragging.
+        if event.button() == Qt.LeftButton and (event.modifiers() & Qt.AltModifier):
+            self.cycle_select_at(event.position().toPoint())
+            event.accept()
+            return
+
         super().mousePressEvent(event)
         # Snapshot only movable *instances* — routes and the reference backdrop
         # are selectable InstanceItems too, but their inst_id is a route id / -1
@@ -512,6 +558,16 @@ class LayoutView(QGraphicsView):
             for item in self.scene().selectedItems()
             if getattr(item, "inst_id", None) in document.instances
         }
+
+        # If the click landed on a stack of selectable items, tell the user how
+        # to reach the ones underneath. Only on a plain left-click (a rubber-band
+        # on empty canvas hits nothing, so nothing is emitted there).
+        if event.button() == Qt.LeftButton:
+            stack = self.selectable_items_at(event.position().toPoint())
+            if len(stack) >= 2:
+                self.overlap_hint.emit(
+                    f"{len(stack)} items here — Alt+click to cycle, or right-click to pick one"
+                )
 
     def mouseMoveEvent(self, event) -> None:
         pos = event.position() if hasattr(event, "position") else event.pos()
