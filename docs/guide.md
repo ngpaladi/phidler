@@ -418,6 +418,15 @@ short diagonal path with all-angle euler bends, instead of a manhattan
 L/U-turn. Untick it for manhattan-only routes. (Diagonal is ignored when a
 length goal is set; those use the manhattan meander.)
 
+**Length matching**: set a **Target** length in the toolbar before routing (as a
+distance in µm or a delay in fs/ns), and with **Auto** on Phidler folds an
+adiabatic meander into the route to hit it. That's the matched delay a balanced
+interferometer or a true-time-delay line needs, without hand-drawing the wiggle.
+Already placed a route and want it longer or shorter? Select it, and the
+**Properties** panel shows a **Route** editor: type a new target, click **Apply
+Length**, and the meander re-runs to match (undoable, like any edit). Set the
+target to 0 to drop the goal and route straight again.
+
 **Component avoidance**: when a component sits on the straight path between the
 two ports, the route automatically detours around it rather than crossing
 through it. This is best-effort: a single detour around the obstacles in the

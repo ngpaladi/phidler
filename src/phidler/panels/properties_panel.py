@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -78,10 +79,15 @@ class PropertiesPanel(QWidget):
     # inst_id, columns, rows, column_pitch, row_pitch — tile the instance into
     # a rectangular array (replaces the old standalone *_array components).
     array_applied = Signal(int, int, int, float, float)
+    # route_id, target value, unit ("µm"/"fs"/"ns"), auto — change a placed
+    # route's length goal after the fact. value<=0 clears the goal (routes it
+    # directly). The window converts the value+unit to µm and re-routes.
+    route_length_applied = Signal(int, float, str, bool)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._inst_id: int | None = None
+        self._route_id: int | None = None
         self._fields: dict[str, QWidget] = {}
         self._bbox_extent: tuple[float, float] = (0.0, 0.0)
 
@@ -173,6 +179,54 @@ class PropertiesPanel(QWidget):
         array_layout.addRow(self.apply_array_button)
         layout.addWidget(self.array_group)
 
+        # Route group — shown only when a placed route is selected (see
+        # show_route). Lets a route's length goal be edited after placement:
+        # re-runs its adiabatic meander to hit a new target, the same machinery
+        # the routing toolbar uses at creation time.
+        self.route_group = QGroupBox("Route")
+        route_layout = QFormLayout(self.route_group)
+        self.route_length_label = QLabel("—")
+        self.route_length_label.setToolTip("The route's current physical length (and the delay it implies).")
+        route_layout.addRow("Length", self.route_length_label)
+
+        target_row = QWidget()
+        target_hbox = QHBoxLayout(target_row)
+        target_hbox.setContentsMargins(0, 0, 0, 0)
+        self.route_target_spin = QDoubleSpinBox()
+        self.route_target_spin.setRange(0.0, 1e9)
+        self.route_target_spin.setDecimals(3)
+        self.route_target_spin.setToolTip(
+            "Target length for this route. Phidler inserts an adiabatic meander to "
+            "approach it (bounded by the room and bend radius available). 0 removes "
+            "the goal and routes it directly."
+        )
+        self.route_target_unit = QComboBox()
+        self.route_target_unit.addItems(["µm", "fs", "ns"])
+        self.route_target_unit.setToolTip(
+            "Interpret the target as a physical length (µm) or a propagation delay "
+            "(fs/ns), converted with the current effective index."
+        )
+        target_hbox.addWidget(self.route_target_spin, stretch=1)
+        target_hbox.addWidget(self.route_target_unit)
+        route_layout.addRow("Target", target_row)
+
+        self.route_auto_check = QCheckBox("Meander to match")
+        self.route_auto_check.setChecked(True)
+        self.route_auto_check.setToolTip(
+            "Insert an adiabatic meander to reach the target length. Off routes "
+            "directly (the target is then just recorded, not enforced)."
+        )
+        route_layout.addRow(self.route_auto_check)
+
+        self.apply_route_length_button = QPushButton("Apply Length")
+        self.apply_route_length_button.setToolTip(
+            "Re-route with the target above as one undoable step."
+        )
+        self.apply_route_length_button.clicked.connect(self._on_apply_route_length)
+        route_layout.addRow(self.apply_route_length_button)
+        self.route_group.setVisible(False)
+        layout.addWidget(self.route_group)
+
         self.form_layout = QFormLayout()
         layout.addLayout(self.form_layout)
 
@@ -225,7 +279,9 @@ class PropertiesPanel(QWidget):
         bbox_extent: tuple[float, float] = (0.0, 0.0),
     ) -> None:
         self._inst_id = inst_id
+        self._route_id = None
         self._fields = {}
+        self._show_instance_groups(True)
         self.title_label.setText(f"#{inst_id}: {component_spec}")
         self._clear_form()
         self._set_array_fields(columns, rows, column_pitch, row_pitch, bbox_extent)
@@ -310,9 +366,58 @@ class PropertiesPanel(QWidget):
             self.row_pitch_spin.value(),
         )
 
-    def clear(self) -> None:
+    def show_route(
+        self,
+        route_id: int,
+        length_um: float,
+        goal_um: float | None,
+        auto: bool,
+        time_str: str = "",
+    ) -> None:
+        """Show the route-length editor for a selected placed route. ``goal_um``
+        is the current target (None if the route has none) and ``time_str`` is a
+        preformatted propagation-delay string shown next to the length."""
+        self._route_id = route_id
         self._inst_id = None
         self._fields = {}
+        self._clear_form()
+        self._show_instance_groups(False)
+        self.title_label.setText(f"Route #{route_id}")
+        detail = f"{length_um:.3f} µm" + (f"   ·   {time_str}" if time_str else "")
+        self.route_length_label.setText(detail)
+        self.route_target_spin.blockSignals(True)
+        self.route_target_unit.setCurrentText("µm")  # current goal is stored in µm
+        self.route_target_spin.setValue(goal_um if goal_um else 0.0)
+        self.route_target_spin.blockSignals(False)
+        self.route_auto_check.setChecked(auto if goal_um else True)
+        self.route_group.setVisible(True)
+        self.setEnabled(True)
+
+    def _show_instance_groups(self, visible: bool) -> None:
+        """Toggle the instance-only sections (transform/array/params/apply) as a
+        unit, and hide the route group when they're shown. Keeps the panel in
+        exactly one of two modes: instance editor or route editor."""
+        self.transform_group.setVisible(visible)
+        self.array_group.setVisible(visible)
+        self.apply_button.setVisible(visible)
+        if visible:
+            self.route_group.setVisible(False)
+
+    def _on_apply_route_length(self) -> None:
+        if self._route_id is None:
+            return
+        self.route_length_applied.emit(
+            self._route_id,
+            self.route_target_spin.value(),
+            self.route_target_unit.currentText(),
+            self.route_auto_check.isChecked(),
+        )
+
+    def clear(self) -> None:
+        self._inst_id = None
+        self._route_id = None
+        self._fields = {}
+        self._show_instance_groups(True)
         self.title_label.setText("No selection")
         self._clear_form()
         self.setEnabled(False)

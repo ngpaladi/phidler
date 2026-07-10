@@ -267,6 +267,55 @@ class AddRouteCommand(QUndoCommand):
         self.scene.remove_route_item(self.route_id)
 
 
+class SetRouteLengthCommand(QUndoCommand):
+    """Change a placed route's length goal (and re-run its meander) as one
+    undoable step. redo/undo both re-route via document.set_route_goal, so the
+    geometry is regenerated for whichever goal is active — the same
+    determinism argument as AddRouteCommand's redo."""
+
+    def __init__(
+        self,
+        document: LayoutDocument,
+        scene,
+        route_id: int,
+        old_goal_um: float | None,
+        old_auto: bool,
+        new_goal_um: float | None,
+        new_auto: bool,
+        text: str | None = None,
+    ) -> None:
+        super().__init__(text or "Change route length")
+        self.document = document
+        self.scene = scene
+        self.route_id = route_id
+        self.old_goal_um = old_goal_um
+        self.old_auto = old_auto
+        self.new_goal_um = new_goal_um
+        self.new_auto = new_auto
+        self.error: Exception | None = None
+
+    def redo(self) -> None:
+        self._apply(self.new_goal_um, self.new_auto)
+
+    def undo(self) -> None:
+        self._apply(self.old_goal_um, self.old_auto)
+
+    def _apply(self, goal_um: float | None, auto: bool) -> None:
+        # Same swallow-and-report contract as AddRouteCommand: QUndoStack.push()
+        # keeps the command even if redo() raises, so a re-route failure must not
+        # propagate (a later undo would then re-route with the old goal, which is
+        # fine, but the exception mid-push corrupts the stack).
+        self.error = None
+        self.scene.remove_route_item(self.route_id)
+        try:
+            result = self.document.set_route_goal(self.route_id, goal_um, auto)
+        except Exception as exc:  # surfaced via .error, not re-raised
+            self.error = exc
+            return
+        if result is not None:
+            self.scene.add_route_item(self.route_id)
+
+
 class DeleteRouteCommand(QUndoCommand):
     def __init__(self, document: LayoutDocument, scene, route_id: int, text: str | None = None) -> None:
         super().__init__(text or "Delete route")

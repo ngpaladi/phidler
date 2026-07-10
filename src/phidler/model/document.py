@@ -761,6 +761,31 @@ class LayoutDocument:
             diagonal=old.diagonal,
         )
 
+    def set_route_goal(self, route_id: int, goal_length_um: float | None, auto_match: bool):
+        """Re-route an existing route to a *new* length goal, keeping its id,
+        endpoints, and cross-section — the way a placed route's length is edited
+        after the fact. Passing goal_length_um=None (or auto_match=False) drops
+        the meander and routes it directly again. Unlike rebuild_route, the
+        meander amplitude is re-searched from scratch for the new goal rather
+        than reused. Returns the rebuilt PlacedRoute, or None if the route is
+        gone."""
+        old = self.routes.get(route_id)
+        if old is None:
+            return None
+        for ref in old.refs:
+            ref.delete()
+        return self.add_route(
+            old.instance_id_a,
+            old.port_name_a,
+            old.instance_id_b,
+            old.port_name_b,
+            old.cross_section,
+            route_id=route_id,
+            goal_length_um=goal_length_um,
+            auto_match=auto_match,
+            diagonal=old.diagonal,
+        )
+
     def get_shapes_for_route(self, route_id: int) -> ShapesByLayer:
         """Shapes already in absolute (top-cell) coordinates — routes are
         rendered without any extra Qt-side transform, unlike instances."""

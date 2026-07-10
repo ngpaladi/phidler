@@ -40,6 +40,7 @@ from phidler.model.commands import (
     EditParamsCommand,
     MoveInstanceCommand,
     SetArrayCommand,
+    SetRouteLengthCommand,
 )
 from phidler.model.document import LayoutDocument, Transform, flip_transform
 from phidler.model.placed_instance import ArraySpec
@@ -145,6 +146,7 @@ class MainWindow(QMainWindow):
         self.properties_panel.params_applied.connect(self._on_params_applied)
         self.properties_panel.transform_applied.connect(self._on_properties_transform_applied)
         self.properties_panel.array_applied.connect(self._on_array_applied)
+        self.properties_panel.route_length_applied.connect(self._on_route_length_applied)
 
         self.properties_dock = QDockWidget("Properties", self)
         self.properties_dock.setWidget(self.properties_panel)
@@ -1116,22 +1118,42 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"Routed #{a_inst_id}:{a_port} -> #{inst_id}:{port_name}", 3000)
 
-    def _route_goal_length_um(self) -> float | None:
-        """The toolbar goal length converted to µm (0 → None). Time units use
-        t = x·n_eff/c₀ inverted, the same effective index the unit switch uses."""
-        value = self.route_goal_spin.value()
+    def _goal_length_to_um(self, value: float, unit: str) -> float | None:
+        """A target length/delay in the given unit converted to µm (0 → None).
+        Time units invert t = x·n_eff/c₀, the same effective index the unit
+        switch uses. Shared by the routing toolbar and the route length editor."""
         if value <= 0:
             return None
-        unit = self.route_goal_unit_combo.currentText()
         if unit == "fs":
             return value * C0_UM_PER_FS / self.view.n_eff
         if unit == "ns":
             return value * (C0_UM_PER_FS * 1e6) / self.view.n_eff
         return value
 
+    def _route_goal_length_um(self) -> float | None:
+        """The toolbar goal length converted to µm (0 → None)."""
+        return self._goal_length_to_um(
+            self.route_goal_spin.value(), self.route_goal_unit_combo.currentText()
+        )
+
     def _on_selection_changed(self) -> None:
         ids = self._selected_instance_ids()
         if len(ids) != 1:
+            route_ids = self._selected_route_ids()
+            # Exactly one route (and no instance) selected -> offer its length
+            # editor in the Properties panel, so a placed route's length can be
+            # changed after the fact.
+            if len(route_ids) == 1 and not ids:
+                route = self.document.routes.get(route_ids[0])
+                if route is not None:
+                    length_um = self.route_length_um(route)
+                    time_fs = length_um * self.view.n_eff / C0_UM_PER_FS
+                    time_str = f"{time_fs / 1000:.3f} ps" if time_fs >= 1000 else f"{time_fs:.1f} fs"
+                    self.properties_panel.show_route(
+                        route.id, length_um, route.goal_length_um, route.auto_match, time_str
+                    )
+                    self._show_route_readout()
+                    return
             self.properties_panel.clear()
             self._show_route_readout()
             return
@@ -1180,6 +1202,45 @@ class MainWindow(QMainWindow):
             mode = "auto" if route.auto_match and route.meander_amplitude_um is not None else "manual"
             msg += f"   ·   goal {route.goal_length_um:.3f} µm (Δ {length_um - route.goal_length_um:+.3f}, {mode})"
         self.statusBar().showMessage(msg, 0)
+
+    def _on_route_length_applied(self, route_id: int, value: float, unit: str, auto: bool) -> None:
+        """Re-route a placed route to a new length target (from the Properties
+        panel's route editor), as one undoable step."""
+        route = self.document.routes.get(route_id)
+        if route is None:
+            return
+        goal_um = self._goal_length_to_um(value, unit)
+        command = SetRouteLengthCommand(
+            self.document,
+            self.scene,
+            route_id,
+            route.goal_length_um,
+            route.auto_match,
+            goal_um,
+            bool(goal_um) and auto,
+        )
+        self.undo_stack.push(command)
+        if command.error is not None:
+            self.undo_stack.undo()  # pop the no-op command back off the stack
+            self.statusBar().showMessage(f"Re-route failed: {command.error}", 5000)
+            return
+        updated = self.document.routes.get(route_id)
+        if updated is not None:
+            actual = self.route_length_um(updated)
+            if updated.goal_length_um:
+                self.statusBar().showMessage(
+                    f"Route #{route_id}: goal {updated.goal_length_um:.3f} µm, "
+                    f"actual {actual:.3f} µm (Δ {actual - updated.goal_length_um:+.3f} µm)",
+                    6000,
+                )
+            else:
+                self.statusBar().showMessage(f"Route #{route_id}: length goal cleared ({actual:.3f} µm)", 4000)
+        # Refresh the panel's fields (and the on-canvas selection readout) to the
+        # rebuilt route. The route item was replaced, so re-select it first.
+        item = self.scene.route_items.get(route_id)
+        if item is not None:
+            self.scene.clearSelection()
+            item.setSelected(True)
 
     def _on_properties_transform_applied(self, inst_id: int, x: float, y: float, rotation: float, mirror: bool, mag: float) -> None:
         if inst_id not in self.document.instances:
