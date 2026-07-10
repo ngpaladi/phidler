@@ -345,6 +345,10 @@ class MainWindow(QMainWindow):
             "win": self,
             "place": place,
             "route": route,
+            # What's selected on the canvas right now — so console/AI code can act
+            # on "the selected component(s)" the way the toolbar actions do.
+            "selected_instance_ids": self._selected_instance_ids,
+            "selected_route_ids": self._selected_route_ids,
         }
         self.console_panel = ConsolePanel(namespace)
         self._build_ai_assistant()
@@ -395,6 +399,7 @@ class MainWindow(QMainWindow):
                 run_python=self.console_panel.run_python_from_agent,
                 describe_session=self._ai_describe_session,
                 list_components=self._ai_list_components,
+                get_selection=self._ai_get_selection,
             )
             self._mcp_server.start()
             self._claude_session = ClaudeSession(
@@ -414,9 +419,17 @@ class MainWindow(QMainWindow):
         tool. Runs on the GUI thread (via the server's invoker)."""
         doc = self.document
         ps = doc.project_settings
+        sel_insts = set(self._selected_instance_ids())
+        sel_routes = set(self._selected_route_ids())
+
+        def sel_mark(is_selected: bool) -> str:
+            return "  ← selected" if is_selected else ""
+
         lines = [
             f"Platform: {ps.platform_name} (core n={ps.core_index}, "
             f"cladding n={ps.clad_index}, core thickness {ps.thickness_um} µm).",
+            "",
+            self._ai_selection_summary(sel_insts, sel_routes),
             "",
             f"Instances ({len(doc.instances)}):",
         ]
@@ -427,6 +440,7 @@ class MainWindow(QMainWindow):
             lines.append(
                 f"  #{inst.id} {inst.component_spec}{kw} at ({t.x:.3f}, {t.y:.3f}) "
                 f"rot={t.rotation}° mirror={t.mirror}; ports: {', '.join(ports) or '(none)'}"
+                f"{sel_mark(inst.id in sel_insts)}"
             )
         if not doc.instances:
             lines.append("  (none yet)")
@@ -436,6 +450,7 @@ class MainWindow(QMainWindow):
             lines.append(
                 f"  #{r.id} {r.cross_section}: #{r.instance_id_a}:{r.port_name_a} → "
                 f"#{r.instance_id_b}:{r.port_name_b} (len {r.length:.2f} µm)"
+                f"{sel_mark(r.id in sel_routes)}"
             )
         if not doc.routes:
             lines.append("  (none yet)")
@@ -443,8 +458,66 @@ class MainWindow(QMainWindow):
         lines.append(
             "Edit via run_python using: place(spec, x=, y=, rotation=, mirror=, "
             "**kwargs) -> instance, route(inst_a_id, port_a, inst_b_id, port_b, "
-            "cross_section='strip'), and doc (the LayoutDocument). "
-            "Call list_components to discover placeable component names."
+            "cross_section='strip'), doc (the LayoutDocument), and "
+            "selected_instance_ids() / selected_route_ids() for the current canvas "
+            "selection. Call list_components to discover placeable component names, "
+            "or get_selection for just what's selected right now."
+        )
+        return "\n".join(lines)
+
+    def _ai_selection_summary(self, sel_insts: set[int], sel_routes: set[int]) -> str:
+        """One-line canvas-selection summary shared by describe_session and the
+        get_selection tool."""
+        doc = self.document
+        if not sel_insts and not sel_routes:
+            return "Canvas selection: nothing selected."
+        parts = []
+        for inst_id in self._selected_instance_ids():  # preserve selection order
+            inst = doc.instances.get(inst_id)
+            if inst is not None:
+                parts.append(f"instance #{inst_id} ({inst.component_spec})")
+        for route_id in self._selected_route_ids():
+            parts.append(f"route #{route_id}")
+        return "Canvas selection: " + "; ".join(parts) + "."
+
+    def _ai_get_selection(self) -> str:
+        """What the user currently has selected on the canvas, with enough detail
+        (ids, component specs, positions, ports) to act on it. Runs on the GUI
+        thread via the server's invoker."""
+        doc = self.document
+        sel_insts = self._selected_instance_ids()
+        sel_routes = self._selected_route_ids()
+        sel_anns = self._selected_annotation_ids()
+        if not (sel_insts or sel_routes or sel_anns):
+            return "Nothing is selected on the canvas."
+        lines = []
+        if sel_insts:
+            lines.append(f"Selected instances ({len(sel_insts)}):")
+            for inst_id in sel_insts:
+                inst = doc.instances.get(inst_id)
+                if inst is None:
+                    continue
+                t = doc.get_transform(inst_id)
+                ports = [p[0] for p in doc.get_ports_for_instance(inst_id)]
+                kw = f" {inst.kwargs}" if inst.kwargs else ""
+                lines.append(
+                    f"  #{inst_id} {inst.component_spec}{kw} at ({t.x:.3f}, {t.y:.3f}) "
+                    f"rot={t.rotation}° mirror={t.mirror}; ports: {', '.join(ports) or '(none)'}"
+                )
+        if sel_routes:
+            lines.append(f"Selected routes ({len(sel_routes)}):")
+            for route_id in sel_routes:
+                r = doc.routes.get(route_id)
+                if r is not None:
+                    lines.append(
+                        f"  #{route_id} {r.cross_section}: #{r.instance_id_a}:{r.port_name_a} → "
+                        f"#{r.instance_id_b}:{r.port_name_b}"
+                    )
+        if sel_anns:
+            lines.append(f"Selected notes ({len(sel_anns)}): {', '.join(f'#{a}' for a in sel_anns)}")
+        lines.append(
+            "\nIn run_python, selected_instance_ids() and selected_route_ids() "
+            "return these ids live."
         )
         return "\n".join(lines)
 

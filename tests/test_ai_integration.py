@@ -182,6 +182,7 @@ def test_mcp_server_config_surface():
         f"mcp__{SERVER_NAME}__run_python",
         f"mcp__{SERVER_NAME}__describe_session",
         f"mcp__{SERVER_NAME}__list_components",
+        f"mcp__{SERVER_NAME}__get_selection",
     ]
 
 
@@ -196,6 +197,7 @@ def test_mcp_server_url_and_config_json(qapp):
         run_python=lambda c: c,
         describe_session=lambda: "",
         list_components=lambda f: [],
+        get_selection=lambda: "",
     )
     assert server.url.startswith("http://127.0.0.1:")
     assert server.url.endswith("/mcp")
@@ -220,6 +222,7 @@ def test_mcp_run_python_tool_executes_through_console(qapp):
         run_python=console.run_python_from_agent,
         describe_session=lambda: f"placed={placed}",
         list_components=lambda f: [n for n in ("mmi1x2", "mmi2x2", "straight") if f in n],
+        get_selection=lambda: "nothing",
     )
     server.start()
 
@@ -261,12 +264,58 @@ def test_mcp_run_python_tool_executes_through_console(qapp):
     server.stop()
 
     assert results.get("error") is None, results.get("error")
-    assert set(results.get("tools", [])) == {"run_python", "describe_session", "list_components"}
+    assert set(results.get("tools", [])) == {
+        "run_python",
+        "describe_session",
+        "list_components",
+        "get_selection",
+    }
     assert "n 1" in results.get("output", "")
     # The mutation actually happened in the live namespace...
     assert placed == ["mmi2x2"]
     # ...and flowed through the console transcript.
     assert "claude ▸ place('mmi2x2')" in console.output.toPlainText()
+
+
+# -- canvas selection is visible to the assistant ------------------------------
+
+
+def test_ai_sees_canvas_selection(qapp):
+    """describe_session marks the selected instance and get_selection reports it,
+    so the assistant can act on "the selected component"."""
+    from phidler.main_window import MainWindow
+
+    win = MainWindow()
+    console = win.console_panel
+    # Place two instances via the console (the same path the AI's run_python uses).
+    console.input.setText("a = place('straight', length=10.0)")
+    console._on_return()
+    console.input.setText("b = place('mmi2x2', x=30.0)")
+    console._on_return()
+
+    ids = list(win.document.instances)
+    assert len(ids) == 2
+
+    # Nothing selected yet.
+    assert "Nothing is selected" in win._ai_get_selection()
+    assert "nothing selected" in win._ai_describe_session().lower()
+
+    # Select the second instance on the canvas.
+    win.scene.items_by_inst[ids[1]].setSelected(True)
+
+    sel = win._ai_get_selection()
+    assert f"#{ids[1]}" in sel
+    assert "mmi2x2" in sel
+    assert f"#{ids[0]}" not in sel  # the unselected one isn't reported
+
+    # describe_session flags it inline and in the selection summary.
+    desc = win._ai_describe_session()
+    assert "Canvas selection:" in desc
+    assert "← selected" in desc
+
+    # And run_python can act on the selection live.
+    out = console.run_python_from_agent("print('sel', selected_instance_ids())")
+    assert f"sel [{ids[1]}]" in out
 
 
 # -- photonfdtd 0.4 backend flags ---------------------------------------------

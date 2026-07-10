@@ -27,7 +27,7 @@ from PySide6.QtCore import QObject, Signal
 # The stable server name. Claude Code namespaces MCP tools as
 # ``mcp__<server>__<tool>``; allowed_tool_names() below builds those.
 SERVER_NAME = "phidler"
-_TOOL_NAMES = ("run_python", "describe_session", "list_components")
+_TOOL_NAMES = ("run_python", "describe_session", "list_components", "get_selection")
 
 
 class GuiInvoker(QObject):
@@ -84,12 +84,14 @@ class PhidlerMcpServer:
         run_python: Callable[[str], str],
         describe_session: Callable[[], str],
         list_components: Callable[[str], list],
+        get_selection: Callable[[], str],
         host: str = "127.0.0.1",
     ) -> None:
         self._invoker = invoker
         self._run_python = run_python
         self._describe_session = describe_session
         self._list_components = list_components
+        self._get_selection = get_selection
         self.host = host
         self.port = _free_tcp_port(host)
         self._thread: threading.Thread | None = None
@@ -148,6 +150,15 @@ class PhidlerMcpServer:
             """List placeable gdsfactory component names (optionally filtered by a
             case-insensitive substring) that can be passed to place()."""
             return await asyncio.to_thread(inv.call, lambda: self._list_components(filter))
+
+        @mcp.tool()
+        async def get_selection() -> str:
+            """What the user currently has selected on the canvas — instance ids,
+            component specs, positions and ports (and any selected routes/notes).
+            Call this to resolve requests like "route these two" or "delete the
+            selected component". In run_python, selected_instance_ids() and
+            selected_route_ids() return the same ids live."""
+            return await asyncio.to_thread(inv.call, self._get_selection)
 
         return mcp.streamable_http_app()
 

@@ -28,9 +28,11 @@ SYSTEM_PROMPT = (
     "mirror=False, **kwargs) -> instance, and route(inst_a_id, port_a, "
     "inst_b_id, port_b, cross_section='strip'). Call mcp__phidler__describe_session "
     "to see the current layout and mcp__phidler__list_components to find component "
-    "names. Use only these phidler MCP tools; do not edit files on disk or run "
-    "shell commands. Keep prose brief — the user watches the console output your "
-    "code produces."
+    "names. When the user refers to 'this', 'these', 'the selected' component(s), "
+    "call mcp__phidler__get_selection to see what they have selected on the canvas "
+    "(or use selected_instance_ids() / selected_route_ids() inside run_python). Use "
+    "only these phidler MCP tools; do not edit files on disk or run shell commands. "
+    "Keep prose brief — the user watches the console output your code produces."
 )
 
 
