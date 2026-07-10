@@ -33,6 +33,23 @@ def test_use_gpu_false_round_trips(tmp_path):
     assert load_remote_config(settings).use_gpu is False
 
 
+def test_backend_field_round_trips(tmp_path):
+    settings = _throwaway_settings(tmp_path)
+    save_remote_config(RemoteConfig(alias="h", backend="jax"), settings)
+    loaded = load_remote_config(settings)
+    assert loaded.backend == "jax"
+    assert loaded.resolved_backend() == "jax"
+
+
+def test_resolved_backend_maps_legacy_use_gpu_to_cupy():
+    # A config saved by an older phidler had only use_gpu (no `backend`); it meant
+    # the CuPy GPU path.
+    assert RemoteConfig(alias="h", use_gpu=True).resolved_backend() == "cupy"
+    assert RemoteConfig(alias="h").resolved_backend() == "cpu"
+    # An explicit backend wins over the legacy bool.
+    assert RemoteConfig(alias="h", backend="jax", use_gpu=True).resolved_backend() == "jax"
+
+
 def test_unset_config_is_defaults(tmp_path):
     """A user who never configured a remote gets a blank, not-configured config."""
     loaded = load_remote_config(_throwaway_settings(tmp_path))

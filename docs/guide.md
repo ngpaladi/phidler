@@ -735,27 +735,30 @@ cells in every dimension), at some cost in accuracy.
 If this machine is slow, low on memory, or has no GPU, you can offload a run to
 another machine over SSH (a workstation or a GPU box) and get the field movie
 back, while the UI here stays responsive. Tick **Run on remote server** and click
-**Configure…** to set it up:
+**Configure…**. Setup is a single step:
 
-- **SSH host alias**: a `Host` entry from your `~/.ssh/config`. Phidler shells
-  out to `ssh`/`scp`/`rsync` and lets your SSH config and agent/keys handle
-  authentication; it stores no passwords (key-based, non-interactive auth is
-  required).
-- **Remote directory** and **Remote Python**: where to install into, and the
-  (venv) interpreter to use on the remote.
-- **Use GPU on the remote host**: request the remote's GPU regardless of
-  whether *this* machine has one. The result reports the backend that actually
-  ran, so a fallback to CPU is visible.
+1. Enter your **SSH host**: a `Host` entry from your `~/.ssh/config`. That's the
+   only required field. Phidler shells out to `ssh`/`scp`/`rsync` and lets your
+   SSH config and agent/keys handle authentication; it stores no passwords
+   (key-based, non-interactive auth is required).
+2. Pick the remote **Acceleration**: **CPU (Numba)**, **GPU — JAX**
+   (recommended; photonfdtd 0.9 runs JAX on the GPU through XLA), or
+   **GPU — CuPy** (legacy). This is the *remote's* hardware, independent of what
+   this machine has.
+3. Click **Connect && set up**. That one button tests the connection, installs
+   phidler + photonfdtd on the remote if they aren't there yet (a one-time step,
+   streamed into the log), verifies, reports which accelerators the remote
+   actually has, and saves. Click it again any time; it only reinstalls when
+   needed (or when you tick **Force reinstall**, e.g. after updating a package).
 
-**Test connection** checks that the remote Python can import phidler and
-photonfdtd. The first time, **Set up remote** does a one-time install: it uploads
-the phidler and photonfdtd sources and `pip install`s them into the remote
-Python, streaming the output into the log so you can watch for any build error.
-After that, ticking **Run on remote server** sends each run to that host and
-brings the result back automatically. The progress bar fills from the remote
-solve just as it does locally.
+The install location is derived for you (a managed venv under `~/phidler-remote`);
+open **Advanced** only if you want to install into a specific directory or an
+existing interpreter. After setup, ticking **Run on remote server** sends each
+run to that host and brings the result back automatically. The progress bar fills
+from the remote solve just as it does locally, and the result reports the backend
+that actually ran, so a request the remote couldn't honour is visible.
 
-<img src="screenshots/remote_config_dialog.png" width="560" alt="Remote server setup dialog: SSH host alias, remote directory and Python, a use-GPU-on-remote toggle, and Test connection / Set up remote actions over a log pane">
+<img src="screenshots/remote_config_dialog.png" width="560" alt="Remote server setup dialog: an SSH host field, a remote Acceleration dropdown, and a single Connect and set up button over a log pane">
 
 The remote must be a POSIX host (Linux/macOS) reachable by key-based SSH.
 Projects that place **custom components** (local `.py` files) can't be offloaded

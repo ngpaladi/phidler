@@ -681,10 +681,11 @@ class _RemoteOpWorker(QObject):
     line = Signal(str)
     done = Signal(bool)  # success
 
-    def __init__(self, cfg, op: str) -> None:
+    def __init__(self, cfg, op: str, force: bool = False) -> None:
         super().__init__()
         self.cfg = cfg
-        self.op = op  # "check" | "deploy"
+        self.op = op  # "check" | "deploy" | "setup"
+        self.force = force
 
     def run(self) -> None:
         from phidler.fdtd_remote import check_remote, deploy_to_remote
@@ -693,7 +694,28 @@ class _RemoteOpWorker(QObject):
             if self.op == "check":
                 ok, msg = check_remote(self.cfg)
                 self.line.emit(msg)
-            else:
+            elif self.op == "setup":
+                # One click: probe first; install only if the remote isn't ready
+                # (or the user forced a reinstall); then confirm and report the
+                # available accelerators. This folds the old test→deploy→save
+                # dance into a single action.
+                self.line.emit(f"Checking '{self.cfg.alias}' …")
+                ok, msg = check_remote(self.cfg)
+                self.line.emit(msg)
+                if ok and not self.force:
+                    self.line.emit("Remote is already set up — ready to run.")
+                else:
+                    self.line.emit(
+                        "Reinstalling on the remote …" if self.force
+                        else "Not ready yet — installing phidler + photonfdtd (one-time, may take a while) …"
+                    )
+                    ok = deploy_to_remote(self.cfg, self.line.emit)
+                    if ok:
+                        ok, msg = check_remote(self.cfg)
+                        self.line.emit(msg)
+                        if ok:
+                            self.line.emit("Remote is ready.")
+            else:  # "deploy"
                 ok = deploy_to_remote(self.cfg, self.line.emit)
         except Exception as exc:  # never let the worker die silently
             self.line.emit(f"Error: {exc}")
@@ -702,11 +724,12 @@ class _RemoteOpWorker(QObject):
 
 
 class RemoteConfigDialog(QDialog):
-    """Set up and test offloading FDTD runs to a remote SSH host. Captures the
-    host alias, the remote directory + Python interpreter to install into, and
-    whether to request the remote GPU; persists them via remote_config. The
-    'Test connection' and 'Set up remote' buttons run off the GUI thread and
-    stream their output into the log pane so the window stays responsive."""
+    """Set up offloading FDTD runs to a remote SSH host. Captures the host alias,
+    the remote accelerator to use, and (optionally) the install location, and
+    persists them via remote_config. A single 'Connect && set up' button tests
+    the connection, installs phidler + photonfdtd on the remote if they aren't
+    there yet, verifies, and saves — running off the GUI thread and streaming its
+    output into the log pane so the window stays responsive."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -732,14 +755,24 @@ class RemoteConfigDialog(QDialog):
         )
         form.addRow("SSH host", self.alias_edit)
 
-        self.use_gpu_check = QCheckBox("Use GPU on the remote host")
-        self.use_gpu_check.setChecked(cfg.use_gpu)
-        self.use_gpu_check.setToolTip(
-            "Request photonfdtd's GPU (CuPy) backend on the remote — independent of "
-            "whether this machine has a GPU. If the remote has no GPU it falls back to "
-            "CPU, and the result reports the backend that actually ran."
+        # Which accelerator the remote solve uses — set here rather than from the
+        # local backend checkboxes, since it's the *remote's* hardware that
+        # matters. "Connect & set up" reports which of these the remote actually
+        # has installed.
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItem("CPU (Numba)", "cpu")
+        self.backend_combo.addItem("GPU — JAX (recommended)", "jax")
+        self.backend_combo.addItem("GPU — CuPy (legacy)", "cupy")
+        idx = self.backend_combo.findData(cfg.resolved_backend())
+        self.backend_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.backend_combo.setToolTip(
+            "Accelerator for the remote solve. GPU (JAX) is the recommended GPU "
+            "path (photonfdtd 0.9 runs JAX on the GPU via XLA); CuPy is the legacy "
+            "GPU backend. The remote needs the matching package installed — "
+            "'Connect & set up' reports which are available there. A backend the "
+            "remote lacks surfaces a clear error instead of running."
         )
-        form.addRow("Acceleration", self.use_gpu_check)
+        form.addRow("Acceleration", self.backend_combo)
         layout.addLayout(form)
 
         # Everything below is optional — a bare host uses these derived defaults.
@@ -779,17 +812,25 @@ class RemoteConfigDialog(QDialog):
 
         layout.addWidget(self.advanced_group)
 
+        # One button does it all: test the connection, install if the remote
+        # isn't ready, verify, and save — so setup is a single click after typing
+        # a host. "Force reinstall" makes it redeploy even when already set up
+        # (e.g. after updating phidler or photonfdtd).
         button_row = QHBoxLayout()
-        self.test_button = QPushButton("Test connection")
-        self.test_button.clicked.connect(self._on_test)
-        button_row.addWidget(self.test_button)
-        self.setup_button = QPushButton("Set up remote")
+        self.setup_button = QPushButton("Connect && set up")
         self.setup_button.setToolTip(
-            "One-time: upload the phidler + photonfdtd source and `pip install -e` both "
-            "into the remote Python's environment. Re-run after updating either package."
+            "Connect to the host, install phidler + photonfdtd if they aren't there "
+            "yet (a one-time step), confirm the remote is ready, and save. Safe to "
+            "click again any time; it only reinstalls when needed."
         )
         self.setup_button.clicked.connect(self._on_setup)
         button_row.addWidget(self.setup_button)
+        self.force_reinstall_check = QCheckBox("Force reinstall")
+        self.force_reinstall_check.setToolTip(
+            "Reinstall phidler + photonfdtd on the remote even if it already imports "
+            "them — use after updating either package."
+        )
+        button_row.addWidget(self.force_reinstall_check)
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
@@ -811,11 +852,13 @@ class RemoteConfigDialog(QDialog):
         # falls back to the derived defaults (managed dir + venv), even if the
         # boxes still hold previously-typed text.
         advanced = self.advanced_group.isChecked()
+        backend = self.backend_combo.currentData()
         return RemoteConfig(
             alias=self.alias_edit.text().strip(),
             remote_dir=self.remote_dir_edit.text().strip() if advanced else "",
             remote_python=self.remote_python_edit.text().strip() if advanced else "",
-            use_gpu=self.use_gpu_check.isChecked(),
+            backend=backend,
+            use_gpu=(backend == "cupy"),  # kept in sync for older readers of use_gpu
             local_photonfdtd_dir=self.local_pf_edit.text().strip() if advanced else "",
         )
 
@@ -825,21 +868,21 @@ class RemoteConfigDialog(QDialog):
         save_remote_config(self._current_config())
         self.accept()
 
-    def _on_test(self) -> None:
-        self.log.clear()
-        self._start_op("check")
-
     def _on_setup(self) -> None:
+        cfg = self._current_config()
+        if not cfg.alias:
+            self._append("Enter an SSH host first (a Host alias from your ~/.ssh/config).")
+            return
         self.log.clear()
-        self._append("Starting remote setup — this can take a while on first install.")
-        self._start_op("deploy")
+        self._start_op("setup", force=self.force_reinstall_check.isChecked())
 
-    def _start_op(self, op: str) -> None:
+    def _start_op(self, op: str, force: bool = False) -> None:
         if self._op_thread is not None:  # one operation at a time
             return
         self._set_busy(True)
+        self._last_op = op
         self._op_thread = QThread(self)
-        self._op_worker = _RemoteOpWorker(self._current_config(), op)
+        self._op_worker = _RemoteOpWorker(self._current_config(), op, force)
         self._op_worker.moveToThread(self._op_thread)
         self._op_thread.started.connect(self._op_worker.run)
         self._op_worker.line.connect(self._append)
@@ -853,7 +896,15 @@ class RemoteConfigDialog(QDialog):
         # Runs on the GUI thread when the worker finishes. Only touch the UI
         # here — do NOT wait() on the thread: its event loop hasn't returned yet
         # (the queued quit() runs after this slot), so waiting would deadlock.
-        self._append("\nDone." if ok else "\nFinished with errors.")
+        # A successful "Connect & set up" saves the config, so the one click also
+        # persists the host/backend — no separate Save step needed.
+        if ok and getattr(self, "_last_op", None) == "setup":
+            from phidler.remote_config import save_remote_config
+
+            save_remote_config(self._current_config())
+            self._append("\nReady. Settings saved — close this dialog and run.")
+        else:
+            self._append("\nDone." if ok else "\nFinished with errors.")
         self._set_busy(False)
 
     def _on_op_thread_finished(self) -> None:
@@ -868,8 +919,8 @@ class RemoteConfigDialog(QDialog):
         # Disable the dialog buttons (Save/Close) too while an op runs: closing
         # the dialog mid-deploy would destroy the running QThread and abort the
         # process (the same crash FdtdWindow.closeEvent guards against).
-        self.test_button.setEnabled(not busy)
         self.setup_button.setEnabled(not busy)
+        self.force_reinstall_check.setEnabled(not busy)
         self._buttons.setEnabled(not busy)
 
     def reject(self) -> None:
@@ -1830,10 +1881,19 @@ class FdtdWindow(QMainWindow):
                     "or untick it to run locally.",
                 )
                 return
-            # The local GPU checkbox is disabled when this machine has no GPU, so
-            # _current_params() always reports use_gpu=False. For a remote run the
-            # *remote's* GPU is what matters, so take the toggle from the config.
-            params = dataclasses.replace(params, use_gpu=remote_cfg.use_gpu)
+            # The local backend checkboxes reflect *this* machine's hardware,
+            # which is irrelevant to a remote run — the remote's is what matters.
+            # So set the backend entirely from the remote config's Acceleration
+            # choice (subpixel / low-memory stay as chosen, being backend-agnostic
+            # accuracy/memory options). resolve_accel_flags on the remote still
+            # sorts out any conflict (e.g. subpixel drops numba).
+            backend = remote_cfg.resolved_backend()
+            params = dataclasses.replace(
+                params,
+                use_gpu=(backend == "cupy"),
+                use_jax=(backend == "jax"),
+                use_numba=(backend == "cpu"),
+            )
         self._last_params = params
 
         region_um = None

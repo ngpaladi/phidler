@@ -377,8 +377,90 @@ def test_remote_config_dialog_op_completes_without_deadlock(qapp, monkeypatch):
         time.sleep(0.01)
 
     assert dlg._op_thread is None  # thread finished and was cleaned up (no deadlock)
-    assert dlg.test_button.isEnabled() and dlg._buttons.isEnabled()  # buttons restored
+    assert dlg.setup_button.isEnabled() and dlg._buttons.isEnabled()  # buttons restored
     assert "no such host" in dlg.log.toPlainText()
+
+
+def test_remote_dialog_has_a_backend_selector(qapp):
+    from phidler.panels.fdtd_window import RemoteConfigDialog
+
+    dlg = RemoteConfigDialog()
+    values = [dlg.backend_combo.itemData(i) for i in range(dlg.backend_combo.count())]
+    assert values == ["cpu", "jax", "cupy"]
+
+    dlg.alias_edit.setText("gpubox")
+    dlg.backend_combo.setCurrentIndex(values.index("jax"))
+    cfg = dlg._current_config()
+    assert cfg.backend == "jax"
+    assert cfg.use_gpu is False  # only "cupy" sets the legacy bool
+    dlg.backend_combo.setCurrentIndex(values.index("cupy"))
+    assert dlg._current_config().use_gpu is True
+
+
+def test_smart_setup_skips_install_when_already_ready(qapp, monkeypatch):
+    """When the remote already imports phidler+photonfdtd, 'Connect & set up'
+    must NOT redeploy, and it saves the config on success."""
+    import time
+
+    monkeypatch.setattr(fr, "check_remote", lambda cfg: (True, "ok, ready"))
+    deployed = []
+    monkeypatch.setattr(fr, "deploy_to_remote", lambda cfg, on_line: deployed.append(True) or True)
+    import phidler.remote_config as rc
+
+    saved = []
+    monkeypatch.setattr(rc, "save_remote_config", lambda cfg, *a, **k: saved.append(cfg))
+
+    from phidler.panels.fdtd_window import RemoteConfigDialog
+
+    dlg = RemoteConfigDialog()
+    dlg.alias_edit.setText("gpubox")
+    dlg._start_op("setup")
+    for _ in range(300):
+        qapp.processEvents()
+        if dlg._op_thread is None:
+            break
+        time.sleep(0.01)
+
+    assert dlg._op_thread is None
+    assert deployed == []  # already ready -> no install
+    assert len(saved) == 1 and saved[0].alias == "gpubox"  # auto-saved
+    assert "already set up" in dlg.log.toPlainText()
+
+
+def test_smart_setup_installs_when_not_ready(qapp, monkeypatch):
+    import time
+
+    # Not ready on the first probe, ready after the (fake) install.
+    results = iter([(False, "cannot import phidler"), (True, "ok now")])
+    monkeypatch.setattr(fr, "check_remote", lambda cfg: next(results))
+    deployed = []
+    monkeypatch.setattr(fr, "deploy_to_remote", lambda cfg, on_line: deployed.append(True) or True)
+    import phidler.remote_config as rc
+
+    monkeypatch.setattr(rc, "save_remote_config", lambda cfg, *a, **k: None)
+
+    from phidler.panels.fdtd_window import RemoteConfigDialog
+
+    dlg = RemoteConfigDialog()
+    dlg.alias_edit.setText("gpubox")
+    dlg._start_op("setup")
+    for _ in range(300):
+        qapp.processEvents()
+        if dlg._op_thread is None:
+            break
+        time.sleep(0.01)
+
+    assert deployed == [True]  # installed because the first probe failed
+    assert "Remote is ready" in dlg.log.toPlainText()
+
+
+def test_summarize_remote_backends_parses_the_probe_line():
+    out = "ok\nbackends numba=True jax=True jax_gpu=False cupy=False\n"
+    summary = fr._summarize_remote_backends(out)
+    assert "CPU/Numba: available" in summary
+    assert "GPU (JAX): CPU-only" in summary  # jax present but no GPU device
+    assert "GPU (CuPy, legacy): not installed" in summary
+    assert fr._summarize_remote_backends("no marker here") == ""
 
 
 def test_remote_config_dialog_refuses_to_close_mid_operation(qapp):

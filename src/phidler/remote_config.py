@@ -42,8 +42,21 @@ class RemoteConfig:
     alias: str = ""
     remote_dir: str = ""
     remote_python: str = ""
+    # Which accelerator the remote solve should use: "cpu" (Numba), "jax" (the
+    # GPU path as of photonfdtd 0.9 — JAX on the remote's GPU via XLA), or "cupy"
+    # (the legacy CuPy GPU backend). `use_gpu` is retained only so configs saved
+    # by an older phidler (which had just that bool) still load; resolved_backend
+    # maps such a config to "cupy".
+    backend: str = "cpu"
     use_gpu: bool = False
     local_photonfdtd_dir: str = ""
+
+    def resolved_backend(self) -> str:
+        """The backend to run with, honouring a legacy use_gpu=True config that
+        predates the `backend` field (those meant the CuPy GPU path)."""
+        if self.backend and self.backend != "cpu":
+            return self.backend
+        return "cupy" if self.use_gpu else "cpu"
 
     def resolved_remote_dir(self) -> str:
         """The install dir to use — the override, or the default under $HOME."""

@@ -256,7 +256,27 @@ def check_remote(cfg: RemoteConfig) -> tuple[bool, str]:
     (False, <reason>) so the dialog can show them."""
     if not cfg.is_configured():
         return False, "Set an SSH host first."
-    payload = "import phidler, photonfdtd; print('ok')"
+    # Import phidler+photonfdtd (the readiness gate) and, while we're on the box,
+    # report which accelerators are actually available there — so the user knows
+    # which "Acceleration" choice will work before running. jax_gpu is True only
+    # when XLA sees a GPU on the remote.
+    payload = (
+        "import phidler, photonfdtd\n"
+        "def _has(m):\n"
+        "    try:\n"
+        "        __import__(m); return True\n"
+        "    except Exception:\n"
+        "        return False\n"
+        "jax_gpu = False\n"
+        "if _has('jax'):\n"
+        "    try:\n"
+        "        import jax; jax_gpu = len(jax.devices('gpu')) > 0\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "print('ok')\n"
+        "print('backends numba=%s jax=%s jax_gpu=%s cupy=%s'"
+        " % (_has('numba'), _has('jax'), jax_gpu, _has('cupy')))\n"
+    )
     remote_cmd = f"{_remote_path(cfg.resolved_remote_python())} -c {shlex.quote(payload)}"
     try:
         proc = _ssh(cfg.alias, remote_cmd, timeout=_CONNECT_TIMEOUT_S)
@@ -265,8 +285,33 @@ def check_remote(cfg: RemoteConfig) -> tuple[bool, str]:
     except Exception as exc:  # ssh missing, etc.
         return False, str(exc)
     if proc.returncode == 0 and "ok" in (proc.stdout or ""):
-        return True, f"Connected to '{cfg.alias}': phidler and photonfdtd import successfully."
+        msg = f"Connected to '{cfg.alias}': phidler and photonfdtd import successfully."
+        backends = _summarize_remote_backends(proc.stdout or "")
+        if backends:
+            msg += "\n" + backends
+        return True, msg
     return False, _remote_error(proc) or "Remote import check failed."
+
+
+def _summarize_remote_backends(stdout: str) -> str:
+    """Turn the probe's 'backends numba=… jax=… jax_gpu=… cupy=…' line into a
+    friendly one-liner about what each Acceleration choice needs, or '' if the
+    line isn't present."""
+    line = next((ln for ln in stdout.splitlines() if ln.startswith("backends ")), None)
+    if line is None:
+        return ""
+    flags = {}
+    for tok in line.split()[1:]:
+        if "=" in tok:
+            key, val = tok.split("=", 1)
+            flags[key] = val == "True"
+    gpu_jax = "available" if flags.get("jax_gpu") else ("CPU-only" if flags.get("jax") else "not installed")
+    cupy = "available" if flags.get("cupy") else "not installed"
+    numba = "available" if flags.get("numba") else "not installed"
+    return (
+        f"Remote accelerators — CPU/Numba: {numba};  GPU (JAX): {gpu_jax};  "
+        f"GPU (CuPy, legacy): {cupy}."
+    )
 
 
 def run_on_remote(
