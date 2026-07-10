@@ -497,6 +497,13 @@ foundry rule deck; the generic PDK this app uses doesn't ship one.
 layer colors, the reference backdrop path, and project settings all
 round-trip exactly.
 
+**Unsaved changes** are tracked the way most apps do it: the title bar shows the
+file name with a modified marker (a leading `*`, or the standard edited dot on
+macOS) whenever there's something unsaved, and it clears the moment you save.
+Closing the window — or starting a New project or Opening another — with unsaved
+changes prompts you to **Save**, **Discard**, or **Cancel** first, so you can't
+lose work by reflex.
+
 **Exported `.py` scripts** recreate your design with direct gdsfactory
 calls (`gf.get_component(...)`, `add_ref`, `route_single`). They're useful for
 keeping a design as reviewable, version-controlled code. Running the

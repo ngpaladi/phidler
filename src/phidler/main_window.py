@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager
 
 import gdsfactory as gf
@@ -124,6 +125,16 @@ class MainWindow(QMainWindow):
         self._pending_route_port: tuple[int, str] | None = None
         self.route_cross_section = "strip"
         self.project_path: str | None = None
+        # Unsaved-changes tracking. The undo stack's clean state covers every
+        # undoable edit; _extra_dirty catches the document changes that don't go
+        # through it (project settings, reference/custom-component imports). The
+        # title bar shows a modified marker and closeEvent prompts to save.
+        self._extra_dirty = False
+        # A bound method (not a lambda) so Qt tracks this window as the receiver
+        # and auto-disconnects when it's destroyed — a lambda capturing self would
+        # keep firing on the half-deleted window during teardown.
+        self.undo_stack.cleanChanged.connect(self._on_clean_changed)
+        self._refresh_title()
 
         self.setStatusBar(QStatusBar())
         self.cursor_pos_label = QLabel("")
@@ -586,7 +597,63 @@ class MainWindow(QMainWindow):
                     names.append(spec.name)
         return sorted(set(names))
 
+    # -- unsaved-changes tracking ---------------------------------------------
+
+    def _on_clean_changed(self, _clean: bool) -> None:
+        self._refresh_title()
+
+    def _is_modified(self) -> bool:
+        """Whether the project has unsaved changes: any undoable edit off the last
+        saved point, or a non-undoable document change (settings, imports)."""
+        return self._extra_dirty or not self.undo_stack.isClean()
+
+    def _mark_dirty(self) -> None:
+        """Flag a change that doesn't go through the undo stack (so the title and
+        the on-exit prompt still notice it)."""
+        if not self._extra_dirty:
+            self._extra_dirty = True
+            self._refresh_title()
+
+    def _mark_saved(self) -> None:
+        """Reset to a clean baseline after a save/open/new."""
+        self.undo_stack.setClean()
+        self._extra_dirty = False
+        self._refresh_title()
+
+    def _refresh_title(self) -> None:
+        """Window title: 'name[*] — Phidler'. Qt renders the [*] as a modified
+        marker (a leading '*' on Windows/Linux, the standard document-edited dot
+        on macOS) whenever setWindowModified is True."""
+        name = os.path.basename(self.project_path) if self.project_path else "Untitled"
+        self.setWindowTitle(f"{name}[*] — Phidler")
+        self.setWindowModified(self._is_modified())
+
+    def _maybe_save_before_discarding(self) -> bool:
+        """Offer to save if there are unsaved changes, before an action that would
+        discard them (close, New, Open). Returns False if the user cancels (the
+        caller must then abort); True to proceed."""
+        if not self._is_modified():
+            return True
+        name = os.path.basename(self.project_path) if self.project_path else "this project"
+        reply = QMessageBox.question(
+            self,
+            "Unsaved changes",
+            f"Save changes to {name} before closing?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save,
+        )
+        if reply == QMessageBox.Cancel:
+            return False
+        if reply == QMessageBox.Save:
+            return self._save_project()  # False if the user cancels the Save-As dialog
+        return True  # Discard
+
     def closeEvent(self, event) -> None:
+        # Prompt to save unsaved work before anything is torn down; a Cancel here
+        # aborts the close entirely.
+        if not self._maybe_save_before_discarding():
+            event.ignore()
+            return
         # Best-effort teardown of the optional AI assistant. The MCP server
         # thread is a daemon and the claude process is parented to this window,
         # so both would die with the app anyway; this just shuts them down
@@ -1665,6 +1732,8 @@ class MainWindow(QMainWindow):
             self._new_project()
 
     def _new_project(self) -> None:
+        if not self._maybe_save_before_discarding():
+            return
         dialog = ProjectSettingsDialog(self.document.project_settings, parent=self)
         if dialog.exec() != QDialog.Accepted:
             return
@@ -1686,6 +1755,7 @@ class MainWindow(QMainWindow):
         self.undo_stack.clear()
         self.project_path = None
         self._apply_project_settings(settings)
+        self._mark_saved()  # a fresh project starts clean (no unsaved changes)
         self.statusBar().showMessage("New project", 2000)
 
     def _apply_project_settings(self, settings) -> None:
@@ -1697,8 +1767,11 @@ class MainWindow(QMainWindow):
         dialog = ProjectSettingsDialog(self.document.project_settings, parent=self)
         if dialog.exec() == QDialog.Accepted:
             self._apply_project_settings(dialog.result_settings())
+            self._mark_dirty()  # settings aren't on the undo stack, so flag it here
 
     def _open_project(self) -> None:
+        if not self._maybe_save_before_discarding():
+            return
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Open Project",
@@ -1743,21 +1816,24 @@ class MainWindow(QMainWindow):
         # choice rather than a silent file-format swap.
         self.project_path = None if path.endswith(".py") else path
         add_recent(path)  # surface it in the startup window next time
+        self._mark_saved()  # a freshly opened project has no unsaved changes yet
         self.statusBar().showMessage(f"Opened {path}", 3000)
 
-    def _save_project(self) -> None:
+    def _save_project(self) -> bool:
+        """Save to the current path (or prompt for one). Returns True on success,
+        False if the user cancelled the Save-As dialog or the write failed — so
+        callers gating on a save (the on-exit prompt) can abort."""
         if self.project_path is None:
-            self._save_project_as()
-            return
-        self._save_project_to(self.project_path)
+            return self._save_project_as()
+        return self._save_project_to(self.project_path)
 
-    def _save_project_as(self) -> None:
+    def _save_project_as(self) -> bool:
         path, _ = QFileDialog.getSaveFileName(self, "Save Project As", "project.phidler", "Phidler projects (*.phidler)")
         if not path:
-            return
-        self._save_project_to(path)
+            return False
+        return self._save_project_to(path)
 
-    def _save_project_to(self, path: str) -> None:
+    def _save_project_to(self, path: str) -> bool:
         # Pull the FDTD window's live settings into the document first, so an
         # open-but-unsaved simulation set-up is captured in this save.
         if self._fdtd_window is not None:
@@ -1766,10 +1842,12 @@ class MainWindow(QMainWindow):
             save_project(self.document, path)
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", f"Could not save to {path}:\n{exc}")
-            return
+            return False
         self.project_path = path
         add_recent(path)
+        self._mark_saved()  # this is now the clean baseline; clears the modified marker
         self.statusBar().showMessage(f"Saved {path}", 3000)
+        return True
 
     def _import_reference_gds(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import Reference GDS", "", "GDS files (*.gds)")
@@ -1781,11 +1859,13 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Import failed", f"Could not import {path}:\n{exc}")
             return
         self.scene.show_reference()
+        self._mark_dirty()  # the reference path is saved with the project
         self.statusBar().showMessage(f"Imported reference {path}", 3000)
 
     def _clear_reference_gds(self) -> None:
         self.document.clear_reference()
         self.scene.clear_reference_item()
+        self._mark_dirty()
 
     def _import_custom_components(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import Custom Components", "", "Python files (*.py)")
@@ -1816,6 +1896,7 @@ class MainWindow(QMainWindow):
         self.catalog.setdefault("custom", []).extend(custom_specs)
         self.palette.add_components({"custom": custom_specs})
         self.document.record_custom_component_path(path)
+        self._mark_dirty()  # the custom-component path is recorded in the project
         message = f"Imported {len(result.specs)} custom component(s) from {path}"
         if result.skipped:
             message += f" — skipped: {', '.join(result.skipped)}"
