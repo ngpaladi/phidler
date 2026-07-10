@@ -27,6 +27,10 @@ foundry-ready GDS — all in one window.
 - **One window, whole flow.** Palette → canvas → routing → DRC → simulation →
   GDS export, plus a live scripting console when you *do* want to drop into
   gdsfactory. No round-trips between tools.
+- **Or just ask.** Have the [Claude Code](https://claude.com/code) CLI? Switch
+  the console to "Ask Claude" and describe the circuit you want in plain English.
+  It places and routes on the live canvas through the same session you do — and
+  reads what you've got selected — so you see every move it makes.
 - **It's still gdsfactory underneath.** Every component is a real gdsfactory
   factory; the export is a real GDSII your foundry/PDK toolchain already
   understands.

@@ -2,13 +2,14 @@
 
 Phidler is a graphical layout tool for photonic integrated circuits, built on
 [gdsfactory](https://gdsfactory.github.io/gdsfactory/) and its generic PDK. You
-place real photonic components, connect them with real routed waveguides, verify
-the result, and export a foundry-ready GDS — without writing code, though you can
-drop into Python at any point.
+place real photonic components, wire them together with real routed waveguides,
+check the result, and export a foundry-ready GDS — no code required, though
+Python is always a keystroke away (and if you'd rather not touch either, you can
+just ask Claude — see [Ask Claude to build it](#ask-claude-to-build-it)).
 
-This page is the **reference** for every panel and tool. If you would rather
-learn by building something concrete, the [MZI tutorial](tutorial.md) walks the
-whole flow end to end on a real device; here we explain each piece in depth.
+This page is the **reference**: every panel and every tool, in depth. If you'd
+rather learn by building something concrete, the [MZI tutorial](tutorial.md)
+walks the whole flow end to end on a real device.
 
 ## The design process, end to end
 
@@ -523,6 +524,43 @@ Everything the console does is real and immediate, but **bypasses the
 undo stack** — it's a power-user tool for quick scripted edits, not a
 replacement for the normal undo-tracked UI actions.
 
+## Ask Claude to build it
+
+The scripting console is for when you'd rather type code than click. This is for
+when you'd rather just say what you want. Flip the dropdown at the bottom of the
+**Console** dock from **Python** to **Ask Claude**, type a request in plain
+English — say, "add a 2×2 MMI at the origin and route both of its outputs to the
+grating couplers on the right" — and Claude lays it out on the canvas while you
+watch.
+
+It's optional. The mode only shows up when two pieces are in place: the `ai`
+extra (`pip install -e ".[ai]"`) and the [Claude Code](https://claude.com/code)
+command-line tool (`claude`) on your PATH. If either is missing, the dropdown
+never appears and the Console stays an ordinary Python console.
+
+Here's the part worth understanding: Claude doesn't get a separate back door into
+your design. It drives the very same `place()` / `route()` / `doc` session the
+console already gives you. So every edit it makes shows up right there in the
+console, tagged `claude ▸`, and on the canvas — exactly as if you'd typed it
+yourself. Nothing happens that you can't see scroll past.
+
+A few things that make it feel less like talking to a black box:
+
+- **It knows what you've selected.** Select two components and say "route these
+  together," or select one and say "make this 3 µm longer" — Claude checks your
+  canvas selection before it does anything, so "this" and "these" mean what
+  you'd expect.
+- **You can ask, not just tell.** "What's placed right now?" or "which ports
+  does instance 4 have?" work fine; it reads the live document to answer.
+- **It stays in its lane.** The bridge Claude talks to runs inside the app, on
+  localhost only, and it's handed nothing but Phidler's own tools — placing,
+  routing, running code in the console. It can't reach files on your disk or run
+  shell commands through this.
+
+As with the console, its edits are real and immediate but skip the undo stack, so
+lean on it to draft and rearrange quickly rather than as a replacement for the
+undo-tracked UI actions.
+
 ## FDTD simulation
 
 The **Simulate** button in the toolbar opens a separate window that runs a
@@ -633,6 +671,12 @@ Propagation runs use a few accelerators so they don't crawl:
   array ops, so either drives the solve. The status line reports which backend
   actually ran (**"Done on GPU (CUDA)…"** / **"…GPU (ROCm)…"** vs
   **"…on Numba…"**), so a GPU request that quietly fell back to CPU is visible.
+- **JAX** (the **Acceleration** row, shown when the `jax` package is installed)
+  is a third backend — photonfdtd's differentiable stepper. Like Numba, it runs
+  in the background and is slow only on its first run, where it traces and
+  compiles the kernel before caching it. It's exclusive of GPU and Numba, so
+  ticking it clears those; reach for it when you specifically want the JAX path,
+  otherwise Numba or GPU is the simpler default.
 - The propagation domain keeps only as much **cladding** as the mode's
   evanescent field actually needs (a few decay lengths, scaled by your
   platform's index contrast), rather than the full cladding the mode solver
@@ -642,6 +686,19 @@ Propagation runs use a few accelerators so they don't crawl:
   horizontal plane (mid-core, z=0) the playback actually shows, not the whole 3D
   volume — typically ~90× less memory. The plane shown is mid-core height, where
   the guided mode is strongest.
+
+#### A sharper run: subpixel smoothing
+
+The **Subpixel smoothing** checkbox (the **Accuracy** row) turns on photonfdtd's
+anisotropic subpixel smoothing. Normally every grid cell is wholly one material
+or the other, so a slanted or curved edge comes out as a staircase. With
+smoothing on, cells that straddle an edge get a blended, direction-aware
+permittivity instead — the boundary lands where it actually is, not on the
+nearest cell wall. In practice that means a given cell size resolves your
+geometry more faithfully, which is often a cheaper way to clean up a result than
+shrinking the cell size everywhere. It works on the NumPy, GPU, and JAX backends
+(but not Numba, which ticking it will clear) and costs a little setup time before
+the run.
 
 #### Running out of memory on a big layout
 

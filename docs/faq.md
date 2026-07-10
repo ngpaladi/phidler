@@ -23,6 +23,17 @@ console is there when you want it, not a requirement.
 In an editable `.phidler` file (JSON) that captures the design *and* the
 simulation set-up (sources, run parameters). Re-opening restores both.
 
+### Can I just tell it what to build, in plain English?
+
+If you have the [Claude Code](https://claude.com/code) CLI installed and the app
+was set up with the `ai` extra (`pip install -e ".[ai]"`), yes. Switch the
+Console dock from **Python** to **Ask Claude** and describe what you want.
+Claude works through the same live session the console does, so its edits appear
+on the canvas and scroll past in the console as it goes, and it reads whatever
+you've selected — see [Ask Claude to build it](guide.md#ask-claude-to-build-it).
+If the dropdown isn't there, one of those two pieces is missing; the app still
+runs exactly as before.
+
 ## Installation & launching
 
 ### The `Simulate` button opens a window but a run needs `photonfdtd` — what is that?
@@ -114,6 +125,18 @@ build (NVIDIA, `pip install cupy-cuda12x`) or the ROCm build (AMD,
 CuPy isn't installed (or its build doesn't match your driver). Install the
 [right CuPy wheel](guide.md#fdtd-simulation) for your GPU. Numba (CPU JIT) is a
 lighter alternative and is on by default when installed.
+
+### What are the JAX and Subpixel smoothing options?
+
+Both come from photonfdtd 0.4. **JAX** is a third acceleration backend
+(photonfdtd's differentiable stepper); it behaves like Numba — background run,
+slow first compile, fast after — and is greyed out unless the `jax` package is
+installed. **Subpixel smoothing** is an accuracy option: it gives cells that
+straddle a material edge a blended permittivity so a slanted or curved boundary
+isn't forced onto the grid, letting a given cell size resolve your geometry more
+faithfully. JAX is exclusive of GPU/Numba, and subpixel works everywhere except
+Numba, so the checkboxes clear each other where they'd conflict. See
+[Speed](guide.md#speed) and [A sharper run](guide.md#a-sharper-run-subpixel-smoothing).
 
 ### A run is going to be huge — will it freeze the app?
 

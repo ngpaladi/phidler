@@ -160,6 +160,15 @@ clicking and code freely.
 
 ![The scripting console placing and routing components against the live session](screenshots/console_session.png)
 
+## Or just ask Claude
+
+Don't feel like clicking *or* writing code? Switch the Console to **Ask Claude**
+and describe what you want — "add a 2×2 MMI and route both outputs to the grating
+couplers." Claude builds it on the live canvas through the same session the
+console uses, so you watch every edit land (and it reads whatever you've got
+selected, so "route these two" works). It's optional: you need the `ai` extra and
+the [Claude Code](https://claude.com/code) CLI installed.
+
 ## What you can build
 
 From a single waveguide to a full circuit — splitters and combiners, ring
