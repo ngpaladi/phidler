@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import gdsfactory as gf
 from PySide6.QtCore import QPoint, QPointF, QRectF, QTimer, Qt
 from PySide6.QtGui import QAction, QKeySequence, QShortcut, QUndoStack
@@ -66,6 +68,41 @@ def _without_array_variants(catalog):
         if kept:
             filtered[category] = kept
     return filtered
+
+
+class _UndoGrouper:
+    """Collects the undo commands pushed while running one console entry or Claude
+    action into a single QUndoStack macro, so a single Ctrl+Z reverts the whole
+    thing.
+
+    The macro is opened lazily, on the first push inside a group — so a block that
+    pushes nothing (a read-only query, a bare print) leaves no empty, do-nothing
+    entry on the undo stack. Outside any group, push() is a plain push (no macro).
+    """
+
+    def __init__(self, undo_stack: QUndoStack) -> None:
+        self._stack = undo_stack
+        self._label: str | None = None
+        self._open = False  # whether beginMacro has fired for the current group
+
+    @contextmanager
+    def group(self, label: str):
+        # Save/restore so a nested group (shouldn't normally happen, but be safe)
+        # doesn't corrupt the outer one.
+        prev = (self._label, self._open)
+        self._label, self._open = label, False
+        try:
+            yield
+        finally:
+            if self._open:
+                self._stack.endMacro()
+            self._label, self._open = prev
+
+    def push(self, command) -> None:
+        if self._label is not None and not self._open:
+            self._stack.beginMacro(self._label)
+            self._open = True
+        self._stack.push(command)
 
 
 class MainWindow(QMainWindow):
@@ -318,6 +355,10 @@ class MainWindow(QMainWindow):
         dialog.show()
 
     def _build_console_panel(self) -> None:
+        # Groups the commands a console entry / Claude action pushes into one undo
+        # macro, opened lazily so a read-only run leaves no empty step.
+        self._undo_grouper = _UndoGrouper(self.undo_stack)
+
         def place(
             component_spec: str,
             x: float = 0.0,
@@ -326,18 +367,27 @@ class MainWindow(QMainWindow):
             mirror: bool = False,
             **kwargs,
         ):
-            """Places a component immediately, rendered right away. Not
-            pushed onto the undo stack — use the palette/canvas for that."""
-            inst = self.document.add_instance(component_spec, kwargs, x=x, y=y, rotation=rotation, mirror=mirror)
-            self.scene.add_instance_item(inst.id)
-            return inst
+            """Places a component immediately, rendered right away, as an undoable
+            command (Ctrl+Z reverts it; grouped with the rest of the console/Claude
+            entry it ran in)."""
+            command = AddInstanceCommand(
+                self.document, self.scene, component_spec, kwargs, x=x, y=y, rotation=rotation, mirror=mirror
+            )
+            self._undo_grouper.push(command)
+            if command.error is not None:  # re-surface so the console prints it (command is a no-op)
+                raise command.error
+            return self.document.instances[command.inst_id]
 
         def route(inst_a_id: int, port_a: str, inst_b_id: int, port_b: str, cross_section: str = "strip"):
-            """Routes between two ports immediately, rendered right away.
-            Not pushed onto the undo stack."""
-            placed = self.document.add_route(inst_a_id, port_a, inst_b_id, port_b, cross_section)
-            self.scene.add_route_item(placed.id)
-            return placed
+            """Routes between two ports immediately, rendered right away, as an
+            undoable command (grouped with its console/Claude entry)."""
+            command = AddRouteCommand(
+                self.document, self.scene, inst_a_id, port_a, inst_b_id, port_b, cross_section=cross_section
+            )
+            self._undo_grouper.push(command)
+            if command.error is not None:
+                raise command.error
+            return self.document.routes[command.route_id]
 
         namespace = {
             "gf": gf,
@@ -352,7 +402,7 @@ class MainWindow(QMainWindow):
             "selected_instance_ids": self._selected_instance_ids,
             "selected_route_ids": self._selected_route_ids,
         }
-        self.console_panel = ConsolePanel(namespace)
+        self.console_panel = ConsolePanel(namespace, command_group=self._undo_grouper.group)
         self._build_ai_assistant()
 
         dock = QDockWidget("Console", self)

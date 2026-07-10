@@ -529,9 +529,10 @@ Available names:
 Multi-line blocks (`for`, `if`, `def`, ...) work like a normal REPL: keep
 typing until you enter a blank line. Up/Down arrows recall history.
 
-Everything the console does is real and immediate, but **bypasses the
-undo stack**. It's a power-user tool for quick scripted edits, not a
-replacement for the normal undo-tracked UI actions.
+`place()` and `route()` are **undoable**: a single Ctrl+Z reverts a whole
+console entry (a one-liner, or a `for`-loop that placed twenty things) as one
+step, the same as any toolbar edit. Reaching into `doc`/`scene` directly still
+applies immediately but bypasses undo — that's the power-user escape hatch.
 
 ## Ask Claude to build it
 
@@ -566,9 +567,10 @@ A few things that make it feel less like talking to a black box:
   routing, running code in the console. It can't reach files on your disk or run
   shell commands through this.
 
-As with the console, its edits are real and immediate but skip the undo stack, so
-lean on it to draft and rearrange quickly rather than as a replacement for the
-undo-tracked UI actions.
+Its edits are **undoable**, and grouped: one Ctrl+Z reverts everything a single
+Claude message did (all the components it placed and routes it drew), so you can
+let it draft freely and back the whole thing out in one step if it's not what you
+wanted.
 
 ## FDTD simulation
 

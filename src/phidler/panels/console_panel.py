@@ -3,6 +3,7 @@ from __future__ import annotations
 import code
 import io
 import sys
+from contextlib import nullcontext
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QTextCursor
@@ -20,9 +21,9 @@ _WELCOME = (
     "Available: gf (gdsfactory), doc (LayoutDocument), scene (LayoutScene),\n"
     "view (LayoutView), win (MainWindow), place(spec, x=, y=, rotation=,\n"
     "mirror=, **kwargs), route(inst_a, port_a, inst_b, port_b, cross_section=).\n"
-    "Everything here — doc/scene directly, or place()/route() — is real and\n"
-    "immediate but bypasses the undo stack. Only the palette/toolbar/menu\n"
-    "actions push undoable commands.\n"
+    "place() and route() are undoable — Ctrl+Z reverts a whole console entry (or\n"
+    "a whole Claude action) as one step. Editing doc/scene directly still applies\n"
+    "immediately but bypasses undo.\n"
 )
 
 _AI_WELCOME = (
@@ -86,10 +87,15 @@ class ConsolePanel(QWidget):
     plain Python console, unchanged.
     """
 
-    def __init__(self, namespace: dict, parent=None) -> None:
+    def __init__(self, namespace: dict, command_group=None, parent=None) -> None:
         super().__init__(parent)
         self._interpreter = code.InteractiveInterpreter(namespace)
         self._buffer: list[str] = []
+        # Optional factory ``label -> context manager`` (main_window supplies the
+        # undo grouper's .group): wrapping an execution in it makes every
+        # place()/route() the code runs land in one undo macro, so a console entry
+        # or a Claude action is a single Ctrl+Z. None => no grouping (plain REPL).
+        self._command_group = command_group
         self._claude = None  # the live ClaudeSession, once wired
         # Zero-arg callable returning a ClaudeSession (building/starting the MCP
         # server on first use) or None on failure. Set by set_claude_provider so
@@ -129,7 +135,8 @@ class ConsolePanel(QWidget):
             "scene, view, win, plus place(spec, x=, y=, rotation=, mirror=, "
             "**kwargs) and route(inst_a, port_a, inst_b, port_b, "
             "cross_section=). Up/Down recall history; multi-line blocks need a "
-            "blank line to run. Changes apply immediately but bypass undo."
+            "blank line to run. place()/route() are undoable (Ctrl+Z reverts the "
+            "whole entry); direct doc/scene edits bypass undo."
         )
         self.input.returnPressed.connect(self._on_return)
         input_row.addWidget(self.input, stretch=1)
@@ -224,23 +231,43 @@ class ConsolePanel(QWidget):
         self._buffer.append(line)
         source = "\n".join(self._buffer)
 
-        needs_more, output_text = self._exec(source, symbol="single")
+        needs_more, output_text = self._exec(
+            source, symbol="single", group_label=self._group_label(source, "Console")
+        )
         if output_text:
             self._append(output_text)
         if not needs_more:
             self._buffer.clear()
 
-    def _exec(self, source: str, *, symbol: str) -> tuple[bool, str]:
+    @staticmethod
+    def _group_label(source: str, prefix: str) -> str:
+        """A short undo-macro name from the first non-blank line of ``source``,
+        e.g. "Console: place('mmi2x2')" or "Claude: a = place('straight')"."""
+        first = next((ln.strip() for ln in source.splitlines() if ln.strip()), "")
+        if len(first) > 40:
+            first = first[:39] + "…"
+        return f"{prefix}: {first}" if first else prefix
+
+    def _exec(self, source: str, *, symbol: str, group_label: str | None = None) -> tuple[bool, str]:
         """Run ``source`` through the interpreter with stdout/stderr captured.
 
         Returns (needs_more, captured_text). ``symbol`` is "single" for the
         interactive line-at-a-time path (which echoes expression values and can
         ask for more input) and "exec" for running a whole block at once (the
-        assistant path — multiple statements, no auto-echo)."""
+        assistant path — multiple statements, no auto-echo). ``group_label``, with
+        a command_group configured, collects the undo commands this run pushes
+        into one macro so it undoes as a single step (an incomplete line pushes
+        nothing, so no macro is created)."""
         old_stdout, old_stderr = sys.stdout, sys.stderr
         sys.stdout = sys.stderr = captured = io.StringIO()
+        group = (
+            self._command_group(group_label)
+            if self._command_group is not None and group_label
+            else nullcontext()
+        )
         try:
-            needs_more = self._interpreter.runsource(source, "<console>", symbol)
+            with group:
+                needs_more = self._interpreter.runsource(source, "<console>", symbol)
         except SystemExit:
             needs_more = False
             captured.write("SystemExit caught — use the window controls to close Phidler instead.\n")
@@ -257,8 +284,11 @@ class ConsolePanel(QWidget):
         self._append(f"\n{_AI_CODE_PROMPT}{code_text}\n")
         # A whole block at once ("exec"): assistant code may be multi-statement,
         # and it prints what it wants surfaced. A pending multi-line user buffer
-        # is left untouched — this is a separate, self-contained execution.
-        _needs_more, output_text = self._exec(code_text, symbol="exec")
+        # is left untouched — this is a separate, self-contained execution. The
+        # group_label makes everything this tool call places/routes one undo step.
+        _needs_more, output_text = self._exec(
+            code_text, symbol="exec", group_label=self._group_label(code_text, "Claude")
+        )
         if output_text:
             self._append(output_text)
         return output_text or "(no output)"
