@@ -1,0 +1,11 @@
+# phidler FDTD backend contract for nereid-server.
+# Message type: inference.ModelInferenceConfig
+#
+# The payloads are opaque, variable-length byte blobs (a packed job bundle in, a
+# framed .npz out), not fixed numeric tensors, so both shapes are declared [-1]:
+# a 1-D tensor of any length. -1 matches any dimension, so every request/result
+# length passes the shape contract. output_shape being present marks this Python
+# model as tensor-capable (required — a Python model without it is text-only).
+input_shape: [-1]
+max_batch_size: 1
+output_shape: [-1]
