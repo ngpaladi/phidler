@@ -783,6 +783,28 @@ Projects that place **custom components** (local `.py` files) can't be offloaded
 (those files don't exist on the remote), and that case is reported as a clear
 error rather than failing mid-run.
 
+#### Running on Tidy3D (the cloud solver)
+
+The **Engine** dropdown at the top of the run controls picks *which* FDTD solver
+runs the propagation. The default is **photonfdtd** (everything above — local, the
+acceleration options, or SSH). Switch it to **Tidy3D (cloud)** to run the same
+layout on [Flexcompute's Tidy3D](https://www.flexcompute.com/tidy3d/) instead: a
+different engine, not just a different machine. Phidler builds a `tidy3d.Simulation`
+from your placed geometry — the same core/cladding, waveguides, and source
+positions — submits it to Tidy3D's cloud, and plays the returned field movie back
+in the same window.
+
+It's a separate, optional install and needs an account: `pip install
+"phidler[tidy3d]"`, then configure your API key once with `tidy3d configure` (or
+set `TIDY3D_API_KEY`). Until both are in place the **Tidy3D** option is greyed out
+with a tooltip that says which piece is missing. A run **consumes FlexCredits**
+from your Flexcompute account, so phidler asks you to confirm before submitting.
+The Acceleration / Remote / Accuracy options don't apply on this engine (they're
+photonfdtd's), so they grey out when Tidy3D is selected; **Cell size**, **Run
+time**, **Region**, and your **sources** all still apply. This first version
+supports **dipole** sources (the default); mode-matched / scripted / Cherenkov
+sources aren't wired to Tidy3D yet.
+
 **Read the disclaimer in the window.** Both tabs run a real solve against
 your geometry, not a mockup. But treat the results as a qualitative
 look at how light spreads through your structure, not a calibrated

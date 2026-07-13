@@ -57,6 +57,16 @@ fdtd = [
 ai = [
     "mcp>=1.2",
 ]
+# Optional Tidy3D engine: run the FDTD propagation on Flexcompute's cloud solver
+# instead of photonfdtd (phidler.fdtd_tidy3d). A second *engine*, not a transport
+# — it builds a tidy3d.Simulation from the same layout and submits it. Needs the
+# tidy3d package AND an API key configured for the account (`tidy3d configure`),
+# and a run consumes FlexCredits. Entirely optional: without it the FDTD window's
+# Engine dropdown shows Tidy3D disabled with a tooltip and photonfdtd works as
+# before.
+tidy3d = [
+    "tidy3d>=2.7",
+]
 # Offload FDTD runs to a remote nereid-server over gRPC (phidler.fdtd_nereid).
 # Only grpcio + protobuf are needed at runtime; the generated stubs in
 # phidler._nereid are committed, so no protoc toolchain is required to *use* it

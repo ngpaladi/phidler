@@ -613,21 +613,34 @@ class FdtdWorker(QObject):
     progress = Signal(int, int)  # (step, n_steps) — emitted from the worker thread
 
     def __init__(self, document: LayoutDocument, params: FdtdParams, region_um=None,
-                 remote=False, remote_cfg=None) -> None:
+                 remote=False, remote_cfg=None, engine="photonfdtd", tidy3d_cfg=None) -> None:
         super().__init__()
         self.document = document
         self.params = params
         self.region_um = region_um
         self.remote = remote
         self.remote_cfg = remote_cfg
+        self.engine = engine  # "photonfdtd" | "tidy3d"
+        self.tidy3d_cfg = tidy3d_cfg
 
     def run(self) -> None:
         # progress.emit is safe to call from this worker thread: Qt queues the
-        # cross-thread delivery to the GUI thread. All three backends report
-        # through the same signal — the in-process solver via a callback, the
-        # subprocess/remote paths by parsing markers streamed back.
+        # cross-thread delivery to the GUI thread. All backends report through
+        # the same signal — the in-process solver via a callback, the
+        # subprocess/remote/nereid paths by parsing markers streamed back, and
+        # Tidy3D from its upload/download progress.
         try:
-            if self.remote:
+            if self.engine == "tidy3d":
+                # A different *engine*, not a transport: build a tidy3d.Simulation
+                # from the same layout and run it on Tidy3D's cloud. Returns the
+                # same (sim, result, elapsed) stub shape as the photonfdtd paths.
+                from phidler.fdtd_tidy3d import run_on_tidy3d
+
+                sim, result, elapsed = run_on_tidy3d(
+                    self.document, self.params, self.region_um, self.tidy3d_cfg,
+                    progress_callback=self.progress.emit,
+                )
+            elif self.remote:
                 # Ship the job to the configured SSH host, run it there, bring
                 # the result back. The worker thread blocks on ssh while the UI
                 # stays live — same shape as the GPU subprocess path below.
@@ -1262,7 +1275,7 @@ class FdtdWindow(QMainWindow):
         )
         form.addRow("Axis units", self.run_units_combo)
 
-        accel_widget = QWidget()
+        accel_widget = self.accel_widget = QWidget()
         accel_layout = QHBoxLayout(accel_widget)
         accel_layout.setContentsMargins(0, 0, 0, 0)
         # GPU/Numba are disabled unless their backend is actually importable —
@@ -1343,6 +1356,30 @@ class FdtdWindow(QMainWindow):
         accel_layout.addWidget(self.run_jax_check)
         accel_layout.addWidget(self.run_low_memory_check)
         accel_layout.addStretch(1)
+
+        # Engine selector: photonfdtd (local/remote, with the acceleration options
+        # above) vs Tidy3D (Flexcompute's cloud solver). Tidy3D is offered but
+        # disabled with an explanatory tooltip when it isn't ready (not installed
+        # or no API key). Placed above Acceleration since it scopes it.
+        self.run_engine_combo = QComboBox()
+        self.run_engine_combo.addItem("photonfdtd (local / remote)", "photonfdtd")
+        self.run_engine_combo.addItem("Tidy3D (cloud)", "tidy3d")
+        from phidler.fdtd_tidy3d import unavailable_reason as _t3d_unavailable
+
+        _t3d_reason = _t3d_unavailable()
+        if _t3d_reason:
+            t3d_idx = self.run_engine_combo.findData("tidy3d")
+            self.run_engine_combo.model().item(t3d_idx).setEnabled(False)
+            self.run_engine_combo.setItemData(t3d_idx, _t3d_reason, Qt.ToolTipRole)
+        self.run_engine_combo.setToolTip(
+            "Which FDTD engine runs the propagation. photonfdtd runs locally (with "
+            "the Acceleration options below) or over SSH; Tidy3D submits to "
+            "Flexcompute's cloud solver — it needs the tidy3d package and an API key, "
+            "and a run consumes FlexCredits. The Acceleration/Region/Remote options "
+            "below apply to the photonfdtd engine."
+        )
+        self.run_engine_combo.currentIndexChanged.connect(self._on_engine_changed)
+        form.addRow("Engine", self.run_engine_combo)
         form.addRow("Acceleration", accel_widget)
 
         # Anisotropic subpixel smoothing (photonfdtd 0.4): sub-cell-accurate
@@ -1378,7 +1415,7 @@ class FdtdWindow(QMainWindow):
         )
         form.addRow("Region", self.run_region_check)
 
-        remote_widget = QWidget()
+        remote_widget = self.remote_widget = QWidget()
         remote_layout = QHBoxLayout(remote_widget)
         remote_layout.setContentsMargins(0, 0, 0, 0)
         self.run_remote_check = QCheckBox("Run on remote server")
@@ -1887,8 +1924,77 @@ class FdtdWindow(QMainWindow):
             return suggested, new_count, True
         return region_um, cell_count, False
 
+    def _selected_engine(self) -> str:
+        return self.run_engine_combo.currentData()
+
+    def _on_engine_changed(self, _idx: int) -> None:
+        # The Acceleration / Remote / Accuracy options are photonfdtd-only, so
+        # grey them out for Tidy3D. Disabling the *container* remembers each
+        # child's own enabled state (Qt restores it when the parent re-enables),
+        # so an unavailable backend stays disabled after switching back.
+        on_pf = self._selected_engine() != "tidy3d"
+        self.accel_widget.setEnabled(on_pf)
+        self.remote_widget.setEnabled(on_pf)
+        self.run_subpixel_check.setEnabled(on_pf)
+
+    def _run_tidy3d(self, params: FdtdParams) -> None:
+        """Launch a run on Tidy3D's cloud (a different engine, not a transport):
+        confirm, then run in the worker thread like the other backends, reusing
+        the same result/progress handlers."""
+        from phidler.fdtd_tidy3d import Tidy3dConfig, unavailable_reason
+
+        reason = unavailable_reason()
+        if reason:
+            QMessageBox.warning(self, "Tidy3D unavailable", reason)
+            return
+
+        region_um = None
+        if self.run_region_check.isChecked():
+            region_um = self._selected_region_um()
+            if region_um is None:
+                QMessageBox.warning(
+                    self, "No selection",
+                    "Select one or more components on the canvas to simulate only that "
+                    "region, or untick 'Simulate selected components only'.",
+                )
+                return
+        self._region_um = region_um
+
+        reply = QMessageBox.question(
+            self, "Run on Tidy3D",
+            "This submits the simulation to Tidy3D's cloud (Flexcompute) and consumes "
+            "FlexCredits from your account. Continue?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._last_params = params
+        self.run_button.setEnabled(False)
+        self.run_status_label.setText("Running on Tidy3D cloud…")
+        self._field_image_initialized = False
+        self.run_progress.setRange(0, 0)  # busy while the job queues/solves on the cloud
+        self.run_progress.setVisible(True)
+
+        self._fdtd_thread = QThread(self)
+        self._fdtd_worker = FdtdWorker(
+            self.document, params, region_um, engine="tidy3d", tidy3d_cfg=Tidy3dConfig()
+        )
+        self._fdtd_worker.moveToThread(self._fdtd_thread)
+        self._fdtd_thread.started.connect(self._fdtd_worker.run)
+        self._fdtd_worker.progress.connect(self._on_fdtd_progress)
+        self._fdtd_worker.finished.connect(self._on_fdtd_finished)
+        self._fdtd_worker.failed.connect(self._on_fdtd_failed)
+        self._fdtd_worker.finished.connect(self._fdtd_thread.quit)
+        self._fdtd_worker.failed.connect(self._fdtd_thread.quit)
+        self._fdtd_thread.start()
+
     def _on_run_clicked(self) -> None:
         params = self._current_params()
+
+        if self._selected_engine() == "tidy3d":
+            self._run_tidy3d(params)
+            return
 
         remote = self.run_remote_check.isChecked()
         remote_cfg = None
@@ -2061,7 +2167,9 @@ class FdtdWindow(QMainWindow):
         gx, gy, gz = (int(s) for s in sim.grid.shape)  # full sim grid (the movie keeps only z=0)
         # Report the backend that actually ran (not what was requested) — a GPU
         # request can quietly fall back to CPU, which this makes visible.
-        if getattr(sim, "use_gpu", False):
+        if getattr(sim, "engine", None) == "tidy3d":
+            backend = "Tidy3D"
+        elif getattr(sim, "use_gpu", False):
             # Name the GPU vendor backend (CUDA/ROCm) when we can identify it.
             gpu_kind = gpu_backend_name()
             backend = f"GPU ({gpu_kind})" if gpu_kind and gpu_kind != "GPU" else "GPU"
