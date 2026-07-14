@@ -432,6 +432,8 @@ Already placed a route and want it longer or shorter? Select it, and the
 Length**, and the meander re-runs to match (undoable, like any edit). Set the
 target to 0 to drop the goal and route straight again.
 
+<img src="screenshots/route_length_editor.png" width="300" alt="The Properties panel's Route editor for a selected route: its current length, a Target length with a µm/fs/ns unit, a 'Meander to match' toggle, and an Apply Length button">
+
 **Component avoidance**: when a component sits on the straight path between the
 two ports, the route automatically detours around it rather than crossing
 through it. This is best-effort: a single detour around the obstacles in the
@@ -554,6 +556,8 @@ when you'd rather just say what you want. Flip the dropdown at the bottom of the
 English — say, "add a 2×2 MMI at the origin and route both of its outputs to the
 grating couplers on the right" — and Claude lays it out on the canvas while you
 watch.
+
+![The Console in "Ask Claude" mode: a plain-English request, the Python Claude ran through the console (prefixed "claude ▸"), and its reply, with the result on the canvas above](screenshots/console_ask_claude.png)
 
 It's optional. The mode only shows up when two pieces are in place: the `ai`
 extra (`pip install -e ".[ai]"`) and the [Claude Code](https://claude.com/code)
@@ -793,6 +797,8 @@ different engine, not just a different machine. Phidler builds a `tidy3d.Simulat
 from your placed geometry — the same core/cladding, waveguides, and source
 positions — submits it to Tidy3D's cloud, and plays the returned field movie back
 in the same window.
+
+<img src="screenshots/fdtd_engine_dropdown.png" width="360" alt="The FDTD Engine dropdown open, offering photonfdtd (local / remote) and Tidy3D (cloud)">
 
 It's a separate, optional install and needs an account: `pip install
 "phidler[tidy3d]"`, then configure your API key once with `tidy3d configure` (or

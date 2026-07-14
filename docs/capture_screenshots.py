@@ -849,6 +849,78 @@ def palette_catalog() -> None:
     save(win.palette, "palette_catalog")
 
 
+def console_ask_claude() -> None:
+    """The Console's 'Ask Claude' mode: a plain-English request, the Python it
+    runs through this same console (claude ▸), and Claude's reply — the AI driving
+    the live layout. Uses a stub session (no real API call) so the render is
+    deterministic; the code it 'runs' is the real place()/route() path."""
+    from PySide6.QtCore import QObject, Signal
+
+    class _StubSession(QObject):
+        started = Signal()
+        assistant_text = Signal(str)
+        tool_activity = Signal(str)
+        finished = Signal()
+        failed = Signal(str)
+        busy = False
+
+        def send(self, *a) -> None:
+            pass
+
+        def cancel(self) -> None:
+            pass
+
+    win = MainWindow()
+    win.resize(1200, 800)
+    win.show()
+    cp = win.console_panel
+    cp.attach_claude(_StubSession())  # reveals the mode dropdown
+    cp.mode_combo.setCurrentIndex(1)  # switch to "Ask Claude"
+
+    cp._append("\n🧑 place a waveguide and a 90° bend, then connect them")
+    cp._append("\n🤖 Placing a straight and a bend_euler, then routing them together.")
+    cp.run_python_from_agent(
+        "a = place('straight', length=12.0)\n"
+        "b = place('bend_euler', x=15.0, y=0.0, rotation=90.0)\n"
+        "route(a.id, 'o2', b.id, 'o1')"
+    )
+    cp._append("\n🤖 Done — both are placed and routed on the canvas above (and it's undoable with Ctrl+Z).\n")
+    win.view.zoom_to_fit()
+    save(win, "console_ask_claude")
+    crop_bottom("console_ask_claude", fraction=0.42)
+
+
+def fdtd_engine_dropdown() -> None:
+    """The FDTD Engine selector: photonfdtd (local/remote) vs Tidy3D (cloud)."""
+    win, fdtd_win = _fdtd_prop_window_with_sources()
+    _grab_combo_popup(fdtd_win.run_engine_combo, "fdtd_engine_dropdown")
+
+
+def route_length_editor() -> None:
+    """The Properties panel's Route editor: select a placed route and change its
+    target length (re-runs the meander), undoably."""
+    from phidler.model.document import Transform
+
+    win = MainWindow()
+    win.resize(360, 560)
+    win.show()
+    a = win.document.add_instance("straight", {"length": 10.0})
+    win.scene.add_instance_item(a.id)
+    b = win.document.add_instance("straight", {"length": 10.0})
+    win.scene.add_instance_item(b.id)
+    win.document.set_transform(b.id, Transform(x=60.0, y=0.0, rotation=180.0, mirror=False))
+    win.scene.items_by_inst[b.id].apply_transform(60.0, 0.0, 180.0, False)
+    route = win.document.add_route(a.id, "o2", b.id, "o2", "strip", goal_length_um=90.0, auto_match=True)
+    win.scene.add_route_item(route.id)
+    win.scene.route_items[route.id].setSelected(True)
+    win._on_selection_changed()
+    # Size the panel so the whole Route group shows rather than its collapsed
+    # minimum (same reason as properties_panel_example).
+    win.properties_panel.resize(300, 240)
+    app.processEvents()
+    save(win.properties_panel, "route_length_editor")
+
+
 def regenerate_all() -> None:
     """Rebuild every embedded screenshot. Called by the standalone script and
     by the mkdocs pre-build hook (docs/hooks.py)."""
@@ -893,6 +965,10 @@ def regenerate_all() -> None:
     align_result()
     heater_showcase()
     palette_catalog()
+    # Newer features
+    console_ask_claude()
+    fdtd_engine_dropdown()
+    route_length_editor()
     print("done")
 
 
