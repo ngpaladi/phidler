@@ -8,9 +8,9 @@
 # (and the bare checkout path appended by build.sh).
 #
 # photonfdtd (the FDTD solver) isn't on PyPI — install it from GitHub. First, so
-# it's present before phidler needs it. build.sh rewrites this line to pin main's
-# *latest* commit (…photonfdtd.git@<sha>) at build time, so every nightly bundles
-# the newest solver and the exact commit is recorded in the build log.
+# it's present before phidler needs it. A bare git URL (no ref) installs main's
+# current HEAD, so every nightly bundles the newest solver; build.sh sets
+# PIP_NO_CACHE_DIR (no stale wheel) and logs the resolved commit for provenance.
 git+https://github.com/ngpaladi/photonfdtd.git
 #
 # The FDTD extras, listed explicitly (unpinned) instead of via phidler's [fdtd]

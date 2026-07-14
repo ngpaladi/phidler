@@ -28,23 +28,15 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 cp -a "$RECIPE/." "$WORK/"
 
-# Bundle the *latest* photonfdtd from GitHub. The committed requirements.txt uses
-# a bare `git+…photonfdtd.git` (no ref); resolve main's current commit here and
-# pin it in the working copy as `…photonfdtd.git@<sha>`. This makes "latest from
-# GitHub" explicit and reproducible (the exact SHA is printed and baked into the
-# build), and defeats any pip wheel-cache reuse — a fresh commit is a fresh
-# install target every night. The `@<sha>` suffix is space-free, so it stays
-# compatible with python-appimage's per-line `pip install` (see requirements.txt).
-PHOTONFDTD_REPO="https://github.com/ngpaladi/photonfdtd.git"
-PHOTONFDTD_SHA="$(git ls-remote "$PHOTONFDTD_REPO" HEAD 2>/dev/null | awk 'NR==1{print $1}')"
-if [ -n "$PHOTONFDTD_SHA" ]; then
-    echo "Pinning photonfdtd to latest GitHub main commit ${PHOTONFDTD_SHA}"
-    sed -i \
-        "s#^git+https://github.com/ngpaladi/photonfdtd.git.*#git+https://github.com/ngpaladi/photonfdtd.git@${PHOTONFDTD_SHA}#" \
-        "$WORK/requirements.txt"
-else
-    echo "warning: could not resolve photonfdtd HEAD (no network?); using the bare git URL (still fetches main HEAD)." >&2
-fi
+# Bundle the *latest* photonfdtd from GitHub. requirements.txt uses a bare
+# `git+…photonfdtd.git` (no ref), which pip installs from main's current HEAD — on
+# a fresh CI runner that's always the newest commit. We deliberately do NOT pin a
+# resolved `@<sha>`: pip would then run `git fetch <url> <sha>`, which GitHub
+# refuses for a bare commit that isn't an advertised ref tip (it broke the build).
+# Instead just log which commit the bare URL resolves to, for provenance, and rely
+# on PIP_NO_CACHE_DIR below to defeat any stale cached wheel.
+PHOTONFDTD_SHA="$(git ls-remote https://github.com/ngpaladi/photonfdtd.git HEAD 2>/dev/null | awk 'NR==1{print $1}')"
+[ -n "$PHOTONFDTD_SHA" ] && echo "Bundling photonfdtd at latest GitHub main commit ${PHOTONFDTD_SHA}"
 
 echo "${REPO_ROOT}" >> "$WORK/requirements.txt"
 
