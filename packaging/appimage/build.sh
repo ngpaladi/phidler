@@ -27,9 +27,30 @@ fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 cp -a "$RECIPE/." "$WORK/"
+
+# Bundle the *latest* photonfdtd from GitHub. The committed requirements.txt uses
+# a bare `git+…photonfdtd.git` (no ref); resolve main's current commit here and
+# pin it in the working copy as `…photonfdtd.git@<sha>`. This makes "latest from
+# GitHub" explicit and reproducible (the exact SHA is printed and baked into the
+# build), and defeats any pip wheel-cache reuse — a fresh commit is a fresh
+# install target every night. The `@<sha>` suffix is space-free, so it stays
+# compatible with python-appimage's per-line `pip install` (see requirements.txt).
+PHOTONFDTD_REPO="https://github.com/ngpaladi/photonfdtd.git"
+PHOTONFDTD_SHA="$(git ls-remote "$PHOTONFDTD_REPO" HEAD 2>/dev/null | awk 'NR==1{print $1}')"
+if [ -n "$PHOTONFDTD_SHA" ]; then
+    echo "Pinning photonfdtd to latest GitHub main commit ${PHOTONFDTD_SHA}"
+    sed -i \
+        "s#^git+https://github.com/ngpaladi/photonfdtd.git.*#git+https://github.com/ngpaladi/photonfdtd.git@${PHOTONFDTD_SHA}#" \
+        "$WORK/requirements.txt"
+else
+    echo "warning: could not resolve photonfdtd HEAD (no network?); using the bare git URL (still fetches main HEAD)." >&2
+fi
+
 echo "${REPO_ROOT}" >> "$WORK/requirements.txt"
 
-# python-appimage writes the AppImage into the current directory.
+# python-appimage writes the AppImage into the current directory. Disable pip's
+# cache so the photonfdtd build is never served from a stale cached wheel.
+export PIP_NO_CACHE_DIR=1
 cd "$REPO_ROOT"
 python-appimage build app -p "$PYVER" "$WORK"
 
