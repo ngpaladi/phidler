@@ -259,19 +259,24 @@ def fdtd_run_progress() -> None:
 
 
 def remote_config_dialog() -> None:
-    """The remote-server setup dialog: host alias, remote dir + Python, the
-    GPU-on-remote toggle, and the Test connection / Set up remote actions."""
+    """The remote-server setup dialog: host alias, the remote Acceleration
+    backend selector, and the single 'Connect & set up' action over a log pane."""
     from phidler.panels.fdtd_window import RemoteConfigDialog
 
     dialog = RemoteConfigDialog()
     dialog.resize(620, 460)
     dialog.alias_edit.setText("gpubox")
-    dialog.remote_dir_edit.setText("~/phidler-remote")
-    dialog.remote_python_edit.setText("~/phidler-remote/.venv/bin/python")
-    dialog.use_gpu_check.setChecked(True)
-    # The exact line check_remote emits on success, so the log pane shows a
-    # realistic result rather than the empty placeholder.
+    # Show the GPU (JAX) backend selected, the recommended remote accelerator.
+    jax_idx = dialog.backend_combo.findData("jax")
+    if jax_idx >= 0:
+        dialog.backend_combo.setCurrentIndex(jax_idx)
+    # A realistic 'Connect & set up' log tail, so the pane isn't empty.
     dialog._append("Connected to 'gpubox': phidler and photonfdtd import successfully.")
+    dialog._append(
+        "Remote accelerators — CPU/Numba: available;  GPU (JAX): available;  "
+        "GPU (CuPy, legacy): not installed."
+    )
+    dialog._append("Remote is already set up — ready to run.")
     dialog.show()
     save(dialog, "remote_config_dialog")
 
