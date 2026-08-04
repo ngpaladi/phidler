@@ -51,6 +51,7 @@ from phidler.fdtd_sim import (
     DISCLAIMER,
     FdtdParams,
     ModeProfileParams,
+    ProbeSpec,
     SimulationConfig,
     SourceSpec,
     build_mode_solver,
@@ -69,7 +70,13 @@ from phidler.fdtd_sim import (
     nearest_z_index,
     numba_available,
     photon_energy_ev_from_wavelength_um,
+    probe_intensity_trace,
+    resolve_accel_flags,
+    resolve_backend,
+    resolve_use_jax,
     run_simulation,
+    rust_available,
+    rust_cuda_available,
     solve_mode_profile,
     suggest_region_um,
     wavelength_um_from_photon_energy_ev,
@@ -128,6 +135,39 @@ _PARAM_COLUMNS = (
     _COL_WAVELENGTH, _COL_ENERGY, _COL_PHOTON_COUNT, _COL_CORE_WIDTH,
     _COL_SCRIPT, _COL_BETA, _COL_TRACK_DIR, _COL_TRACK_LEN,
 )
+
+# Measurement-probe table. Intensity is |Ez|² at the probe's movie cell, in the
+# field's (arbitrary) units — relative comparisons between probes/frames are
+# meaningful, absolute calibration is not.
+_PROBE_TABLE_COLUMNS = [
+    "X (µm)",
+    "Y (µm)",
+    "I (this frame)",
+    "⟨I⟩ (run mean)",
+    "I (peak)",
+    "Graph",
+    "",
+]
+(
+    _PCOL_X,
+    _PCOL_Y,
+    _PCOL_I_FRAME,
+    _PCOL_I_MEAN,
+    _PCOL_I_PEAK,
+    _PCOL_GRAPH,
+    _PCOL_REMOVE,
+) = range(7)
+
+# Per-probe accent colors (marker on the field view + its graph trace), cycled
+# by row. First entry matches the canvas's probe-diamond green.
+_PROBE_COLORS = [
+    "#00e676", "#ffd54f", "#40c4ff", "#ff4081",
+    "#b388ff", "#ff8a65", "#69f0ae", "#eeff41",
+]
+
+
+def _probe_color(row: int) -> str:
+    return _PROBE_COLORS[row % len(_PROBE_COLORS)]
 
 # ---------------------------------------------------------------------------
 # Colormaps: 256-entry uint8 (N, 3) tables built by piecewise-linear interp.
@@ -250,6 +290,87 @@ def _array_to_qimage(
 
 
 # ---------------------------------------------------------------------------
+# Probe intensity graphs — one painting routine shared by the FieldView
+# overlay (so grabs and GIF exports include the graphs) and the standalone
+# PNG export.
+# ---------------------------------------------------------------------------
+
+_GRAPH_W = 190       # mini-plot size in device pixels
+_GRAPH_H = 74
+_GRAPH_MARGIN = 8    # gap to the viewport edge
+_GRAPH_GAP = 6       # gap between stacked plots
+
+
+def paint_probe_graphs(painter, width: int, height: int, graphs: list[dict], frame_idx: int) -> None:
+    """Draw stacked intensity-vs-time mini-plots into the top-right corner of a
+    (width × height) pixel area. Each graph dict holds 'label', 'color' and
+    'trace' (per-frame intensity array); frame_idx positions the playhead.
+    Painter must already be in device-pixel coordinates."""
+    font = painter.font()
+    font.setPointSize(7)
+    painter.setFont(font)
+
+    y = _GRAPH_MARGIN
+    for i, g in enumerate(graphs):
+        if y + _GRAPH_H > height - _GRAPH_MARGIN:
+            # Viewport too short for the rest. Say how many are hidden rather
+            # than silently dropping them — otherwise a short window reads as
+            # "these are all the probes". Export Graphs… always shows every one.
+            painter.setPen(QPen(QColor("#cccccc")))
+            painter.drawText(
+                width - _GRAPH_W - _GRAPH_MARGIN, y + 10,
+                f"+{len(graphs) - i} more (taller window or Export Graphs…)",
+            )
+            break
+        trace = g["trace"]
+        n = len(trace)
+        color = QColor(g["color"])
+        rect = QRectF(width - _GRAPH_W - _GRAPH_MARGIN, y, _GRAPH_W, _GRAPH_H)
+
+        painter.setPen(QPen(color, 1))
+        painter.setBrush(QColor(0, 0, 0, 160))
+        painter.drawRect(rect)
+
+        vmax = max(float(trace.max()), 1e-30)
+        plot = rect.adjusted(4, 14, -4, -4)
+        pts = [
+            QPointF(
+                plot.left() + plot.width() * i / max(n - 1, 1),
+                plot.bottom() - plot.height() * float(v) / vmax,
+            )
+            for i, v in enumerate(trace)
+        ]
+        painter.setBrush(Qt.NoBrush)
+        if len(pts) > 1:
+            painter.drawPolyline(QPolygonF(pts))
+
+        fi = max(0, min(frame_idx, n - 1))
+        px = plot.left() + plot.width() * fi / max(n - 1, 1)
+        painter.setPen(QPen(QColor(255, 255, 255, 140), 1, Qt.DashLine))
+        painter.drawLine(QPointF(px, plot.top()), QPointF(px, plot.bottom()))
+
+        painter.setPen(QPen(color))
+        painter.drawText(
+            int(rect.left()) + 4, int(rect.top()) + 10,
+            f"{g['label']}  I={float(trace[fi]):.3g}  peak={vmax:.3g}",
+        )
+        y += _GRAPH_H + _GRAPH_GAP
+
+
+def render_probe_graphs_image(graphs: list[dict], frame_idx: int) -> QImage:
+    """Render the probe graphs alone (no field behind them) to a QImage —
+    the 'export separately' path."""
+    w = _GRAPH_W + 2 * _GRAPH_MARGIN
+    h = max(1, len(graphs)) * (_GRAPH_H + _GRAPH_GAP) - _GRAPH_GAP + 2 * _GRAPH_MARGIN
+    img = QImage(w, h, QImage.Format_RGB888)
+    img.fill(QColor("#1e1e1e"))
+    painter = QPainter(img)
+    paint_probe_graphs(painter, w, h, graphs, frame_idx)
+    painter.end()
+    return img
+
+
+# ---------------------------------------------------------------------------
 # FieldView — QGraphicsView with Y-flip, pan, zoom, and field-image display
 # ---------------------------------------------------------------------------
 
@@ -274,6 +395,8 @@ class FieldView(QGraphicsView):
         self._overlay_items: list = []
         self._unit_mode: str = "um"               # "um" | "nm" | "fs" | "ns"
         self._n_eff: float = 1.0                  # phase index for µm→time conversion
+        self._probe_graphs: list[dict] = []       # see paint_probe_graphs
+        self._probe_graph_frame: int = 0
 
         # Placeholder label parented to the viewport widget so it sits inside
         # the scene area rather than over the frame/scrollbars.
@@ -420,6 +543,11 @@ class FieldView(QGraphicsView):
         painter.setPen(QPen(QColor("#888888")))
         painter.drawText(vp_w // 2 - fm.horizontalAdvance(unit) // 2, vp_h - 2, unit)
 
+        # Probe intensity graphs, painted into the viewport corner so they're
+        # part of the rendered canvas — grab() and the GIF export include them.
+        if self._probe_graphs:
+            paint_probe_graphs(painter, vp_w, vp_h, self._probe_graphs, self._probe_graph_frame)
+
         painter.restore()
 
     # -- field image -----------------------------------------------------------
@@ -500,6 +628,33 @@ class FieldView(QGraphicsView):
         item = self.scene().addRect(x, y, w, h, QPen(QColor(pen_color), 0), QBrush(Qt.NoBrush))
         item.setZValue(6)
         self._overlay_items.append(item)
+
+    def add_probe_marker(self, x: float, y: float, color: str = "#00e676") -> None:
+        """Diamond glyph for a measurement probe, colored to match its graph
+        trace (the source markers stay round and orange)."""
+        r = 0.3
+        poly = QPolygonF([
+            QPointF(x - r, y), QPointF(x, y + r), QPointF(x + r, y), QPointF(x, y - r),
+        ])
+        item = self.scene().addPolygon(
+            poly, QPen(QColor(color).darker(180), 0), QBrush(QColor(color))
+        )
+        item.setZValue(10)
+        self._overlay_items.append(item)
+
+    # -- probe graphs ----------------------------------------------------------
+
+    def set_probe_graphs(self, graphs: list[dict]) -> None:
+        """Set (or clear, with []) the intensity graphs painted over the field."""
+        self._probe_graphs = list(graphs)
+        self.viewport().update()
+
+    def set_probe_graph_frame(self, frame_idx: int) -> None:
+        """Move the graphs' playhead — called per animation frame, so the
+        graphs update live during playback and scrubbing."""
+        self._probe_graph_frame = frame_idx
+        if self._probe_graphs:
+            self.viewport().update()
 
     # -- viewport helpers ------------------------------------------------------
 
@@ -644,15 +799,15 @@ class FdtdWorker(QObject):
                 # Ship the job to the configured SSH host, run it there, bring
                 # the result back. The worker thread blocks on ssh while the UI
                 # stays live — same shape as the GPU subprocess path below.
-                # Checked before use_gpu so a remote-GPU run doesn't take the
-                # local subprocess branch.
+                # Checked before the GPU branch so a remote-GPU run doesn't take
+                # the local subprocess branch.
                 from phidler.fdtd_remote import run_on_remote
 
                 sim, result, elapsed = run_on_remote(
                     self.document, self.params, self.region_um, self.remote_cfg,
                     progress_callback=self.progress.emit,
                 )
-            elif self.params.use_gpu and not self.params.out_of_core:
+            elif resolve_accel_flags(self.params)[0] and not self.params.out_of_core:
                 # The GPU (CuPy) backend can't tear down in a worker thread
                 # without crashing, and freezes the UI on the main thread — so
                 # run it in a child process and just wait on it here. CuPy lives
@@ -996,6 +1151,8 @@ class FdtdWindow(QMainWindow):
         self._fdtd_worker: FdtdWorker | None = None
 
         self._source_rows: list[dict] = []
+        self._probe_rows: list[dict] = []  # {"marker": canvas item, "trace": np.ndarray | None}
+        self._updating_probe_cells = False  # guards itemChanged while we fill result cells
         self._syncing_wavelength_energy = False
         self._syncing_run_time = False
         self._last_sim = None
@@ -1015,6 +1172,7 @@ class FdtdWindow(QMainWindow):
         tabs.addTab(self._build_propagation_tab(), "Propagation (FDTD)")
 
         self.view.source_placement_requested.connect(self._on_source_placement_requested)
+        self.view.probe_placement_requested.connect(self._on_probe_placement_requested)
 
         # Seed both field views with the project's core index as the initial
         # phase index for µm→fs conversion; updated to n_eff after each mode solve.
@@ -1031,6 +1189,16 @@ class FdtdWindow(QMainWindow):
         self.resize(700, 820)
 
     def closeEvent(self, event) -> None:
+        # NB: this is the class's only closeEvent — there used to be a second one
+        # further down that silently shadowed this one (last definition wins), so
+        # neither the config capture nor the thread teardown below actually ran.
+        # Both halves are merged here; don't reintroduce a second definition.
+        self._play_timer.stop()
+        # Leave the canvas as we found it: both placement modes off, our markers gone.
+        self.view.set_source_mode(False)
+        self.view.clear_source_markers()
+        self.view.set_probe_mode(False)
+        self.view.clear_probe_markers()
         # Capture the current set-up so it's saved even if the window is closed
         # before the next project save (the window instance is reused on reopen,
         # so its widgets persist, but the document copy must stay current too).
@@ -1344,16 +1512,59 @@ class FdtdWindow(QMainWindow):
                 "build like 'pip install jax[cuda12]' for the GPU) — not installed "
                 "in this environment. This is now the recommended GPU backend."
             )
+        # photonfdtd 0.12's compiled Rust stepping cores. Unlike GPU/Numba/JAX
+        # these aren't pip packages — they're a compiled extension built from
+        # photonfdtd's own rust/ directory — so the box is disabled outright when
+        # the extension isn't there (photonfdtd raises rather than falling back).
+        # They step the whole time loop natively, so they supersede the other
+        # three rather than combining with them; see _on_rust_toggled.
+        self.run_rust_check = QCheckBox("Rust")
+        if rust_available():
+            self.run_rust_check.setToolTip(
+                "Run on photonfdtd 0.12's compiled Rust CPU core: fused field passes "
+                "and ghost-zone temporal blocking, measured here at ~17x plain NumPy "
+                "(~2.5x Numba) and agreeing with it to float32 round-off. It also "
+                "keeps the CPML state compacted to the PML slabs, so it's the "
+                "lowest-memory in-core backend. No JIT warm-up — it's already compiled."
+            )
+        else:
+            self.run_rust_check.setEnabled(False)
+            self.run_rust_check.setToolTip(
+                "photonfdtd's Rust core is a compiled extension, not a pip package: "
+                "build it with 'cargo build --release' in photonfdtd's rust/ "
+                "directory and copy the resulting library to "
+                "src/photonfdtd/_photonfdtd_rs.so. Not built in this environment."
+            )
+        self.run_rust_cuda_check = QCheckBox("Rust (CUDA)")
+        if rust_cuda_available():
+            self.run_rust_cuda_check.setToolTip(
+                "Run on photonfdtd 0.12's CUDA core — the whole domain stays resident "
+                "in VRAM (and streams through the copy engines in temporally-blocked "
+                "tiles when it doesn't fit), so it holds a far larger grid on the GPU "
+                "than the other GPU paths. Note the availability check only queries "
+                "the device: if the driver is older than the toolchain the extension "
+                "was built with, the run will fail at start-up with photonfdtd's own "
+                "CUDA error — fall back to Rust or JAX if that happens."
+            )
+        else:
+            self.run_rust_cuda_check.setEnabled(False)
+            self.run_rust_cuda_check.setToolTip(
+                "photonfdtd's CUDA core needs the Rust extension built with the "
+                "'cuda' feature (cargo build --release --features cuda) and a CUDA "
+                "device present. Not available in this environment."
+            )
         self.run_low_memory_check = QCheckBox("Low memory (disk)")
         self.run_low_memory_check.setToolTip(
             "Out-of-core stepping: stream the field arrays to scratch disk and step "
             "the grid a slab at a time, so peak RAM stays bounded by one tile and a "
-            "grid too big for memory can still run. NumPy-only (overrides GPU/Numba) "
-            "and slower — for when a run would otherwise run out of memory."
+            "grid too big for memory can still run. NumPy-only (overrides GPU/Numba/"
+            "Rust) and slower — for when a run would otherwise run out of memory."
         )
         accel_layout.addWidget(self.run_gpu_check)
         accel_layout.addWidget(self.run_numba_check)
         accel_layout.addWidget(self.run_jax_check)
+        accel_layout.addWidget(self.run_rust_check)
+        accel_layout.addWidget(self.run_rust_cuda_check)
         accel_layout.addWidget(self.run_low_memory_check)
         accel_layout.addStretch(1)
 
@@ -1395,6 +1606,27 @@ class FdtdWindow(QMainWindow):
         )
         form.addRow("Accuracy", self.run_subpixel_check)
 
+        # 2.5-D effective-index reduction (photonfdtd 0.12's eim module). A
+        # *method* rather than a backend — it changes the problem being solved,
+        # not the machinery solving it — so it gets its own row and composes
+        # freely with everything in the Acceleration row.
+        self.run_eim_check = QCheckBox("2.5-D (effective index)")
+        self.run_eim_check.setToolTip(
+            "Collapse the vertical layer stack into effective indices and simulate "
+            "the chip plane as a 2-D problem (photonfdtd 0.12): the z axis goes from "
+            "the full core+cladding stack to a single cell, which is what makes a "
+            "whole-circuit run tractable rather than a small region of one.\n\n"
+            "It is an approximation — it assumes the vertical mode profile separates "
+            "from the in-plane confinement. That is excellent for routing (bends, "
+            "couplers, MZIs, interferometers) and poor for strongly 3-D features "
+            "(out-of-plane grating couplers, deep sub-wavelength gaps). Cladding "
+            "thickness has no effect on this path: the reduction consumes the stack. "
+            "Cherenkov sources aren't available here (their whole content is a track "
+            "through the vertical stack); a single-photon source matches the lateral "
+            "mode of the reduced index map instead of the vertical cross-section."
+        )
+        form.addRow("Method", self.run_eim_check)
+
         # Keep the mutually-exclusive backends consistent so a conflicting
         # combination never reaches photonfdtd (which raises on one). Each
         # handler only clears *other* boxes when its own is switched on, so the
@@ -1403,6 +1635,8 @@ class FdtdWindow(QMainWindow):
         self.run_jax_check.toggled.connect(self._on_jax_toggled)
         self.run_gpu_check.toggled.connect(self._on_gpu_toggled)
         self.run_numba_check.toggled.connect(self._on_numba_toggled)
+        self.run_rust_check.toggled.connect(self._on_rust_toggled)
+        self.run_rust_cuda_check.toggled.connect(self._on_rust_cuda_toggled)
         self.run_subpixel_check.toggled.connect(self._on_subpixel_toggled)
 
         self.run_region_check = QCheckBox("Simulate selected components only")
@@ -1453,6 +1687,32 @@ class FdtdWindow(QMainWindow):
         self._init_source_table_header_tooltips()
         self.source_table.itemChanged.connect(self._on_source_table_item_changed)
         layout.addWidget(self.source_table)
+
+        self.place_probe_button = QPushButton("Place Measurement Probe on Canvas")
+        self.place_probe_button.setCheckable(True)
+        self.place_probe_button.setToolTip(
+            "Toggle probe-placement mode: while active, clicking the design canvas drops "
+            "a measurement probe there — snapping to the nearest waveguide joint (port) "
+            "when the click lands near one. Each probe reports the field intensity |Ez|² "
+            "at its point after a run; probes are pure post-processing, so they can be "
+            "added or moved without re-running."
+        )
+        self.place_probe_button.toggled.connect(self._on_place_probe_toggled)
+        layout.addWidget(self.place_probe_button)
+
+        self.probe_table = QTableWidget(0, len(_PROBE_TABLE_COLUMNS))
+        self.probe_table.setHorizontalHeaderLabels(_PROBE_TABLE_COLUMNS)
+        self.probe_table.setMaximumHeight(120)
+        self.probe_table.setToolTip(
+            "One row per placed probe. X/Y are editable (values recompute from the last "
+            "run); the intensity cells fill in after a run — 'this frame' follows the "
+            "playback slider live, mean and peak summarise the whole run. Tick Graph to "
+            "draw the probe's intensity-vs-time trace over the field view (included in "
+            "grabs and GIF exports); use 'Export Graphs…' for a standalone PNG or CSV."
+        )
+        self._init_probe_table_header_tooltips()
+        self.probe_table.itemChanged.connect(self._on_probe_table_item_changed)
+        layout.addWidget(self.probe_table)
 
         self.run_button = QPushButton("Compute")
         self.run_button.setToolTip(
@@ -1518,6 +1778,18 @@ class FdtdWindow(QMainWindow):
         )
         self.save_gif_button.clicked.connect(self._on_save_gif)
         playback_row.addWidget(self.save_gif_button)
+
+        self.export_graphs_button = QPushButton("Export Graphs…")
+        self.export_graphs_button.setEnabled(False)
+        self.export_graphs_button.setToolTip(
+            "Export the probe intensity graphs separately from the field view: a PNG of "
+            "the graphs alone, or a CSV of time (fs) and per-probe intensity for external "
+            "plotting. (Graphs ticked in the probe table are also drawn over the field "
+            "view itself, so Save GIF… exports them as part of the sim canvas.) Enabled "
+            "once a run gives at least one probe a trace."
+        )
+        self.export_graphs_button.clicked.connect(self._on_export_graphs)
+        playback_row.addWidget(self.export_graphs_button)
         layout.addLayout(playback_row)
 
         self.run_view = FieldView()
@@ -1592,6 +1864,8 @@ class FdtdWindow(QMainWindow):
 
     def _on_place_source_toggled(self, checked: bool) -> None:
         self.view.set_source_mode(checked)
+        if checked:
+            self.place_probe_button.setChecked(False)  # one canvas click mode at a time
 
     def _on_source_placement_requested(self, x: float, y: float) -> None:
         marker = self.view.add_source_marker(x, y)
@@ -1742,6 +2016,253 @@ class FdtdWindow(QMainWindow):
             ))
         return tuple(specs)
 
+    # -- measurement probes ----------------------------------------------------
+
+    def _init_probe_table_header_tooltips(self) -> None:
+        tips = {
+            _PCOL_X: "Probe X position in layout coordinates (µm). Seeded by the click "
+                     "that placed it (snapped to a nearby waveguide joint); editable — "
+                     "editing re-samples the last run at the new point.",
+            _PCOL_Y: "Probe Y position in layout coordinates (µm). Same snapping and "
+                     "re-sampling behaviour as X.",
+            _PCOL_I_FRAME: "Field intensity |Ez|² at this probe in the frame currently "
+                           "shown, in the field's arbitrary units. Follows the playback "
+                           "slider, so it updates live as the movie plays.",
+            _PCOL_I_MEAN: "Mean intensity at this probe over every recorded frame — the "
+                          "steadier figure to compare between probes (e.g. the two arms "
+                          "of a splitter).",
+            _PCOL_I_PEAK: "Largest intensity seen at this probe across the run — when the "
+                          "pulse passing through it was brightest.",
+            _PCOL_GRAPH: "Draw this probe's intensity-vs-time trace over the field view, "
+                         "in the probe's colour. Graphs are part of the rendered canvas, "
+                         "so they appear in an exported GIF too.",
+        }
+        for col, text in tips.items():
+            item = self.probe_table.horizontalHeaderItem(col)
+            if item is not None:
+                item.setToolTip(text)
+
+    def _on_place_probe_toggled(self, checked: bool) -> None:
+        self.view.set_probe_mode(checked)
+        if checked:
+            # The two placement modes are mutually exclusive on the canvas, so
+            # untoggle the other button rather than leaving it looking armed.
+            self.place_source_button.setChecked(False)
+
+    def _on_probe_placement_requested(self, x: float, y: float) -> None:
+        row = self.probe_table.rowCount()
+        color = _probe_color(row)
+        marker = self.view.add_probe_marker(x, y)
+        self.probe_table.insertRow(row)
+        self._updating_probe_cells = True
+        try:
+            self.probe_table.setItem(row, _PCOL_X, QTableWidgetItem(f"{x:.4f}"))
+            self.probe_table.setItem(row, _PCOL_Y, QTableWidgetItem(f"{y:.4f}"))
+            for col in (_PCOL_I_FRAME, _PCOL_I_MEAN, _PCOL_I_PEAK):
+                item = QTableWidgetItem("—")
+                # Results, not inputs: read-only so a typed value can't be
+                # mistaken for a measurement.
+                item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+                item.setForeground(QBrush(QColor(color)))
+                self.probe_table.setItem(row, col, item)
+        finally:
+            self._updating_probe_cells = False
+
+        graph_check = QCheckBox()
+        graph_check.setChecked(True)
+        graph_check.setToolTip("Draw this probe's intensity trace over the field view.")
+        graph_check.toggled.connect(lambda _on: self._refresh_probe_graphs())
+        self.probe_table.setCellWidget(row, _PCOL_GRAPH, graph_check)
+
+        remove_button = QPushButton("Remove")
+        remove_button.clicked.connect(lambda checked=False, m=marker: self._on_remove_probe_row(m))
+        self.probe_table.setCellWidget(row, _PCOL_REMOVE, remove_button)
+
+        self._probe_rows.append({"marker": marker, "trace": None})
+        # A probe added after a run should measure that run immediately —
+        # probes are post-processing over the recorded movie, not part of the
+        # solve, so there's nothing to re-run.
+        self._recompute_probe_traces()
+
+    def _on_remove_probe_row(self, marker) -> None:
+        for row_idx, row_data in enumerate(self._probe_rows):
+            if row_data["marker"] is marker:
+                self.view.remove_probe_marker(marker)
+                self.probe_table.removeRow(row_idx)
+                del self._probe_rows[row_idx]
+                self._recompute_probe_traces()
+                return
+
+    def _on_probe_table_item_changed(self, item: QTableWidgetItem) -> None:
+        """A typed X/Y moves the probe's canvas marker and re-samples the last
+        run at the new point. Guarded against the result cells we write
+        ourselves (which would otherwise recurse through here)."""
+        if self._updating_probe_cells or item.column() not in (_PCOL_X, _PCOL_Y):
+            return
+        row = item.row()
+        if row >= len(self._probe_rows):
+            return
+        try:
+            x = float(self.probe_table.item(row, _PCOL_X).text())
+            y = float(self.probe_table.item(row, _PCOL_Y).text())
+        except (AttributeError, ValueError):
+            return  # mid-edit or blank — leave the marker where it is
+        self._probe_rows[row]["marker"].setPos(x, y)
+        self._recompute_probe_traces()
+
+    def _collect_probe_specs(self) -> tuple[ProbeSpec, ...]:
+        specs = []
+        for row in range(self.probe_table.rowCount()):
+            graph_check = self.probe_table.cellWidget(row, _PCOL_GRAPH)
+            specs.append(ProbeSpec(
+                x_um=self._probe_cell_float(row, _PCOL_X, 0.0),
+                y_um=self._probe_cell_float(row, _PCOL_Y, 0.0),
+                graph=bool(graph_check.isChecked()) if graph_check is not None else True,
+            ))
+        return tuple(specs)
+
+    def _probe_cell_float(self, row: int, col: int, default: float) -> float:
+        """Same defensive parse as _cell_float, for the probe table: one
+        half-typed cell must not sink the whole capture on save."""
+        item = self.probe_table.item(row, col)
+        try:
+            return float(item.text())
+        except (AttributeError, ValueError):
+            return default
+
+    def _recompute_probe_traces(self) -> None:
+        """Re-sample every probe against the last result and refresh the table,
+        markers and graphs. Cheap (one array slice per probe over the recorded
+        movie), so it runs on every probe add/move/remove as well as after a
+        run. With no result yet, it just clears the readouts."""
+        result, sim = self._last_result, self._last_sim
+        for row, row_data in enumerate(self._probe_rows):
+            trace = None
+            if result is not None and sim is not None:
+                pos = row_data["marker"].pos()
+                try:
+                    trace = probe_intensity_trace(
+                        sim, result, pos.x(), pos.y(),
+                        origin_um=getattr(self, "_field_origin_um", (0.0, 0.0)),
+                    )
+                except Exception:
+                    # A probe must never break the window: a result stub whose
+                    # movie/grid isn't shaped as expected just leaves this probe
+                    # unmeasured rather than raising into the UI.
+                    trace = None
+            row_data["trace"] = trace
+        self._update_probe_result_cells()
+        self._refresh_probe_graphs()
+
+    def _update_probe_result_cells(self, frame: int | None = None) -> None:
+        frame = self.frame_slider.value() if frame is None else frame
+        self._updating_probe_cells = True
+        try:
+            for row, row_data in enumerate(self._probe_rows):
+                trace = row_data["trace"]
+                if trace is None or len(trace) == 0:
+                    # "outside the grid" vs "no run yet" are different problems,
+                    # so say which — a probe left over from a whole-layout run
+                    # is simply not in a smaller region's window.
+                    text = "—" if self._last_result is None else "off grid"
+                    values = (text, text, text)
+                else:
+                    idx = max(0, min(frame, len(trace) - 1))
+                    values = (
+                        f"{float(trace[idx]):.4g}",
+                        f"{float(trace.mean()):.4g}",
+                        f"{float(trace.max()):.4g}",
+                    )
+                for col, text in zip((_PCOL_I_FRAME, _PCOL_I_MEAN, _PCOL_I_PEAK), values):
+                    cell = self.probe_table.item(row, col)
+                    if cell is not None:
+                        cell.setText(text)
+        finally:
+            self._updating_probe_cells = False
+
+    def _probe_graph_data(self) -> list[dict]:
+        """The graph descriptors for probes that have a trace and are ticked —
+        the input both the field-view overlay and the standalone export use."""
+        graphs = []
+        for row, row_data in enumerate(self._probe_rows):
+            trace = row_data["trace"]
+            if trace is None or len(trace) == 0:
+                continue
+            check = self.probe_table.cellWidget(row, _PCOL_GRAPH)
+            if check is not None and not check.isChecked():
+                continue
+            graphs.append({
+                "label": f"P{row + 1}",
+                "color": _probe_color(row),
+                "trace": trace,
+            })
+        return graphs
+
+    def _refresh_probe_graphs(self) -> None:
+        graphs = self._probe_graph_data()
+        self.run_view.set_probe_graphs(graphs)
+        self.run_view.set_probe_graph_frame(self.frame_slider.value())
+        self.export_graphs_button.setEnabled(
+            any(r["trace"] is not None for r in self._probe_rows)
+        )
+
+    def _on_export_graphs(self) -> None:
+        """Export the probe graphs on their own — PNG (as drawn) or CSV (the
+        raw per-frame numbers). The 'as part of the sim canvas' export is Save
+        GIF…, which renders the same graphs over the field."""
+        graphs = self._probe_graph_data()
+        if not graphs:
+            QMessageBox.information(
+                self, "No graphs to export",
+                "No probe has a measured trace to graph. Place a probe inside the "
+                "simulated region and run, or tick Graph on a probe row.",
+            )
+            return
+        path, selected = QFileDialog.getSaveFileName(
+            self, "Export Probe Graphs", "probe_intensity.png",
+            "PNG image (*.png);;CSV data (*.csv)",
+        )
+        if not path:
+            return
+        as_csv = path.lower().endswith(".csv") or selected.startswith("CSV")
+        if as_csv and not path.lower().endswith(".csv"):
+            path += ".csv"
+        elif not as_csv and not path.lower().endswith(".png"):
+            path += ".png"
+        try:
+            if as_csv:
+                self._export_graphs_csv(path, graphs)
+            else:
+                image = render_probe_graphs_image(graphs, self.frame_slider.value())
+                if not image.save(path, "PNG"):
+                    raise RuntimeError(f"Qt could not write {path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Export graphs failed", str(exc))
+            return
+        self.run_status_label.setText(f"Saved {len(graphs)} probe graph(s) to {path}")
+
+    def _export_graphs_csv(self, path: str, graphs: list[dict]) -> None:
+        """Time (fs) plus one intensity column per graphed probe. Frame times
+        come from the run's own duration and frame count, so the x axis is
+        physical time rather than a frame index."""
+        import csv
+
+        n = max(len(g["trace"]) for g in graphs)
+        run_fs = (
+            self._last_params.resolved_run_time_fs()
+            if self._last_params is not None else float(n)
+        )
+        dt_fs = run_fs / max(n - 1, 1)
+        with open(path, "w", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["time_fs"] + [f"{g['label']}_intensity" for g in graphs])
+            for i in range(n):
+                row = [f"{i * dt_fs:.6g}"]
+                for g in graphs:
+                    trace = g["trace"]
+                    row.append(f"{float(trace[i]):.6g}" if i < len(trace) else "")
+                writer.writerow(row)
+
     # -- persisted configuration ----------------------------------------------
 
     def sync_config_to_document(self) -> None:
@@ -1766,9 +2287,13 @@ class FdtdWindow(QMainWindow):
             use_gpu=params.use_gpu,
             use_numba=params.use_numba,
             use_jax=params.use_jax,
+            use_rust=params.use_rust,
+            use_rust_cuda=params.use_rust_cuda,
+            eim=params.eim,
             subpixel=params.subpixel,
             region_selected_only=self.run_region_check.isChecked(),
             sources=params.sources,
+            probes=self._collect_probe_specs(),
             mode_wavelength_um=self.mode_wavelength_spin.value(),
             mode_core_width_um=self.mode_core_width_spin.value(),
             mode_num_modes=self.mode_num_modes_spin.value(),
@@ -1797,10 +2322,24 @@ class FdtdWindow(QMainWindow):
         # SimulationConfig had no such field) loading cleanly.
         if self.run_jax_check.isEnabled():
             self.run_jax_check.setChecked(getattr(config, "use_jax", False))
+        # Same story for the 0.12 Rust cores — and the same availability guard,
+        # which matters more here: the extension is compiled per-machine, so a
+        # project saved on a box that has it must not tick a dead box elsewhere.
+        if self.run_rust_check.isEnabled():
+            self.run_rust_check.setChecked(getattr(config, "use_rust", False))
+        if self.run_rust_cuda_check.isEnabled():
+            self.run_rust_cuda_check.setChecked(getattr(config, "use_rust_cuda", False))
+        # 2.5-D is a method, not a backend: it needs nothing installed, so it
+        # restores unconditionally.
+        self.run_eim_check.setChecked(getattr(config, "eim", False))
         self.run_subpixel_check.setChecked(getattr(config, "subpixel", False))
         self.run_region_check.setChecked(config.region_selected_only)
         for spec in config.sources:
             self._restore_source(spec)
+        # New in this version; getattr keeps projects saved by an older phidler
+        # (whose SimulationConfig had no probes field) loading cleanly.
+        for probe in getattr(config, "probes", ()):
+            self._restore_probe(probe)
 
         self.mode_wavelength_spin.setValue(config.mode_wavelength_um)
         self.mode_core_width_spin.setValue(config.mode_core_width_um)
@@ -1824,29 +2363,64 @@ class FdtdWindow(QMainWindow):
         self.source_table.item(row, _COL_TRACK_DIR).setText(f"{spec.direction_deg}")
         self.source_table.item(row, _COL_TRACK_LEN).setText(f"{spec.cherenkov_length_um}")
 
+    def _restore_probe(self, spec: ProbeSpec) -> None:
+        """Recreate one saved probe through the normal placement path, then
+        apply its graph setting."""
+        self._on_probe_placement_requested(spec.x_um, spec.y_um)
+        row = self.probe_table.rowCount() - 1
+        check = self.probe_table.cellWidget(row, _PCOL_GRAPH)
+        if check is not None:
+            check.setChecked(spec.graph)
+
     # -- backend exclusivity ---------------------------------------------------
 
     def _on_jax_toggled(self, checked: bool) -> None:
-        # JAX is exclusive of the GPU and Numba backends.
+        # JAX is exclusive of the GPU, Numba and Rust backends.
         if checked:
             self.run_gpu_check.setChecked(False)
             self.run_numba_check.setChecked(False)
+            self.run_rust_check.setChecked(False)
+            self.run_rust_cuda_check.setChecked(False)
 
     def _on_gpu_toggled(self, checked: bool) -> None:
-        # GPU is exclusive of JAX.
+        # GPU is exclusive of JAX and the Rust cores.
         if checked:
             self.run_jax_check.setChecked(False)
+            self.run_rust_check.setChecked(False)
+            self.run_rust_cuda_check.setChecked(False)
 
     def _on_numba_toggled(self, checked: bool) -> None:
-        # Numba is exclusive of JAX and can't do subpixel smoothing.
+        # Numba is exclusive of JAX and Rust, and can't do subpixel smoothing.
         if checked:
             self.run_jax_check.setChecked(False)
+            self.run_rust_check.setChecked(False)
+            self.run_rust_cuda_check.setChecked(False)
+            self.run_subpixel_check.setChecked(False)
+
+    def _on_rust_toggled(self, checked: bool) -> None:
+        # A Rust core steps the whole time loop natively, so it replaces the
+        # other three backends outright, and it raises on subpixel smoothing.
+        if checked:
+            self.run_gpu_check.setChecked(False)
+            self.run_numba_check.setChecked(False)
+            self.run_jax_check.setChecked(False)
+            self.run_rust_cuda_check.setChecked(False)
+            self.run_subpixel_check.setChecked(False)
+
+    def _on_rust_cuda_toggled(self, checked: bool) -> None:
+        if checked:
+            self.run_gpu_check.setChecked(False)
+            self.run_numba_check.setChecked(False)
+            self.run_jax_check.setChecked(False)
+            self.run_rust_check.setChecked(False)
             self.run_subpixel_check.setChecked(False)
 
     def _on_subpixel_toggled(self, checked: bool) -> None:
-        # Subpixel smoothing is unsupported on the Numba backend.
+        # Subpixel smoothing is unsupported on the Numba and Rust backends.
         if checked:
             self.run_numba_check.setChecked(False)
+            self.run_rust_check.setChecked(False)
+            self.run_rust_cuda_check.setChecked(False)
 
     # -- running the simulation ------------------------------------------------
 
@@ -1860,6 +2434,9 @@ class FdtdWindow(QMainWindow):
             use_gpu=self.run_gpu_check.isChecked(),
             use_numba=self.run_numba_check.isChecked(),
             use_jax=self.run_jax_check.isChecked(),
+            use_rust=self.run_rust_check.isChecked(),
+            use_rust_cuda=self.run_rust_cuda_check.isChecked(),
+            eim=self.run_eim_check.isChecked(),
             subpixel=self.run_subpixel_check.isChecked(),
             out_of_core=self.run_low_memory_check.isChecked(),
         )
@@ -2013,15 +2590,25 @@ class FdtdWindow(QMainWindow):
             # The local backend checkboxes reflect *this* machine's hardware,
             # which is irrelevant to a remote run — the remote's is what matters.
             # So set the backend entirely from the remote config's Acceleration
-            # choice (subpixel / low-memory stay as chosen, being backend-agnostic
-            # accuracy/memory options). resolve_accel_flags on the remote still
-            # sorts out any conflict (e.g. subpixel drops numba).
+            # choice (subpixel / low-memory / 2.5-D stay as chosen, being
+            # hardware-agnostic accuracy/memory/method options).
+            # resolve_accel_flags on the remote still sorts out any conflict
+            # (e.g. subpixel drops numba).
+            #
+            # The Rust cores are cleared for the same reason and then some:
+            # whether the compiled extension exists is a property of the remote
+            # host, and the remote installer doesn't build it, so shipping a
+            # rust request there would just fail on arrival. The remote
+            # Acceleration dropdown is the only thing that should pick a backend
+            # for a remote run.
             backend = remote_cfg.resolved_backend()
             params = dataclasses.replace(
                 params,
                 use_gpu=(backend == "cupy"),
                 use_jax=(backend == "jax"),
                 use_numba=(backend == "cpu"),
+                use_rust=False,
+                use_rust_cuda=False,
             )
         self._last_params = params
 
@@ -2068,10 +2655,16 @@ class FdtdWindow(QMainWindow):
         memory_gb = estimate_memory_gb(cell_count)
         # JAX on a GPU runs at roughly the GPU tier; JAX on a CPU-only build is
         # closer to the NumPy tier, so estimate it as NumPy (the fall-through).
-        jax_on_gpu = params.use_jax and jax_gpu_available()
-        if params.use_gpu or jax_on_gpu:
+        # Ask the same resolver the build uses, so the estimate can't disagree
+        # with what actually runs (e.g. subpixel silently outranking Rust).
+        rust_backend = resolve_backend(params)
+        jax_on_gpu = resolve_use_jax(params) and jax_gpu_available()
+        eff_gpu, eff_numba = resolve_accel_flags(params)
+        if rust_backend != "auto":
+            selected = rust_backend
+        elif eff_gpu or jax_on_gpu:
             selected = "gpu"
-        elif params.use_numba:
+        elif eff_numba:
             selected = "numba"
         else:
             selected = "numpy"
@@ -2099,17 +2692,30 @@ class FdtdWindow(QMainWindow):
             t_numba = estimate_run_seconds(grid, n_steps, "numba")
             t_gpu = estimate_run_seconds(grid, n_steps, "gpu")
             t_numpy = estimate_run_seconds(grid, n_steps, "numpy")
-            mark = {"numba": "Numba", "gpu": "GPU", "numpy": "plain NumPy"}[selected]
+            t_rust = estimate_run_seconds(grid, n_steps, "rust")
+            mark = {
+                "numba": "Numba", "gpu": "GPU", "numpy": "plain NumPy",
+                "rust": "the Rust CPU core", "rust-cuda": "the Rust CUDA core",
+            }[selected]
+            # 2.5-D changes the size of the problem, not just its speed, so say
+            # so — a user staring at a big number here should know the cheapest
+            # lever available is one row up in the dialog they came from.
+            hint = (
+                "" if params.eim else
+                "\n\nTicking 2.5-D (effective index) would collapse the vertical "
+                "stack and cut this grid by roughly its z-cell count."
+            )
             reply = QMessageBox.question(
                 self, "Large simulation",
                 f"This grid has about {cell_count:,} cells and needs roughly "
                 f"{memory_gb:.1f} GB of memory — large grids can run out of memory "
                 f"(try a coarser cell size, or simulate a smaller region).\n\n"
                 f"Estimated run time:\n"
+                f"    Rust (CPU):  ~{t_rust:.0f} s\n"
                 f"    Numba (CPU):  ~{t_numba:.0f} s\n"
                 f"    GPU:  ~{t_gpu:.0f} s\n"
                 f"    plain NumPy:  ~{t_numpy:.0f} s\n\n"
-                f"You have {mark} selected. Continue?",
+                f"You have {mark} selected.{hint} Continue?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -2123,8 +2729,14 @@ class FdtdWindow(QMainWindow):
         if remote:
             self.run_status_label.setText("Running on remote server…")
         else:
-            on_gpu = params.use_gpu or (params.use_jax and jax_gpu_available())
-            self.run_status_label.setText("Running on GPU…" if on_gpu else "Running…")
+            if selected == "rust-cuda":
+                self.run_status_label.setText("Running on GPU (Rust CUDA)…")
+            elif selected == "rust":
+                self.run_status_label.setText("Running on the Rust CPU core…")
+            elif selected == "gpu":
+                self.run_status_label.setText("Running on GPU…")
+            else:
+                self.run_status_label.setText("Running…")
         self._field_image_initialized = False
 
         # Start the progress bar busy (indeterminate): there's a startup phase —
@@ -2167,8 +2779,13 @@ class FdtdWindow(QMainWindow):
         gx, gy, gz = (int(s) for s in sim.grid.shape)  # full sim grid (the movie keeps only z=0)
         # Report the backend that actually ran (not what was requested) — a GPU
         # request can quietly fall back to CPU, which this makes visible.
+        resolved_backend = str(getattr(sim, "backend", "auto"))
         if getattr(sim, "engine", None) == "tidy3d":
             backend = "Tidy3D"
+        elif resolved_backend == "rust-cuda":
+            backend = "Rust CUDA"
+        elif resolved_backend == "rust":
+            backend = "Rust CPU"
         elif getattr(sim, "use_gpu", False):
             # Name the GPU vendor backend (CUDA/ROCm) when we can identify it.
             gpu_kind = gpu_backend_name()
@@ -2181,6 +2798,15 @@ class FdtdWindow(QMainWindow):
             backend = "CPU"
         if getattr(sim, "subpixel", False):
             backend += " + subpixel"
+        # 2.5-D changes what was solved, not just how fast — the grid dimensions
+        # alone (…×1) are a subtle tell, so say it outright. Keyed off the grid
+        # shape rather than the params so it reports what actually ran, and
+        # because that's the one field every result stub carries (the subprocess
+        # and remote stubs have no Grid object to ask for .ndim). A single z cell
+        # can only mean a collapsed axis — photonfdtd requires at least 4 cells
+        # on an axis it's actually resolving.
+        if gz == 1:
+            backend += " + 2.5-D"
         self.run_status_label.setText(
             f"Done on {backend} in {elapsed:.2f} s — {n_frames} frames, grid {gx}×{gy}×{gz}"
         )
@@ -2210,6 +2836,13 @@ class FdtdWindow(QMainWindow):
         if self._last_params is not None:
             for src in self._last_params.sources:
                 self.run_view.add_source_marker(src.x_um, src.y_um)
+        for row, row_data in enumerate(self._probe_rows):
+            pos = row_data["marker"].pos()
+            self.run_view.add_probe_marker(pos.x(), pos.y(), _probe_color(row))
+
+        # Sample the probes against this result (needs _field_origin_um above,
+        # since probes are in absolute layout coords and the grid is centred).
+        self._recompute_probe_traces()
 
         # Render first frame then initialise viewport. For a region run, frame
         # the simulated region (the field image) — copying the design canvas's
@@ -2323,10 +2956,12 @@ class FdtdWindow(QMainWindow):
         else:
             self.run_view.update_image(frame, _RDBU, symmetric=True)
 
-    # -- lifecycle -------------------------------------------------------------
+        # Move the graph playheads and probe readouts with the field, so both
+        # track playback/scrubbing — and so a GIF export (which drives this same
+        # method per frame) writes graphs that animate with the movie.
+        self.run_view.set_probe_graph_frame(frame_index)
+        self._update_probe_result_cells(frame_index)
 
-    def closeEvent(self, event) -> None:
-        self._play_timer.stop()
-        self.view.set_source_mode(False)
-        self.view.clear_source_markers()
-        super().closeEvent(event)
+    # -- lifecycle -------------------------------------------------------------
+    # closeEvent lives near the top of the class, next to __init__ — it used to
+    # be duplicated here, which shadowed that one entirely.

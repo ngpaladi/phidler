@@ -190,7 +190,7 @@ automatically.
   on-canvas transform overlay (see below).
 - **Delete / Copy / Paste**: `Delete`, `Ctrl+C`, `Ctrl+V`.
 - **Cancel with `Esc`**: backs out of whatever you're in the middle of:
-  an armed placement, the measure or source tool, or a route. `Esc` works no
+  an armed placement, the measure, source or probe tool, or a route. `Esc` works no
   matter which panel has focus (you don't have to click the canvas first).
   Routing is two-stage: the first `Esc` drops a half-finished route (the start
   port you picked), and a second `Esc` exits routing mode.
@@ -675,6 +675,54 @@ it: a busy indicator during start-up (the kernel compile locally, or
 connect-and-upload for a remote run), then a 0–100 % fill as the solve steps
 through time. The same bar drives local, GPU, and remote runs.
 
+### Measuring intensity at a point
+
+Sources tell you what goes *in*; **measurement probes** tell you what comes
+*out* at a particular spot — how much light actually reaches the far arm of a
+splitter, or how much survives a bend.
+
+1. Click **Place Measurement Probe on Canvas**, then click the point you want
+   to measure. Clicking near a **waveguide joint** — any component or route
+   port — snaps the probe to that joint exactly, the same snapping the source
+   and measure tools use, so you can land on a connection point without
+   pixel-hunting for it. Click well away from a joint and the probe stays
+   exactly where you put it, which is what you want for a mid-span reading.
+   Probes are green diamonds on the canvas, to tell them apart from the round
+   orange source markers.
+2. Each click adds a row to the probe table reporting field intensity |Ez|²
+   at that point: **I (this frame)** follows the playback slider as the movie
+   plays, while **⟨I⟩ (run mean)** and **I (peak)** summarise the whole run.
+   The numbers are in the field's own arbitrary units — comparing probes with
+   each other is meaningful, reading one as an absolute power is not.
+3. Probes are pure post-processing over the field movie the run already
+   records, so they cost nothing to move and **never require a re-run**. Drop
+   a probe after a simulation has finished and it fills in immediately; type
+   new X/Y values into its row and it re-samples the same result at the new
+   point.
+
+A probe placed outside the simulated grid reads **off grid** rather than
+zero — most often a probe left over from a whole-layout run when you've since
+switched on *Simulate selected components only*.
+
+#### Live intensity graphs
+
+Each probe row has a **Graph** tick (on by default). While it's ticked, that
+probe's intensity-vs-time trace is drawn in the top-right of the field view in
+the probe's own colour, with a dashed playhead marking the frame on screen — so
+the graph animates in step with the field as you play or scrub.
+
+The graphs can be exported two ways:
+
+- **As part of the sim canvas**: they're painted into the field view itself, so
+  **Save GIF…** writes them into the animation alongside the field and chip
+  outline, playhead sweeping as the movie runs.
+- **Separately**: **Export Graphs…** writes either a PNG of the graphs on their
+  own (no field behind them) or a CSV of time in femtoseconds plus one
+  intensity column per probe, for plotting elsewhere.
+
+If the window is too short to stack every graph, the overlay says how many it
+had to hide; **Export Graphs…** always includes all of them.
+
 ![FDTD propagation tab mid-run: the progress bar partway to complete, below the run controls and the "Run on remote server" row](screenshots/fdtd_run_progress.png)
 
 ![Propagation result: red/blue field pattern radiating from a point source and coupling into a waveguide, overlaid on its outline, with the time slider and Play button below the source table](screenshots/fdtd_propagation.png)
@@ -696,6 +744,24 @@ Propagation runs use a few accelerators so they don't crawl:
   **JAX (GPU)** when a GPU is visible; to get the GPU build, install a CUDA jax
   (e.g. `pip install "jax[cuda12]"`). It's exclusive of the GPU and Numba boxes,
   so ticking it clears those.
+- **Rust** (the **Acceleration** row) is photonfdtd 0.12's compiled CPU core.
+  It runs the whole time loop natively — fused field passes and ghost-zone
+  temporal blocking — measured here at about **17× plain NumPy** (~2.5× Numba)
+  on a 6-million-cell grid, agreeing with the NumPy engine to float32 round-off.
+  There's no JIT warm-up, since it's already compiled, and it stores the
+  absorbing-boundary state compacted to the boundary itself, so it's also the
+  lowest-memory in-core backend. Unlike the others this isn't a `pip install`:
+  it's an extension built from photonfdtd's own `rust/` directory
+  (`cargo build --release`, then copy the library next to the package). Without
+  it the box is simply disabled.
+- **Rust (CUDA)** is the same core on the GPU. The whole domain stays resident
+  in VRAM, and streams through the copy engines in tiles when it doesn't fit, so
+  it holds a far bigger grid on the GPU than the other GPU paths. Needs the
+  extension built with `--features cuda`. One caveat: the availability check
+  only asks whether a device is present, so if your driver is older than the
+  toolchain the extension was built with, the box will be enabled but the run
+  fails at start-up with photonfdtd's CUDA error — fall back to **Rust** or
+  **JAX** if you see that.
 - **GPU (CuPy)** is the older GPU path, now **deprecated** in photonfdtd 0.9 in
   favour of JAX. It still works if you have CuPy installed (the CUDA build,
   `pip install cupy-cuda12x`, or the ROCm build for AMD,
@@ -723,8 +789,45 @@ permittivity instead — the boundary lands where it actually is, not on the
 nearest cell wall. In practice that means a given cell size resolves your
 geometry more faithfully, which is often a cheaper way to clean up a result than
 shrinking the cell size everywhere. It works on the NumPy, GPU, and JAX backends
-(but not Numba, which ticking it will clear) and costs a little setup time before
-the run.
+(but not Numba or Rust, which ticking it will clear) and costs a little setup
+time before the run.
+
+#### A much bigger run: 2.5-D (effective index)
+
+Every option above makes the same simulation go faster. The **2.5-D (effective
+index)** checkbox (the **Method** row) instead makes it a *smaller* simulation,
+which is usually the larger win by far.
+
+A photonic layer is a thin core etched into an in-plane pattern. Rather than
+resolving that vertical stack cell by cell, 2.5-D solves the stack's guided mode
+once and collapses it into an **effective index**: the region under a waveguide
+gets one index, the etched surround another, and a rib layer's remaining slab
+its own in between. What's left is your chip *plan view* as a 2-D problem. The
+vertical axis goes from a full core-plus-cladding stack to a single cell, so the
+cell count drops by that whole factor — on the default Silicon platform, around
+20× on a small device and far more on a real circuit. That's the difference
+between simulating a region of your layout and simulating the layout.
+
+It composes with everything in the **Acceleration** row, so 2.5-D plus **Rust**
+is the fastest configuration available.
+
+The catch is that it's an approximation: it assumes the vertical mode profile
+separates from the in-plane confinement. That holds very well for routing —
+bends, directional couplers, MZIs, interferometers, anything that guides light
+around the plane — and poorly for strongly three-dimensional behaviour, like an
+out-of-plane grating coupler or a deep sub-wavelength gap. Two consequences
+worth knowing:
+
+- **Cladding thickness has no effect** on a 2.5-D run. The reduction has already
+  consumed the stack, so that setting goes back to being inert on this path.
+- **Cherenkov sources aren't available**, because a Cherenkov source *is* a track
+  through the vertical stack — there's nothing left for it to cross. Phidler
+  says so rather than quietly producing something. A **single photon** source
+  does work: it matches the *lateral* mode of the reduced index map instead of
+  the vertical cross-section.
+
+Use 2.5-D to see how light moves through a circuit, then confirm anything
+strongly 3-D with a full run over a smaller region.
 
 #### Running out of memory on a big layout
 

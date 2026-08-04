@@ -77,6 +77,8 @@ class LayoutView(QGraphicsView):
     measurement_taken = Signal(float, float, float)  # dx, dy, distance (all microns)
     source_mode_changed = Signal(bool)
     source_placement_requested = Signal(float, float)  # scene x, y in microns
+    probe_mode_changed = Signal(bool)
+    probe_placement_requested = Signal(float, float)  # scene x, y in microns
     context_menu_requested = Signal(QPoint)  # viewport-pixel position
     cursor_position_changed = Signal(float, float)  # scene x, y in microns
     overlap_hint = Signal(str)  # transient status text when a click lands on stacked items
@@ -117,6 +119,8 @@ class LayoutView(QGraphicsView):
         self._measure_items: list = []  # current annotation's QGraphicsItems
         self.source_mode = False
         self._source_markers: list = []  # accumulates across clicks, unlike measure mode
+        self.probe_mode = False
+        self._probe_markers: list = []  # same accumulate-until-cleared model as sources
         # Annotation drawing state: current tool and the in-progress callout drag.
         self.annotate_mode = ""  # "" | "note" | "box" | "arrow"
         self._callout_start: QPointF | None = None
@@ -143,6 +147,7 @@ class LayoutView(QGraphicsView):
         if enabled:
             self.set_measure_mode(False)
             self.set_source_mode(False)
+            self.set_probe_mode(False)
             self.set_annotate_mode("")
         self.scene().routing_mode = enabled
         self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
@@ -217,6 +222,7 @@ class LayoutView(QGraphicsView):
         if enabled:
             self.set_routing_mode(False)
             self.set_source_mode(False)
+            self.set_probe_mode(False)
             self.set_annotate_mode("")
             self.cancel_placement()
         else:
@@ -237,6 +243,7 @@ class LayoutView(QGraphicsView):
         if enabled:
             self.set_routing_mode(False)
             self.set_measure_mode(False)
+            self.set_probe_mode(False)
             self.set_annotate_mode("")
             self.cancel_placement()
         self.source_mode = enabled
@@ -272,6 +279,57 @@ class LayoutView(QGraphicsView):
         scene_pt = self._nearest_port_scene_point(raw_scene_pt) or raw_scene_pt
         self.source_placement_requested.emit(scene_pt.x(), scene_pt.y())
 
+    # -- probe-placement mode --------------------------------------------------
+
+    def set_probe_mode(self, enabled: bool) -> None:
+        """Click-to-place mode for FDTD measurement probes, used by FdtdWindow.
+        Same model as source mode: markers accumulate across clicks and are
+        cleared explicitly by the caller via clear_probe_markers()."""
+        if enabled:
+            self.set_routing_mode(False)
+            self.set_measure_mode(False)
+            self.set_source_mode(False)
+            self.set_annotate_mode("")
+            self.cancel_placement()
+        self.probe_mode = enabled
+        self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
+        self.probe_mode_changed.emit(enabled)
+
+    def add_probe_marker(self, x: float, y: float) -> QGraphicsItem:
+        """Constant-pixel-size diamond glyph marking a measurement probe —
+        deliberately a different shape and colour from the round orange source
+        markers, since both can share a canvas. Returned so FdtdWindow can
+        track one marker per probe row."""
+        marker = QGraphicsRectItem(-4.5, -4.5, 9, 9)
+        marker.setBrush(QColor("#00e676"))
+        marker.setPen(QPen(QColor("#00552a"), 1))
+        marker.setRotation(45)
+        marker.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        marker.setZValue(2000.0)
+        marker.setPos(x, y)
+        self.scene().addItem(marker)
+        self._probe_markers.append(marker)
+        return marker
+
+    def remove_probe_marker(self, marker: QGraphicsItem) -> None:
+        if marker in self._probe_markers:
+            self._probe_markers.remove(marker)
+        self.scene().removeItem(marker)
+
+    def clear_probe_markers(self) -> None:
+        for marker in self._probe_markers:
+            self.scene().removeItem(marker)
+        self._probe_markers = []
+
+    def _handle_probe_click(self, viewport_pos: QPoint) -> None:
+        # Snap to the nearest port within click range — waveguide joints
+        # (component/route connection points) are exactly where intensity
+        # measurements are usually wanted, and the same snap the measure and
+        # source tools use makes a near-miss land on the joint's exact centre.
+        raw_scene_pt = self.mapToScene(viewport_pos)
+        scene_pt = self._nearest_port_scene_point(raw_scene_pt) or raw_scene_pt
+        self.probe_placement_requested.emit(scene_pt.x(), scene_pt.y())
+
     # -- annotation modes (notes + callouts) --------------------------------
 
     def set_annotate_mode(self, mode: str) -> None:
@@ -284,6 +342,7 @@ class LayoutView(QGraphicsView):
             self.set_routing_mode(False)
             self.set_measure_mode(False)
             self.set_source_mode(False)
+            self.set_probe_mode(False)
             self.cancel_placement()
         self._cancel_callout_draw()
         self.annotate_mode = mode
@@ -417,6 +476,9 @@ class LayoutView(QGraphicsView):
         if self.source_mode:
             self.set_source_mode(False)
             return True
+        if self.probe_mode:
+            self.set_probe_mode(False)
+            return True
         if self._callout_start is not None:
             self._cancel_callout_draw()  # drop a half-drawn callout, stay in the tool
             return True
@@ -515,6 +577,10 @@ class LayoutView(QGraphicsView):
             return
         if self.source_mode and event.button() == Qt.LeftButton:
             self._handle_source_click(event.position().toPoint())
+            event.accept()
+            return
+        if self.probe_mode and event.button() == Qt.LeftButton:
+            self._handle_probe_click(event.position().toPoint())
             event.accept()
             return
         if self.annotate_mode == "note" and event.button() == Qt.LeftButton:
