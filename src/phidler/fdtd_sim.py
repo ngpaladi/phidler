@@ -49,7 +49,20 @@ _SECONDS_PER_CELL_STEP = 6e-8
 # hardware (a 5.2M-cell run: NumPy 32.6s, Numba 6.0s, GPU 2.4s compute). GPU
 # also pays a fixed subprocess startup. All rough — they only feed the
 # pre-flight warning, never correctness.
-_BACKEND_SPEEDUP = {"numpy": 1.0, "numba": 5.5, "gpu": 13.5}
+#
+# "rust" is photonfdtd 0.12's compiled CPU core (fused H/E passes + ghost-zone
+# temporal blocking): measured here at 17.6x NumPy on a 6.2M-cell / 204-step
+# grid, the same run that put Numba at 7.0x against this table's 5.5, so the
+# two are consistent to within the usual machine-to-machine spread.
+#
+# "rust-cuda" is deliberately pessimistic. photonfdtd's own benchmark table
+# (RTX 4080) has rust-cuda f32 at ~12x its CPU core, which would put it near
+# 200x here, but it couldn't be verified on this machine (the prebuilt
+# extension's PTX is newer than the installed driver — see rust_cuda_available).
+# Since an over-estimated speedup means *under*-estimating run time and
+# suppressing the "this will take a while" warning, the unverified entry errs
+# low on purpose.
+_BACKEND_SPEEDUP = {"numpy": 1.0, "numba": 5.5, "gpu": 13.5, "rust": 17.5, "rust-cuda": 40.0}
 _GPU_STARTUP_SECONDS = 1.0
 
 # Peak working-set memory per grid cell for the solve (6 field components + eps
@@ -179,6 +192,74 @@ def jax_gpu_available() -> bool:
         return False
 
 
+def rust_available() -> bool:
+    """Whether photonfdtd's compiled Rust CPU stepping core (0.12+,
+    ``backend="rust"``) can run here. Unlike GPU/Numba it isn't a pip package —
+    it's a compiled extension (``photonfdtd._photonfdtd_rs``) built from
+    photonfdtd's own ``rust/`` directory, so it's present or it isn't. photonfdtd
+    *raises* rather than silently falling back when the extension is missing, so
+    the FDTD window only enables the Rust checkbox when this is True.
+
+    False on photonfdtd < 0.12, which has no rustbackend module at all."""
+    try:
+        from photonfdtd.rustbackend import rust_available as _avail
+
+        return bool(_avail())
+    except Exception:
+        return False
+
+
+def rust_cuda_available() -> bool:
+    """Whether photonfdtd's CUDA stepping core (``backend="rust-cuda"``) can run
+    here: the extension has to be built with the ``cuda`` feature *and* a device
+    has to answer. This is photonfdtd's own probe.
+
+    Note it is an optimistic probe — it queries the device, which can succeed on
+    a machine whose driver is nonetheless too old for the PTX the extension was
+    compiled against (that combination only fails when the stepper is actually
+    constructed, at the start of a run). Observed on this dev box, so a run can
+    still fail here with the checkbox enabled; the error surfaces through the
+    normal failed-run path with photonfdtd's own message."""
+    try:
+        from photonfdtd.rustbackend import cuda_available as _avail
+
+        return bool(_avail())
+    except Exception:
+        return False
+
+
+def resolve_backend(params) -> str:
+    """The photonfdtd ``backend=`` string this run should use: ``"rust"``,
+    ``"rust-cuda"``, or ``"auto"`` (photonfdtd's own NumPy/JAX dispatch, which is
+    what phidler has always asked for).
+
+    The compiled Rust cores step the whole time loop natively, so they replace
+    the GPU/Numba/JAX in-Python steppers entirely rather than combining with
+    them. They also can't do everything those can, so two things outrank them:
+
+      * out-of-core is a NumPy-only path (photonfdtd's run_out_of_core is
+        reached before any backend dispatch), and
+      * subpixel smoothing is unsupported by the Rust cores, which *raise* on
+        it — so subpixel wins, matching how it already outranks Numba.
+
+    CUDA outranks the CPU core when both are ticked. Kept a pure function (no
+    photonfdtd import) so the precedence is unit-tested directly."""
+    if params.out_of_core or params.subpixel:
+        return "auto"
+    if params.use_rust_cuda:
+        return "rust-cuda"
+    if params.use_rust:
+        return "rust"
+    return "auto"
+
+
+def resolve_use_jax(params) -> bool:
+    """Whether the JAX stepper is actually installed on the built Simulation.
+    JAX loses to out-of-core (NumPy-only) and to a Rust backend, which steps the
+    whole loop natively and is dispatched ahead of JAX inside photonfdtd."""
+    return bool(params.use_jax) and not params.out_of_core and resolve_backend(params) == "auto"
+
+
 def resolve_accel_flags(params) -> tuple[bool, bool]:
     """The (use_gpu, use_numba) actually passed to photonfdtd's from_gdsfactory,
     resolving the mutually-exclusive backends so a conflicting combination never
@@ -187,13 +268,15 @@ def resolve_accel_flags(params) -> tuple[bool, bool]:
       * out-of-core is NumPy-only, so it drops both accelerators;
       * JAX is exclusive of GPU and Numba (build_simulation applies JAX itself
         by rebuilding the Simulation), so it drops both;
+      * a Rust backend steps natively and supersedes both (see resolve_backend);
       * subpixel smoothing is unsupported on Numba, so it drops Numba.
 
     Kept a pure function (no photonfdtd import) so the precedence is unit-tested
     directly. ``params`` is an FdtdParams."""
     oc = params.out_of_core
-    eff_gpu = params.use_gpu and not oc and not params.use_jax
-    eff_numba = params.use_numba and not oc and not params.use_jax and not params.subpixel
+    rust = resolve_backend(params) != "auto"
+    eff_gpu = params.use_gpu and not oc and not params.use_jax and not rust
+    eff_numba = params.use_numba and not oc and not params.use_jax and not params.subpixel and not rust
     return eff_gpu, eff_numba
 
 
@@ -248,6 +331,52 @@ class SourceSpec:
     cherenkov_segments: int = 24  # point dipoles sampled along the track
 
 
+@dataclass(frozen=True)
+class ProbeSpec:
+    """One measurement probe: a point (layout µm) where the recorded field is
+    sampled after a run. Probes are pure post-processing — they read the movie
+    the monitor already records, so they don't change the simulation itself
+    and can be added or moved after a run without re-running. `graph` is
+    whether the probe's intensity-vs-time trace is drawn on the field view."""
+
+    x_um: float
+    y_um: float
+    graph: bool = True
+
+
+def probe_intensity_trace(sim: Any, result: Any, x_um: float, y_um: float,
+                          origin_um: tuple[float, float] = (0.0, 0.0)) -> Any:
+    """Per-recorded-frame intensity |Ez|² at the movie cell nearest (x_um, y_um).
+
+    Returns an (n_frames,) float array, or None when the point lies outside
+    the simulated grid (e.g. a probe left behind from a whole-layout run when
+    a smaller region is simulated).
+
+    origin_um is the absolute layout position of the grid centre —
+    from_gdsfactory centres grid.coords on 0 while probes are placed in
+    absolute layout coordinates (the same shift FdtdWindow applies to register
+    the field image with the chip outline). Indices are computed fractionally
+    against the movie array's own shape rather than grid.shape, so a
+    monitor_downsample'd movie still samples the right cell."""
+    import numpy as np
+
+    arr = result.fields["field"]["Ez"]
+    x_coords = sim.grid.coords[0] * 1e6 + origin_um[0]
+    y_coords = sim.grid.coords[1] * 1e6 + origin_um[1]
+    x0, x1 = float(x_coords[0]), float(x_coords[-1])
+    y0, y1 = float(y_coords[0]), float(y_coords[-1])
+    fx = 0.5 if x1 == x0 else (x_um - x0) / (x1 - x0)
+    fy = 0.5 if y1 == y0 else (y_um - y0) / (y1 - y0)
+    if not (0.0 <= fx <= 1.0 and 0.0 <= fy <= 1.0):
+        return None
+    _n_frames, nx, ny, nz = arr.shape
+    ix = int(round(fx * (nx - 1)))
+    iy = int(round(fy * (ny - 1)))
+    z_idx = 0 if nz == 1 else nearest_z_index(sim.grid, 0.0)
+    trace = np.asarray(arr[:, ix, iy, z_idx], dtype=np.float64)
+    return trace * trace
+
+
 class ScriptedWaveform:
     """Wraps a user-supplied Python expression of `t` (seconds, a NumPy
     array) into a callable waveform, e.g.
@@ -290,6 +419,27 @@ class FdtdParams:
     # this is set — and runs in-process in the worker thread like the NumPy/
     # Numba path. Needs the jax package (see jax_available()).
     use_jax: bool = False
+    # photonfdtd 0.12's compiled Rust stepping cores (backend="rust" /
+    # "rust-cuda"). They run the whole time loop natively — fused H/E passes,
+    # ghost-zone temporal blocking on the CPU core, a VRAM-resident (or
+    # host-streamed) domain on the CUDA one — so they supersede the GPU/Numba/JAX
+    # steppers rather than combining with them (see resolve_backend). They also
+    # store the CPML state compacted to the PML slabs, so they're the
+    # lowest-memory in-core path. Measured at 17.6x plain NumPy here; verified
+    # bit-identical to the NumPy engine's field on the same grid.
+    use_rust: bool = False
+    use_rust_cuda: bool = False
+    # 2.5-D effective-index reduction (photonfdtd 0.12's eim module): collapse
+    # the vertical layer stack into effective indices and simulate the chip plane
+    # as a 2-D problem. Orders of magnitude fewer cells than the true-3-D build
+    # (the z dimension goes from a full core+cladding stack to a single cell),
+    # which is what makes a whole-circuit run tractable. It's an approximation —
+    # it assumes the vertical mode profile separates from the in-plane
+    # confinement, excellent for routing (bends, couplers, MZIs) and poor for
+    # strongly 3-D features (out-of-plane gratings, deep sub-wavelength gaps).
+    # See build_eim_reduction.
+    eim: bool = False
+    eim_polarization: str = "TE"  # "TE" (in-plane E, the usual device mode) or "TM"
     # Anisotropic subpixel smoothing of material interfaces (photonfdtd 0.4).
     # Sub-cell-accurate permittivity at boundaries — more accurate for a given
     # cell size, at some setup cost. Works on the NumPy/GPU/JAX backends but not
@@ -349,8 +499,17 @@ class SimulationConfig:
     # older phidler (which never wrote them) load unchanged.
     use_jax: bool = False
     subpixel: bool = False
+    # photonfdtd 0.12 backends / methods. Same story as the 0.4 fields above:
+    # defaulting False means a project saved by an older phidler (which never
+    # wrote them) still loads unchanged.
+    use_rust: bool = False
+    use_rust_cuda: bool = False
+    eim: bool = False
     region_selected_only: bool = False
     sources: tuple[SourceSpec, ...] = ()
+    # Measurement probes placed on the canvas. New field: defaults empty so
+    # projects saved by an older phidler (which never wrote it) load unchanged.
+    probes: tuple[ProbeSpec, ...] = ()
 
     # Vertical mode profile tab
     mode_wavelength_um: float = DEFAULT_WAVELENGTH_UM
@@ -452,6 +611,107 @@ def fdtd_clad_thickness_um(settings: ProjectSettings, wavelength_um: float) -> f
     return min(full, max(needed, _FDTD_CLAD_MIN_UM), _FDTD_CLAD_CAP_UM)
 
 
+@dataclass(frozen=True)
+class EimReduction:
+    """The 2.5-D effective-index reduction of a project's vertical layer stack.
+
+    Everything the chip plane needs to know about the third dimension, once the
+    third dimension has been collapsed: the effective index of the stack where
+    the full-height core is present (``n_core``), where it has been etched clean
+    away (``n_background``), and where a rib/slab partial etch leaves part of the
+    core behind (``n_slab``, one entry per configured etch layer, keyed by its
+    GDS ``(layer, datatype)``).
+
+    In-plane guiding is what's left after the reduction, so ``index_contrast``
+    is the number that decides whether the 2-D problem guides at all."""
+
+    wavelength_um: float
+    polarization: str
+    n_core: float
+    n_background: float
+    # ((gds_layer, gds_datatype), n_eff) per configured etch layer. A tuple of
+    # pairs rather than a dict so the dataclass stays frozen/hashable like the
+    # rest of the params objects here.
+    n_slab: tuple[tuple[tuple[int, int], float], ...] = ()
+
+    @property
+    def index_contrast(self) -> float:
+        return self.n_core - self.n_background
+
+
+def build_eim_reduction(
+    settings: ProjectSettings,
+    wavelength_um: float,
+    clad_index: float | None = None,
+    polarization: str = "TE",
+) -> EimReduction:
+    """Collapse the project's vertical stack into the effective indices a 2.5-D
+    (chip-plane) run needs — photonfdtd 0.12's ``eim`` module, driven from the
+    same ProjectSettings that feed the true-3-D build.
+
+    Each region's index is the fundamental guided index of its own 1-D vertical
+    slab (photonfdtd's ``effective_index``, a finite-difference slab solve
+    validated in its tests against the analytic symmetric-slab dispersion):
+
+      * full-height core -> ``n_core``;
+      * each rib/slab etch layer -> the index of the core height it leaves;
+      * fully etched -> exactly the cladding index, no solve involved. Where the
+        core is gone the stack is homogeneous cladding (this app's model has a
+        single cladding index above and below), so its in-plane index is that
+        index *exactly*. This is deliberately not photonfdtd's
+        ``EffectiveIndex2D.from_stacks``, which runs the slab solver on that
+        homogeneous stack too and returns a slightly-below-uniform index
+        (1.4115 against a 1.44 cladding, on the default Silicon platform) — a
+        discretisation artifact of solving a stack that has no mode to find.
+
+    A slab too thin to guide on its own falls back to the cladding index for the
+    same reason. A core that can't guide at all raises, rather than handing the
+    caller a 2-D problem with no in-plane contrast."""
+    pf = _import_photonfdtd()
+    wavelength_m = wavelength_um * 1e-6
+    clad_n = float(clad_index if clad_index is not None else settings.clad_index)
+
+    def slab_index(thickness_m: float) -> float:
+        return float(pf.effective_index(
+            [pf.Layer(thickness=thickness_m, index=settings.core_index)],
+            wavelength_m,
+            polarization=polarization,
+            substrate_index=clad_n,
+            cladding_index=clad_n,
+        ))
+
+    try:
+        n_core = slab_index(settings.thickness_um * 1e-6)
+    except ValueError as exc:
+        raise ValueError(
+            f"The 2.5-D reduction found no guided vertical mode for a "
+            f"{settings.thickness_um:.3f} µm {settings.platform_name} core in n={clad_n:.3f} "
+            f"cladding at {wavelength_um:.3f} µm, so there is no effective index to "
+            "reduce it to. Use a thicker core, a lower cladding index, or run in "
+            "full 3-D."
+        ) from exc
+
+    slabs: list[tuple[tuple[int, int], float]] = []
+    for etch in settings.etch_layers:
+        slab_um = min(max(etch.slab_thickness_um, 0.0), settings.thickness_um)
+        if slab_um <= 0.0:
+            continue
+        try:
+            n_slab = slab_index(slab_um * 1e-6)
+        except ValueError:
+            # Too thin to guide on its own — that region behaves as bare cladding.
+            n_slab = clad_n
+        slabs.append(((int(etch.layer), int(etch.datatype)), n_slab))
+
+    return EimReduction(
+        wavelength_um=float(wavelength_um),
+        polarization=polarization.upper(),
+        n_core=n_core,
+        n_background=clad_n,
+        n_slab=tuple(slabs),
+    )
+
+
 def _layout_bbox_um(document: LayoutDocument):
     bbox = document.top.bbox()
     if bbox.empty():
@@ -473,8 +733,11 @@ def estimate_grid_cell_count(
     """Cheap pre-flight check: builds only the Grid (no structures, no
     source, no monitor, no run) to estimate the total cell count a real
     run would use, so a caller can warn before committing to an expensive
-    simulation. True 3D now (no z-collapse), so this includes the full
-    core+cladding vertical extent. region_um (left, bottom, right, top in µm)
+    simulation. True 3D by default (no z-collapse), so this includes the full
+    core+cladding vertical extent; a 2.5-D run (params.eim) collapses z to a
+    single cell, which is exactly where its saving comes from and so has to be
+    reflected here — otherwise the pre-flight guard would refuse whole-circuit
+    2.5-D runs that fit comfortably. region_um (left, bottom, right, top in µm)
     restricts the xy window to simulate, else the whole layout is used."""
     pf = _import_photonfdtd()
     left, bottom, right, top = region_um if region_um is not None else _layout_bbox_um_tuple(document)
@@ -483,9 +746,15 @@ def estimate_grid_cell_count(
     padding_m = params.padding_um * 1e-6
     x_extent = (right - left) * 1e-6 + 2 * padding_m
     y_extent = (top - bottom) * 1e-6 + 2 * padding_m
-    clad_thickness_um = fdtd_clad_thickness_um(settings, params.wavelength_um)
-    z_extent = settings.thickness_um * 1e-6 + 2 * clad_thickness_um * 1e-6 + 2 * padding_m
-    grid = pf.Grid(size=(x_extent, y_extent, z_extent), cell_size=cell_size_m, pml_layers=(12, 12, 12))
+    if params.eim:
+        # A zero extent is how photonfdtd's Grid collapses an axis (shape 1, no
+        # PML on it): the 2-D chip-plane problem build_simulation builds.
+        z_extent, z_pml = 0.0, 0
+    else:
+        clad_thickness_um = fdtd_clad_thickness_um(settings, params.wavelength_um)
+        z_extent = settings.thickness_um * 1e-6 + 2 * clad_thickness_um * 1e-6 + 2 * padding_m
+        z_pml = 12
+    grid = pf.Grid(size=(x_extent, y_extent, z_extent), cell_size=cell_size_m, pml_layers=(12, 12, z_pml))
     return int(grid.shape[0]) * int(grid.shape[1]) * int(grid.shape[2])
 
 
@@ -702,8 +971,83 @@ def mode_confinement(result: Any, mode_index: int = 0, infinite_clad: bool = Fal
     )
 
 
-def build_source(settings: ProjectSettings, spec: SourceSpec) -> Any:
+def _scale_to_photon_count(single: Any, photon_count: int) -> Any:
+    """Rescale a one-photon SinglePhotonSource to ``photon_count`` photons, as a
+    plain ModeSource. Scales the *amplitude* by sqrt(N), not by stacking N copies
+    — see build_source's docstring for why (and for the numerical verification)."""
+    pf = _import_photonfdtd()
+    if photon_count == 1:
+        return single
+    scaled_amplitude = single.peak_field * math.sqrt(photon_count) * (2.0 if single.bidirectional else 1.0)
+    mode_source = single.as_mode_source()
+    return pf.ModeSource(
+        center=mode_source.center,
+        size=mode_source.size,
+        component=mode_source.component,
+        waveform=mode_source.waveform,
+        profile=mode_source.profile,
+        profile_coords=mode_source.profile_coords,
+        amplitude=scaled_amplitude,
+    )
+
+
+def _build_eim_single_photon_source(spec: SourceSpec, reduction: EimReduction, waveform: Any) -> Any:
+    """The 2.5-D counterpart of a mode-injected launch.
+
+    With the vertical stack already collapsed into effective indices, the guided
+    mode that's left to match is the *lateral* one: the 1-D profile across the
+    waveguide width in the chip plane, guided by ``n_core`` against
+    ``n_background``. photonfdtd's 1-D slab solver — literally the same solver
+    the reduction itself is built from — solves it, so the launch and the index
+    map it's launched into stay consistent by construction. In the 2-D (xy)
+    domain the TE-like field component is Ez, which is also what the field movie
+    records."""
+    pf = _import_photonfdtd()
+    if spec.core_width_um is None:
+        raise ValueError("single_photon sources need core_width_um to solve the local mode")
+    modes = pf.slab_modes(
+        [pf.Layer(thickness=spec.core_width_um * 1e-6, index=reduction.n_core)],
+        spec.wavelength_um * 1e-6,
+        polarization="TE",
+        num_modes=1,
+        substrate_index=reduction.n_background,
+        cladding_index=reduction.n_background,
+    )
+    if modes.n_eff.size == 0:
+        raise ValueError(
+            f"No guided lateral mode at {spec.wavelength_um:.3f} µm for a "
+            f"{spec.core_width_um:.3f} µm wide core in the 2.5-D reduction "
+            f"(effective index {reduction.n_core:.4f} against a "
+            f"{reduction.n_background:.4f} background). Widen the core, or run in "
+            "full 3-D where the vertical confinement is resolved."
+        )
+    # slab_modes returns the transverse coordinate measured from the stack
+    # bottom; a source profile is sampled *relative to the source centre*, so
+    # recentre it — then the same solved profile drops in at any (x, y).
+    y = modes.z - 0.5 * (float(modes.z[0]) + float(modes.z[-1]))
+    single = pf.SinglePhotonSource(
+        center=(spec.x_um * 1e-6, spec.y_um * 1e-6, 0.0),
+        size=(0.0, float(y[-1] - y[0]), 0.0),
+        component="Ez",
+        waveform=waveform,
+        profile=modes.profiles[0],
+        profile_coords=(y,),
+        n_eff=float(modes.n_eff[0]),
+    )
+    return _scale_to_photon_count(single, spec.photon_count)
+
+
+def build_source(settings: ProjectSettings, spec: SourceSpec, reduction: EimReduction | None = None) -> Any:
     """Builds the photonfdtd source object for one placed SourceSpec.
+
+    ``reduction`` is set on a 2.5-D run and changes what "the local mode" means:
+    the domain is the chip plane with no resolved vertical dimension, so a
+    mode-injected source matches the *lateral* mode of the effective-index map
+    (see _build_eim_single_photon_source) instead of the vertical cross-section,
+    and a "cherenkov" source — whose entire content is a track through the
+    vertical stack — raises rather than quietly degrading into something else.
+    Plain "dipole" and "scripted" sources are unaffected: a point excitation of
+    Ez at (x, y) means the same thing in both domains.
 
     "dipole": a plain oscillating point source at the chosen wavelength —
     always available, not mode-matched to anything (same honest framing
@@ -746,6 +1090,14 @@ def build_source(settings: ProjectSettings, spec: SourceSpec) -> Any:
     waveform = pf.GaussianPulse(freq0=freq0, fwhm=spec.fwhm_fs * 1e-15)
 
     if spec.kind == "cherenkov":
+        if reduction is not None:
+            raise ValueError(
+                "A Cherenkov source is a particle track through the vertical "
+                "stack, and the 2.5-D (effective index) reduction has collapsed "
+                "that stack into a single plane — there is no track left to "
+                "sample. Untick 2.5-D to run this source in full 3-D, or use a "
+                "dipole / single-photon source for the 2.5-D run."
+            )
         if spec.velocity_beta <= 0:
             raise ValueError("cherenkov sources need a positive velocity_beta (v/c)")
         v = spec.velocity_beta * _C0  # particle speed (m/s)
@@ -786,6 +1138,8 @@ def build_source(settings: ProjectSettings, spec: SourceSpec) -> Any:
         )
 
     if spec.kind == "single_photon":
+        if reduction is not None:
+            return _build_eim_single_photon_source(spec, reduction, waveform)
         if spec.core_width_um is None:
             raise ValueError("single_photon sources need core_width_um to solve the local mode")
         mode_params = ModeProfileParams(
@@ -804,19 +1158,7 @@ def build_source(settings: ProjectSettings, spec: SourceSpec) -> Any:
             profile_coords=(result.y, result.z),
             n_eff=float(result.n_eff[0]),
         )
-        if spec.photon_count == 1:
-            return single
-        scaled_amplitude = single.peak_field * math.sqrt(spec.photon_count) * (2.0 if single.bidirectional else 1.0)
-        mode_source = single.as_mode_source()
-        return pf.ModeSource(
-            center=mode_source.center,
-            size=mode_source.size,
-            component=mode_source.component,
-            waveform=mode_source.waveform,
-            profile=mode_source.profile,
-            profile_coords=mode_source.profile_coords,
-            amplitude=scaled_amplitude,
-        )
+        return _scale_to_photon_count(single, spec.photon_count)
 
     raise ValueError(f"unknown source kind: {spec.kind!r}")
 
@@ -883,6 +1225,49 @@ def build_layer_media_map(document: LayoutDocument, core: Any, thickness_m: floa
     return layers_map
 
 
+def build_eim_layer_media_map(
+    document: LayoutDocument, reduction: EimReduction, thickness_m: float
+) -> dict[int, tuple[Any, tuple[float, float]]]:
+    """The 2.5-D counterpart of build_layer_media_map: each drawn layer becomes a
+    medium at *its own* effective index, all sharing one z span.
+
+    Two differences from the 3-D map, both forced by the collapsed grid:
+
+    * every layer spans the same (0, thickness) z range, because the grid has a
+      single z cell and a PolySlab that didn't cover it wouldn't be stamped at
+      all — the vertical structure is carried by the index values now, not by
+      the z bounds;
+    * so the etch layers are inserted *first* and the full-height core last.
+      from_gdsfactory stamps in insertion order and later wins, and with every
+      layer occupying the same z range the order is what decides overlaps. In
+      the 3-D map it doesn't matter (core and slab occupy different z ranges);
+      here it's the difference between a rib layout reading as core or as slab.
+    """
+    pf = _import_photonfdtd()
+    index_of = _layer_index_map(document.top)
+    z_span = (0.0, thickness_m)
+
+    layers_map: dict[int, tuple[Any, tuple[float, float]]] = {}
+    for (layer, datatype), n_slab in reduction.n_slab:
+        idx = index_of.get((layer, datatype))
+        if idx is None:
+            logger.warning(
+                "Etch layer (%d, %d) is configured but has no geometry in the "
+                "layout — skipping it.", layer, datatype,
+            )
+            continue
+        layers_map[idx] = (
+            pf.Medium.from_index(n_slab, name=f"EIM slab ({layer}, {datatype})"), z_span,
+        )
+
+    core_idx = index_of.get(_CORE_LAYER)
+    if core_idx is not None:
+        layers_map[core_idx] = (
+            pf.Medium.from_index(reduction.n_core, name="EIM core"), z_span,
+        )
+    return layers_map
+
+
 def build_simulation(
     document: LayoutDocument,
     params: FdtdParams = FdtdParams(),
@@ -901,6 +1286,14 @@ def build_simulation(
     real (calibrated empirically — see estimate_run_seconds) but no longer
     avoidable if the "money shot" top-down field movie is meant to come
     from an actual resolved simulation rather than a 2D approximation.
+
+    ``params.eim`` opts back into a 2-D chip-plane domain, but on a principled
+    footing rather than the old version's brute z-collapse: the vertical stack is
+    first *reduced* to effective indices (build_eim_reduction), so the vertical
+    confinement it drops is accounted for in the index values instead of being
+    thrown away. Cladding thickness is genuinely inert again on that path — the
+    reduction consumes the stack — which is the honest cost of the 2.5-D
+    approximation, alongside its inaccuracy on strongly 3-D features.
 
     Core/cladding both come from the document's own ProjectSettings — the
     same values the waveguide-width estimate and mode solver already use —
@@ -933,28 +1326,11 @@ def build_simulation(
     # Simulation with those flags below.
     oc = params.out_of_core
     eff_gpu, eff_numba = resolve_accel_flags(params)
+    backend = resolve_backend(params)
+    eff_jax = resolve_use_jax(params)
 
-    sim = pf.from_gdsfactory(
-        document.top,
-        # Full-height core plus any partial-height rib/slab etch layers. Keyed by
-        # kdb layer index (translated from GDS layer/datatype) — see
-        # build_layer_media_map / _layer_index_map.
-        layers=build_layer_media_map(document, core, thickness_m),
-        # Background slabs are stamped before the per-layer polygons (the
-        # polygon wins where they overlap, per from_gdsfactory's own
-        # documented order) — so the middle slab here, spanning the same
-        # z-range as the core layer, is what makes everywhere *outside*
-        # the waveguide footprint (but at core height) read as lateral
-        # cladding instead of silently defaulting to vacuum (eps_r=1).
-        # Missing this slab was a real bug, caught by actually inspecting
-        # sim.eps_r at the core z-height before trusting this code.
-        background_slabs=[
-            (clad, (-clad_thickness_m, 0.0)),
-            (clad, (0.0, thickness_m)),
-            (clad, (thickness_m, thickness_m + clad_thickness_m)),
-        ],
+    common = dict(
         cell_size=cell_size_m,
-        padding=(padding_m, padding_m, padding_m),
         run_time=params.resolved_run_time_fs() * 1e-15,
         # Out-of-core stepping is NumPy-only, so it overrides the accel backends
         # (photonfdtd's run_out_of_core rejects a gpu/numba Simulation).
@@ -964,12 +1340,68 @@ def build_simulation(
         xy_bounds=xy_bounds,
     )
 
-    # JAX / subpixel aren't from_gdsfactory parameters, so rebuild the
-    # Simulation from the grid+structures it produced with those flags set.
-    # The first construction runs on the cheap default backend; this second one
-    # does the real work (installs the JAX stepper and/or precomputes the
-    # smoothed permittivity). Out-of-core stays plain NumPy, so it's skipped.
-    if (params.use_jax or params.subpixel) and not oc:
+    # The 2.5-D reduction, when asked for: the vertical stack becomes a set of
+    # effective indices and the domain becomes the chip plane. Solved before the
+    # grid is built because it also decides what media the layers are stamped
+    # with, and it's needed again below for the sources.
+    reduction = (
+        build_eim_reduction(settings, params.wavelength_um, clad_n, params.eim_polarization)
+        if params.eim else None
+    )
+
+    if reduction is not None:
+        sim = pf.from_gdsfactory(
+            document.top,
+            # Each drawn layer at its own effective index, all in one z span —
+            # see build_eim_layer_media_map for why the ordering matters here.
+            layers=build_eim_layer_media_map(document, reduction, thickness_m),
+            # One background slab at the fully-etched index (the bare cladding
+            # stack), the 2-D counterpart of the three-slab sandwich below.
+            background_slabs=[(
+                pf.Medium.from_index(reduction.n_background, name="EIM background"),
+                (0.0, thickness_m),
+            )],
+            # z_size=0 collapses the vertical axis to a single cell, and there's
+            # no vertical direction left for light to leave through, so no z PML.
+            z_size=0.0,
+            pml_layers=(12, 12, 0),
+            padding=(padding_m, padding_m, 0.0),
+            **common,
+        )
+    else:
+        sim = pf.from_gdsfactory(
+            document.top,
+            # Full-height core plus any partial-height rib/slab etch layers. Keyed by
+            # kdb layer index (translated from GDS layer/datatype) — see
+            # build_layer_media_map / _layer_index_map.
+            layers=build_layer_media_map(document, core, thickness_m),
+            # Background slabs are stamped before the per-layer polygons (the
+            # polygon wins where they overlap, per from_gdsfactory's own
+            # documented order) — so the middle slab here, spanning the same
+            # z-range as the core layer, is what makes everywhere *outside*
+            # the waveguide footprint (but at core height) read as lateral
+            # cladding instead of silently defaulting to vacuum (eps_r=1).
+            # Missing this slab was a real bug, caught by actually inspecting
+            # sim.eps_r at the core z-height before trusting this code.
+            background_slabs=[
+                (clad, (-clad_thickness_m, 0.0)),
+                (clad, (0.0, thickness_m)),
+                (clad, (thickness_m, thickness_m + clad_thickness_m)),
+            ],
+            padding=(padding_m, padding_m, padding_m),
+            **common,
+        )
+
+    # JAX / subpixel / the compiled Rust cores aren't from_gdsfactory parameters,
+    # so rebuild the Simulation from the grid+structures it produced with those
+    # set. The first construction runs on the cheap default backend; this second
+    # one does the real work (installs the JAX stepper, selects the Rust core,
+    # and/or precomputes the smoothed permittivity). Out-of-core stays plain
+    # NumPy, so it's skipped: `not oc` still guards subpixel specifically, since
+    # photonfdtd's run_out_of_core raises on a subpixel Simulation and this app
+    # has always let out-of-core quietly win that conflict. (eff_jax and backend
+    # have already resolved out-of-core out themselves.)
+    if (eff_jax or params.subpixel or backend != "auto") and not oc:
         sim = pf.Simulation(
             grid=sim.grid,
             structures=sim.structures,
@@ -977,17 +1409,18 @@ def build_simulation(
             monitors=[],
             run_time=sim.run_time,
             courant=sim.courant,
-            use_jax=params.use_jax,
+            use_jax=eff_jax,
             subpixel=params.subpixel,
             subpixel_factor=params.subpixel_factor,
             precision=params.precision,
+            backend=backend,
         )
 
     sources = params.sources
     if not sources:
         sources = (SourceSpec(x_um=bbox.left, y_um=(bbox.top + bbox.bottom) / 2, wavelength_um=params.wavelength_um, fwhm_fs=params.pulse_fwhm_fs),)
     for spec in sources:
-        built = build_source(settings, spec)
+        built = build_source(settings, spec, reduction=reduction)
         # A cherenkov spec expands into a whole track of point dipoles.
         for src in built if isinstance(built, list) else [built]:
             sim.add_source(src)

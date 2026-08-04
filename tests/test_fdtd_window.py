@@ -821,3 +821,87 @@ def test_offer_feasible_region_passes_a_feasible_run_through_unchanged(qapp):
     params = FdtdParams(cell_size_um=0.1, run_time_fs=2.0)
     # A small, already-feasible grid is returned untouched and unconfirmed.
     assert fdtd_win._offer_feasible_region(params, None, 1_000_000) == (None, 1_000_000, False)
+
+
+# --- photonfdtd 0.12 switches: Rust cores and the 2.5-D reduction -------------
+
+
+def test_rust_checkboxes_track_availability_and_feed_into_params(qapp):
+    """Like GPU/JAX, the Rust boxes are enabled only when the backend can really
+    run — more strictly here, since the Rust core is a compiled extension rather
+    than a pip install, so it's either built into photonfdtd or it isn't."""
+    from phidler.fdtd_sim import rust_available, rust_cuda_available
+
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    assert fdtd_win.run_rust_check.isEnabled() == rust_available()
+    assert fdtd_win.run_rust_cuda_check.isEnabled() == rust_cuda_available()
+
+    # Off by default: the established backends stay the default experience.
+    params = fdtd_win._current_params()
+    assert params.use_rust is False and params.use_rust_cuda is False
+
+    if rust_available():
+        fdtd_win.run_rust_check.setChecked(True)
+        assert fdtd_win._current_params().use_rust is True
+
+
+def test_rust_is_exclusive_of_the_other_backends_and_of_subpixel(qapp):
+    """The Rust core steps the whole time loop natively, so it replaces the other
+    backends rather than combining with them, and photonfdtd raises outright if
+    it's asked for subpixel smoothing. The boxes have to keep that from being
+    expressible."""
+    from phidler.fdtd_sim import rust_available
+
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    if not rust_available():
+        pytest.skip("photonfdtd's Rust extension isn't built in this environment")
+
+    fdtd_win.run_numba_check.setChecked(True)
+    fdtd_win.run_subpixel_check.setChecked(True)
+    fdtd_win.run_rust_check.setChecked(True)
+    assert fdtd_win.run_numba_check.isChecked() is False
+    assert fdtd_win.run_subpixel_check.isChecked() is False
+
+    # ...and back the other way: subpixel clears Rust.
+    fdtd_win.run_subpixel_check.setChecked(True)
+    assert fdtd_win.run_rust_check.isChecked() is False
+
+
+def test_eim_checkbox_feeds_into_params_and_is_always_available(qapp):
+    """2.5-D is a method, not a backend — it needs nothing installed, so unlike
+    the accelerator boxes it's never disabled, and it composes with all of them."""
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    assert fdtd_win.run_eim_check.isEnabled()
+    assert fdtd_win._current_params().eim is False
+
+    fdtd_win.run_eim_check.setChecked(True)
+    params = fdtd_win._current_params()
+    assert params.eim is True
+    # Not a backend: it leaves the acceleration choices alone.
+    assert params.use_numba is fdtd_win.run_numba_check.isChecked()
+
+
+def test_new_switches_round_trip_through_the_saved_config(qapp):
+    """The 0.12 switches persist with the project like the rest of the sim set-up
+    — and restore only when the backend is actually available here, since the
+    Rust extension is compiled per-machine."""
+    from phidler.fdtd_sim import rust_available
+
+    win = MainWindow()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    fdtd_win.run_eim_check.setChecked(True)
+    if rust_available():
+        fdtd_win.run_rust_check.setChecked(True)
+    fdtd_win.sync_config_to_document()
+
+    config = win.document.simulation_config
+    assert config.eim is True
+    assert config.use_rust is rust_available()
+
+    fresh = FdtdWindow(win.document, win.view)
+    fresh._restore_config(config)
+    assert fresh.run_eim_check.isChecked() is True
+    assert fresh.run_rust_check.isChecked() is rust_available()

@@ -1,3 +1,4 @@
+import dataclasses
 import math
 
 import pytest
@@ -6,6 +7,7 @@ from phidler.fdtd_sim import (
     FdtdParams,
     ModeProfileParams,
     SourceSpec,
+    build_eim_reduction,
     build_mode_solver,
     build_simulation,
     build_source,
@@ -17,6 +19,7 @@ from phidler.fdtd_sim import (
     nearest_z_index,
     photon_energy_ev_from_wavelength_um,
     run_simulation,
+    rust_available,
     solve_mode_profile,
     wavelength_um_from_photon_energy_ev,
 )
@@ -605,3 +608,162 @@ def test_simulation_wavelength_default_matches_the_project_default():
     assert ModeProfileParams().wavelength_um == project_default
     assert SimulationConfig().wavelength_um == project_default
     assert SimulationConfig().mode_wavelength_um == project_default
+
+
+# --- photonfdtd 0.12: compiled Rust cores and the 2.5-D reduction -------------
+
+
+def test_rust_backend_reaches_the_simulation(qapp):
+    """Ticking Rust has to actually select photonfdtd's compiled core — the flag
+    is applied by a *rebuild* of the Simulation (from_gdsfactory has no backend
+    parameter), which is easy to drop silently."""
+    pytest.importorskip("photonfdtd")
+    if not rust_available():
+        pytest.skip("photonfdtd's Rust extension isn't built in this environment")
+    doc = _tiny_document()
+    sim = build_simulation(doc, dataclasses.replace(_FAST_PARAMS, use_rust=True))
+    assert sim.backend == "rust"
+    # Default stays on photonfdtd's own dispatch, unchanged from before.
+    assert build_simulation(doc, _FAST_PARAMS).backend == "auto"
+
+
+def test_rust_backend_agrees_with_numpy(qapp):
+    """The whole point of a second stepping core is that it computes the same
+    thing. float32 round-off differs (the loop order does), so this is a
+    tolerance check, not equality — photonfdtd's own suite puts f32 agreement at
+    ~5e-6 and this grid lands well inside that."""
+    pytest.importorskip("photonfdtd")
+    if not rust_available():
+        pytest.skip("photonfdtd's Rust extension isn't built in this environment")
+    import numpy as np
+
+    doc = _tiny_document()
+    ref = run_simulation(build_simulation(doc, _FAST_PARAMS))
+    rust = run_simulation(build_simulation(doc, dataclasses.replace(_FAST_PARAMS, use_rust=True)))
+    a = np.asarray(ref.fields["field"]["Ez"])
+    b = np.asarray(rust.fields["field"]["Ez"])
+    assert a.shape == b.shape
+    peak = np.abs(a).max()
+    assert peak > 0
+    assert np.abs(a - b).max() / peak < 1e-5
+
+
+def test_subpixel_outranks_rust_so_photonfdtd_never_raises(qapp):
+    """photonfdtd's Rust cores raise on subpixel smoothing. The resolver is
+    supposed to keep that combination from ever being built, so asking for both
+    must produce a working non-Rust Simulation rather than an exception."""
+    pytest.importorskip("photonfdtd")
+    if not rust_available():
+        pytest.skip("photonfdtd's Rust extension isn't built in this environment")
+    sim = build_simulation(
+        _tiny_document(), dataclasses.replace(_FAST_PARAMS, use_rust=True, subpixel=True),
+    )
+    assert sim.backend == "auto"
+    assert sim.subpixel is True
+
+
+def test_eim_reduction_orders_the_indices_it_produces(qapp):
+    """The reduction only makes sense if the guided core index sits between the
+    cladding and the bulk core index — that gap is the in-plane contrast the 2-D
+    problem guides on."""
+    pytest.importorskip("photonfdtd")
+    settings = ProjectSettings()
+    red = build_eim_reduction(settings, 1.55)
+    assert settings.clad_index < red.n_core < settings.core_index
+    assert red.index_contrast == pytest.approx(red.n_core - red.n_background)
+
+
+def test_eim_background_is_exactly_the_cladding_index(qapp):
+    """Where the core is etched clean away the stack is homogeneous cladding, so
+    its in-plane index is the cladding index exactly. photonfdtd's own
+    EffectiveIndex2D.from_stacks runs its slab solver on that stack too and
+    returns a slightly-below-uniform index (~1.4115 against a 1.44 cladding) —
+    a discretisation artifact of solving a stack with no mode to find. This is
+    the regression guard for not reintroducing that."""
+    pytest.importorskip("photonfdtd")
+    settings = ProjectSettings()
+    red = build_eim_reduction(settings, 1.55)
+    assert red.n_background == settings.clad_index
+
+
+def test_eim_reduction_gives_a_rib_slab_its_own_intermediate_index(qapp):
+    """A partial etch leaves part of the core behind, so that region guides
+    better than bare cladding and worse than the full core."""
+    pytest.importorskip("photonfdtd")
+    settings = ProjectSettings(etch_layers=(EtchLayer(layer=2, datatype=0, slab_thickness_um=0.09),))
+    red = build_eim_reduction(settings, 1.55)
+    assert len(red.n_slab) == 1
+    (layer, datatype), n_slab = red.n_slab[0]
+    assert (layer, datatype) == (2, 0)
+    assert red.n_background < n_slab < red.n_core
+
+
+def test_eim_build_collapses_the_domain_to_the_chip_plane(qapp):
+    """2.5-D's whole value is the cell count, so the built grid must genuinely be
+    2-D — and the pre-flight estimate must agree with it, or the feasibility
+    guard would refuse whole-circuit runs that fit fine."""
+    pytest.importorskip("photonfdtd")
+    doc = _tiny_document()
+    params = dataclasses.replace(_FAST_PARAMS, eim=True)
+    sim = build_simulation(doc, params)
+    assert sim.grid.ndim == 2
+    assert sim.grid.shape[2] == 1
+
+    cells_2p5d = estimate_grid_cell_count(doc, params)
+    cells_3d = estimate_grid_cell_count(doc, _FAST_PARAMS)
+    assert cells_2p5d == sim.grid.shape[0] * sim.grid.shape[1]
+    assert cells_2p5d < cells_3d
+    # The saving is exactly the vertical cell count it dropped.
+    assert cells_3d == cells_2p5d * build_simulation(doc, _FAST_PARAMS).grid.shape[2]
+
+
+def test_eim_simulation_runs_and_records_a_field_movie(qapp):
+    pytest.importorskip("photonfdtd")
+    import numpy as np
+
+    result = run_simulation(build_simulation(_tiny_document(), dataclasses.replace(_FAST_PARAMS, eim=True)))
+    ez = np.asarray(result.fields["field"]["Ez"])
+    assert ez.ndim == 4 and ez.shape[0] > 1  # (frames, nx, ny, nz=1)
+    assert np.abs(ez).max() > 0
+
+
+def test_eim_single_photon_source_matches_the_lateral_mode(qapp):
+    """In 2.5-D there is no vertical cross-section left to mode-match, so a
+    single-photon source has to match the lateral mode of the reduced index map.
+    It expands into a line of dipoles across the guide, not a single point."""
+    pytest.importorskip("photonfdtd")
+    doc = _tiny_document()
+    spec = SourceSpec(x_um=0.2, y_um=0.0, kind="single_photon", core_width_um=0.5, wavelength_um=1.55)
+    params = dataclasses.replace(_FAST_PARAMS, eim=True, sources=(spec,))
+    sim = build_simulation(doc, params)
+    assert len(sim.sources) > 1
+    # Ez is the TE-like component of a 2-D xy domain — and what the movie records.
+    assert {s.component for s in sim.sources} == {"Ez"}
+
+
+def test_eim_refuses_a_cherenkov_source_instead_of_degrading_it(qapp):
+    """A Cherenkov source *is* a track through the vertical stack. 2.5-D has
+    collapsed that stack, so there's nothing to sample — better to say so than
+    to quietly emit something that looks like a result."""
+    pytest.importorskip("photonfdtd")
+    spec = SourceSpec(x_um=0.2, y_um=0.0, kind="cherenkov", wavelength_um=1.55)
+    params = dataclasses.replace(_FAST_PARAMS, eim=True, sources=(spec,))
+    with pytest.raises(ValueError, match="2.5-D"):
+        build_simulation(_tiny_document(), params)
+    # Still fine in full 3-D.
+    sim = build_simulation(_tiny_document(), dataclasses.replace(_FAST_PARAMS, sources=(spec,)))
+    assert len(sim.sources) > 1
+
+
+def test_eim_and_rust_compose(qapp):
+    """2.5-D is a method and Rust is a backend — they're independent choices and
+    have to work together, which is also the fastest configuration available."""
+    pytest.importorskip("photonfdtd")
+    if not rust_available():
+        pytest.skip("photonfdtd's Rust extension isn't built in this environment")
+    import numpy as np
+
+    params = dataclasses.replace(_FAST_PARAMS, eim=True, use_rust=True)
+    sim = build_simulation(_tiny_document(), params)
+    assert sim.backend == "rust" and sim.grid.ndim == 2
+    assert np.abs(np.asarray(run_simulation(sim).fields["field"]["Ez"])).max() > 0

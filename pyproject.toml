@@ -27,11 +27,19 @@ docs = [
 # package) — install it from its own checkout first
 # (pip install -e /path/to/photonfdtd), then this version constraint will
 # already be satisfied and `pip install -e ".[fdtd]"` won't need network
-# access for it. Phidler tracks photonfdtd 0.11.x. Since 0.4 it has gained the
+# access for it. Phidler tracks photonfdtd 0.12.x. Since 0.4 it has gained the
 # differentiable JAX backend and anisotropic subpixel smoothing; 0.9 makes JAX
 # the GPU backend (it runs on the GPU through XLA) and deprecates the old CuPy
-# use_gpu path. The FDTD window surfaces the JAX (GPU) and subpixel options and
-# marks the CuPy GPU box as legacy (see panels/fdtd_window.py).
+# use_gpu path; 0.12 adds the compiled Rust stepping cores (backend="rust" /
+# "rust-cuda") and the 2.5-D effective-index reduction. The FDTD window surfaces
+# the JAX (GPU), Rust, Rust (CUDA), subpixel and 2.5-D options and marks the
+# CuPy GPU box as legacy (see panels/fdtd_window.py).
+#
+# The Rust cores are a compiled extension, not a pip dependency: they're built
+# from photonfdtd's own rust/ directory (cargo build --release, plus
+# --features cuda for the GPU core) and copied next to the package. Nothing here
+# can express that, so it stays unpinned — without it the Rust checkboxes are
+# simply disabled and every other backend works as before.
 #
 # GPU acceleration is optional and unpinned. Prefer JAX: install a GPU-capable
 # jax (e.g. pip install "jax[cuda12]" for an NVIDIA GPU, or plain `pip install
@@ -40,7 +48,7 @@ docs = [
 # NVIDIA, cupy-rocm-5-0 for AMD) if you specifically need it. Leaving both out
 # just runs on CPU (NumPy/Numba).
 fdtd = [
-    "photonfdtd>=0.11.0",
+    "photonfdtd>=0.12.0",
     "matplotlib>=3.7",
     # Numba JIT-compiles photonfdtd's field-update kernel (parallel, cached to
     # disk) — ~5x faster than the plain NumPy engine and, like JAX, runs in the

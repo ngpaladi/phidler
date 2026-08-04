@@ -114,6 +114,10 @@ def load_result_npz(path) -> tuple[Any, Any]:
             grid=grid,
             use_gpu=bool(data["use_gpu"]),
             use_numba=bool(data["use_numba"]),
+            # Written since the Rust cores landed; older result files don't have
+            # it, and a bundle can be produced by a remote host running an older
+            # phidler, so default rather than KeyError on them.
+            backend=str(data["backend"]) if "backend" in data else "auto",
         )
         result_stub = SimpleNamespace(fields={"field": {"Ez": data["ez"]}})
     return sim_stub, result_stub
@@ -264,6 +268,10 @@ def _run_job(job_path: str) -> None:
         # whether GPU actually engaged or quietly fell back to CPU.
         use_gpu=bool(getattr(sim, "use_gpu", False)),
         use_numba=bool(getattr(sim, "use_numba", False)),
+        # Which stepping core photonfdtd settled on ("auto"/"rust"/"rust-cuda").
+        # Same reasoning as use_gpu above, and it matters most on the remote
+        # path: whether the Rust extension is built is a property of *that* host.
+        backend=str(getattr(sim, "backend", "auto")),
     )
 
 

@@ -15,7 +15,13 @@ import time
 import pytest
 
 from phidler import ai
-from phidler.fdtd_sim import FdtdParams, SimulationConfig, resolve_accel_flags
+from phidler.fdtd_sim import (
+    FdtdParams,
+    SimulationConfig,
+    resolve_accel_flags,
+    resolve_backend,
+    resolve_use_jax,
+)
 from phidler.panels.console_panel import ConsolePanel
 
 
@@ -340,6 +346,38 @@ def test_resolve_accel_flags_precedence():
     assert resolve_accel_flags(FdtdParams(subpixel=True, use_gpu=True, use_numba=True)) == (True, False)
     # Out-of-core is NumPy-only: drops both.
     assert resolve_accel_flags(FdtdParams(out_of_core=True, use_gpu=True, use_numba=True)) == (False, False)
+    # A Rust core steps the whole loop natively: it drops both too.
+    assert resolve_accel_flags(FdtdParams(use_rust=True, use_gpu=True, use_numba=True)) == (False, False)
+    assert resolve_accel_flags(FdtdParams(use_rust_cuda=True, use_gpu=True, use_numba=True)) == (False, False)
+    # ...but only when it actually wins. Subpixel outranks Rust (the Rust cores
+    # raise on it), so with both set the GPU request survives after all.
+    assert resolve_accel_flags(
+        FdtdParams(use_rust=True, subpixel=True, use_gpu=True, use_numba=True)
+    ) == (True, False)
+
+
+def test_resolve_backend_precedence():
+    assert resolve_backend(FdtdParams()) == "auto"
+    assert resolve_backend(FdtdParams(use_rust=True)) == "rust"
+    assert resolve_backend(FdtdParams(use_rust_cuda=True)) == "rust-cuda"
+    # CUDA outranks the CPU core when both are somehow set.
+    assert resolve_backend(FdtdParams(use_rust=True, use_rust_cuda=True)) == "rust-cuda"
+    # Subpixel smoothing and out-of-core both outrank the Rust cores: photonfdtd
+    # raises on the first combination and never reaches a backend for the second.
+    assert resolve_backend(FdtdParams(use_rust=True, subpixel=True)) == "auto"
+    assert resolve_backend(FdtdParams(use_rust_cuda=True, out_of_core=True)) == "auto"
+
+
+def test_resolve_use_jax_loses_to_rust_and_out_of_core():
+    assert resolve_use_jax(FdtdParams(use_jax=True)) is True
+    # Rust is dispatched ahead of JAX inside photonfdtd, so asking for both
+    # would silently run Rust — resolve it here instead of building a Simulation
+    # whose use_jax flag is a lie about what will execute.
+    assert resolve_use_jax(FdtdParams(use_jax=True, use_rust=True)) is False
+    assert resolve_use_jax(FdtdParams(use_jax=True, use_rust_cuda=True)) is False
+    assert resolve_use_jax(FdtdParams(use_jax=True, out_of_core=True)) is False
+    # Subpixel bumps Rust out of the way, so JAX gets it back.
+    assert resolve_use_jax(FdtdParams(use_jax=True, use_rust=True, subpixel=True)) is True
 
 
 def test_simulation_config_survives_missing_new_fields(qapp):

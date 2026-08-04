@@ -141,9 +141,44 @@ out unless the `jax` package is installed. **Subpixel smoothing** is an accuracy
 option: it gives cells that straddle a material edge a blended permittivity so a
 slanted or curved boundary isn't forced onto the grid, letting a given cell size
 resolve your geometry more faithfully. JAX is exclusive of the GPU/Numba boxes,
-and subpixel works everywhere except Numba, so the checkboxes clear each other
-where they'd conflict. See [Speed](guide.md#speed) and
+and subpixel works everywhere except Numba and Rust, so the checkboxes clear each
+other where they'd conflict. See [Speed](guide.md#speed) and
 [A sharper run](guide.md#a-sharper-run-subpixel-smoothing).
+
+### What are the Rust and Rust (CUDA) options?
+
+They're photonfdtd 0.12's compiled stepping cores — the fastest backends
+available. **Rust** runs the whole time loop natively on the CPU, measured at
+about 17× plain NumPy (~2.5× Numba) with no JIT warm-up, and uses less memory
+than the other in-core backends. **Rust (CUDA)** is the same core on the GPU,
+keeping the domain resident in VRAM (and streaming it in tiles when it doesn't
+fit), so it holds a bigger grid on the GPU than the other GPU paths.
+
+Both are greyed out unless the compiled extension is present. Unlike every other
+backend it isn't a `pip install` — it's built from photonfdtd's own `rust/`
+directory with `cargo build --release` (add `--features cuda` for the GPU core)
+and copied next to the package. Everything else works exactly as before without
+it.
+
+One caveat on **Rust (CUDA)**: the availability check only asks whether a CUDA
+device is present, so if your driver is older than the toolchain the extension
+was built with, the box is enabled but the run fails immediately with a CUDA
+error about an unsupported PTX version. Use **Rust** or **JAX** if that happens.
+
+### What is the 2.5-D (effective index) option?
+
+Everything else in the **Acceleration** row makes the same simulation run faster.
+**2.5-D** makes it a smaller simulation, which is usually a much bigger win: it
+collapses your vertical layer stack into effective indices and simulates the chip
+plane as a 2-D problem, cutting the cell count by the whole vertical cell count
+(roughly 20× on the default Silicon platform, more on a real circuit). It's the
+difference between simulating a region of your layout and simulating the layout.
+
+It's an approximation — excellent for routing (bends, couplers, MZIs), poor for
+strongly three-dimensional things like out-of-plane grating couplers. On this
+path cladding thickness has no effect and Cherenkov sources aren't available,
+since both are properties of the stack it just collapsed. See
+[A much bigger run](guide.md#a-much-bigger-run-25-d-effective-index).
 
 ### A run is going to be huge — will it freeze the app?
 
