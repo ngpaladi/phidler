@@ -44,7 +44,7 @@ chmod +x Phidler-x86_64.AppImage
 ```
 
 A fresh AppImage is built and published every night from `main` by the
-[Build AppImage](.github/workflows/appimage.yml) workflow (which also attaches it
+[Build AppImage + Flatpak](.github/workflows/appimage.yml) workflow (which also attaches it
 to every run as an artifact). To build one yourself:
 
 ```
@@ -55,6 +55,26 @@ packaging/appimage/build.sh          # -> ./Phidler-x86_64.AppImage
 The recipe lives in [`packaging/appimage/`](packaging/appimage/). The simulation
 packages are bundled at build time on purpose: an AppImage is read-only, so the
 app's in-app "install photonfdtd" step can't run inside one.
+
+### Linux Flatpak
+
+The same nightly release also carries a **Flatpak bundle**, with the same
+bundled FDTD stack, running sandboxed on the KDE runtime from Flathub:
+
+```
+flatpak install --user Phidler-x86_64.flatpak   # pulls the runtime from Flathub
+flatpak run io.github.ngpaladi.Phidler
+```
+
+To build it yourself (needs `flatpak-builder`):
+
+```
+packaging/flatpak/build.sh           # -> ./Phidler-x86_64.flatpak
+```
+
+The manifest lives in [`packaging/flatpak/`](packaging/flatpak/). The sandbox can
+reach your home directory (for GDS / `.phidler` files) and the network (remote
+FDTD, Tidy3D, the AI assistant).
 
 ## Running it
 

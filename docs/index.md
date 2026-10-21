@@ -61,6 +61,17 @@ no separate photonfdtd install. (A fresh AppImage is built and published every
 night from `main`. It needs a reasonably recent glibc, so any current desktop
 distro is fine.)
 
+### Linux — Flatpak
+
+The nightly release also includes a **Flatpak bundle** with the same bundled
+FDTD stack. It runs sandboxed on the KDE runtime, which Flatpak fetches from
+Flathub on install:
+
+```sh
+flatpak install --user Phidler-x86_64.flatpak
+flatpak run io.github.ngpaladi.Phidler
+```
+
 ### From source
 
 Requires Python 3.10+.
