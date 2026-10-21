@@ -7,6 +7,10 @@ name: Build AppImage + Flatpak
 # stock runner. Flatpak: flatpak-builder against the KDE runtime from Flathub (see
 # packaging/flatpak/). On the nightly schedule (and manual runs) it also publishes
 # a rolling `nightly` pre-release with both attached.
+#
+# Runners are pinned to ubuntu-24.04 rather than ubuntu-latest (which moves to
+# Ubuntu 26 from Oct 2026): the Flatpak job's apt packages and its AppArmor
+# user-namespace tweak are tested against 24.04. Re-test before bumping.
 on:
   push:
     branches: [main]
@@ -27,7 +31,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -71,14 +75,14 @@ jobs:
                 "| photonfdtd", photonfdtd.__version__, "| numba", numba.__version__)
           PY
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Phidler-AppImage-x86_64
           path: Phidler-*.AppImage
           if-no-files-found: error
 
   flatpak:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       APP_ID: io.github.ngpaladi.Phidler
     steps:
@@ -109,7 +113,7 @@ jobs:
                 "| photonfdtd", photonfdtd.__version__, "| numba", numba.__version__)
           PY
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Phidler-Flatpak-x86_64
           path: Phidler-*.flatpak
@@ -122,11 +126,11 @@ jobs:
     # build is never released. Scoped contents:write lives here, not on the builds.
     needs: [build, flatpak]
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: Phidler-*-x86_64
           merge-multiple: true

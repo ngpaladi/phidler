@@ -174,3 +174,71 @@ If anything feels off (drag lag, grid too dense/sparse, colors hard to
 read, zoom too sensitive, routing clicks feeling imprecise, the context
 menu appearing in the wrong place), that's exactly the kind of feedback
 this checklist exists to surface.
+
+## Packaging
+
+Two Linux packages are built from `main` by the
+[Build AppImage + Flatpak](https://github.com/ngpaladi/phidler/actions/workflows/appimage.yml)
+workflow. Every push to the packaging inputs uploads both as workflow artifacts.
+The nightly schedule (or a manual run) also replaces the rolling `nightly`
+pre-release with both files. That release job only runs if both builds and
+both smoke tests pass.
+
+Both packages install the same stack: photonfdtd from GitHub `main`'s current
+HEAD (not pinned, so each nightly gets the newest solver), the FDTD extras
+(matplotlib, numba), then the checkout being built. Keep the extras in
+`packaging/appimage/phidler/requirements.txt` and in the Flatpak manifest in
+sync with the `[fdtd]` group in `pyproject.toml`.
+
+### AppImage
+
+The recipe is in `packaging/appimage/` and `build.sh` builds it with
+python-appimage. Its `requirements.txt` explains why each line must avoid shell
+metacharacters.
+
+### Flatpak
+
+The manifest is `packaging/flatpak/io.github.ngpaladi.Phidler.yml`. To build
+locally:
+
+```
+packaging/flatpak/build.sh           # -> ./Phidler-x86_64.flatpak
+flatpak install --user --bundle Phidler-x86_64.flatpak
+flatpak run io.github.ngpaladi.Phidler
+```
+
+`build.sh` uses a native `flatpak-builder` if there is one, and otherwise falls
+back to Flathub's `org.flatpak.Builder`. A first build downloads the KDE SDK
+(over 1 GB), and packing the bundle takes several minutes on its own.
+
+Things to know before changing the manifest:
+
+- **Runtime.** It uses `org.kde.Platform` rather than plain freedesktop because
+  the KDE runtime has all the system libraries that PySide6's bundled Qt
+  dlopens. The runtime's own Qt is never used, and `--unset-env=QT_PLUGIN_PATH`
+  stops its Qt plugins, built for a different Qt version, from loading into
+  PySide6's Qt. KDE 6.11 is based on freedesktop 25.08, so it ships Python 3.13.
+  Check that a new runtime's Python is still in gdsfactory's supported range
+  before bumping `runtime-version`.
+- **Network during the build.** pip downloads everything at build time
+  (`build-args: --share=network`). Our CI and local builds allow that, but
+  Flathub doesn't. A Flathub submission would need every wheel listed as a
+  checksummed source, generated with flatpak-pip-generator.
+- **No pip at runtime.** Only the SDK has pip, so the app's in-app "install
+  photonfdtd" prompt can't work in the Flatpak. That's why photonfdtd is
+  bundled. Users can add optional extras with
+  `flatpak run --devel --command=pip3 … install --user`, which installs into the
+  per-app user site (`PYTHONUSERBASE=/var/data/python`).
+- **Sandbox permissions.** The app gets `--filesystem=home`, `--share=network`
+  and `--socket=ssh-auth`. Remote FDTD offload uses the runtime's `ssh`/`scp`
+  with your `~/.ssh/config` and agent. The runtime has no `rsync`, so remote
+  uploads take the existing tar-over-ssh fallback.
+- **Desktop files.** The `.desktop` file and icon are reused from the AppImage
+  recipe and renamed to the app ID during the build. The AppStream metadata is
+  `packaging/flatpak/io.github.ngpaladi.Phidler.metainfo.xml`. Check it with
+  `appstreamcli validate --no-net`.
+
+CI runners are pinned to `ubuntu-24.04`. The Flatpak job installs
+`flatpak-builder` with apt and lifts Ubuntu's AppArmor restriction on
+unprivileged user namespaces, which bubblewrap needs. Re-test both before moving
+to a newer runner image.

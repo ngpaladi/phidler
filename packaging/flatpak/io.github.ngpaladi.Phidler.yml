@@ -23,9 +23,12 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --device=dri
-  # Remote FDTD (nereid gRPC), Tidy3D cloud runs and the AI assistant all talk
-  # to the network.
+  # Remote FDTD offload shells out to ssh/scp (in the runtime) using the user's
+  # ~/.ssh/config (visible via --filesystem=home); ssh-auth exposes their SSH
+  # agent so passphrase-protected keys work. rsync isn't in the runtime, but
+  # fdtd_remote falls back to tar over ssh.
   - --share=network
+  - --socket=ssh-auth
   # A CAD tool: open/save GDS and .phidler files anywhere under $HOME.
   - --filesystem=home
   - --unset-env=QT_PLUGIN_PATH
