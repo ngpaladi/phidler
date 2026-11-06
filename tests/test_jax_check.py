@@ -88,3 +88,13 @@ def test_fdtd_window_check_button_reports(qapp):
     assert fw._jax_report_box.detailedText().startswith(fw._last_jax_report.summary)
     fw._jax_report_box.close()
     fw.close()
+
+
+def test_sandbox_without_nvidia_smi_still_detects_the_gpu(monkeypatch):
+    """In the Flatpak there's no nvidia-smi; /dev/nvidia* still shows a GPU is
+    there, so a failing CUDA plugin isn't misreported as "no GPU"."""
+    monkeypatch.setattr(jax_check.shutil, "which", lambda name: None)
+    monkeypatch.setattr(jax_check.os.path, "exists", lambda p: p == "/dev/nvidiactl")
+    assert jax_check._nvidia() == ("NVIDIA GPU (nvidia-smi not available here)", None)
+    monkeypatch.setattr(jax_check.os.path, "exists", lambda p: False)
+    assert jax_check._nvidia() is None

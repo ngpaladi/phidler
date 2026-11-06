@@ -1,0 +1,61 @@
+# Flatpak build of Phidler with the full FDTD stack, including JAX's CUDA build
+# so simulations and training run on an NVIDIA GPU.
+#
+# Build and bundle (see README.md in this directory):
+#   packaging/flatpak/build.sh            # -> Phidler.flatpak
+#
+# The Python dependencies are pip-installed from PyPI during the build, which
+# needs network access in the build sandbox (build-args --share=network). That
+# is fine for a local bundle; a Flathub submission would pin every wheel
+# instead (flatpak-pip-generator).
+app-id: io.github.ngpaladi.Phidler
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: phidler
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  # GPU: /dev/dri for rendering and /dev/nvidia* for CUDA. The NVIDIA driver's
+  # user-space libraries (libcuda) come from the matching
+  # org.freedesktop.Platform.GL.nvidia-* extension, which flatpak installs to
+  # match the host driver.
+  - --device=all
+  # Remote runs (SSH, nereid, Tidy3D) and the on-demand package installs.
+  - --share=network
+  # Projects, GDS exports and custom-component scripts live anywhere in $HOME.
+  - --filesystem=home
+  # SSH remote runs use the host's agent and keys.
+  - --socket=ssh-auth
+  # JAX allocates GPU memory on demand rather than reserving 75% at start-up
+  # (the app sets this too; kept here for the jax_check child process).
+  - --env=XLA_PYTHON_CLIENT_PREALLOCATE=false
+modules:
+  - name: phidler
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+      env:
+        PIP_NO_CACHE_DIR: '1'
+        PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    build-commands:
+      # The FDTD stack first: photonfdtd (which pulls in jax) and JAX's CUDA 12
+      # build with its NVIDIA runtime wheels.
+      - pip3 install --prefix=/app "photonfdtd>=0.15.0" "jax[cuda12]" matplotlib gdstk
+      # Then Phidler itself from this checkout, with its optional AI extra.
+      - pip3 install --prefix=/app ".[ai]"
+      - install -Dm644 packaging/flatpak/io.github.ngpaladi.Phidler.desktop /app/share/applications/io.github.ngpaladi.Phidler.desktop
+      - install -Dm644 packaging/appimage/phidler/phidler.png /app/share/icons/hicolor/256x256/apps/io.github.ngpaladi.Phidler.png
+      - install -Dm644 packaging/flatpak/io.github.ngpaladi.Phidler.metainfo.xml /app/share/metainfo/io.github.ngpaladi.Phidler.metainfo.xml
+      # Byte-compiled caches are rebuilt per machine; drop the build-time ones.
+      - find /app -name '__pycache__' -type d -prune -exec rm -rf {} +
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .venv
+          - build
+          - site
+          - .git

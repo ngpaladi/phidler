@@ -56,6 +56,18 @@ The recipe lives in [`packaging/appimage/`](packaging/appimage/). The simulation
 packages are bundled at build time on purpose: an AppImage is read-only, so the
 app's in-app "install photonfdtd" step can't run inside one.
 
+### Linux Flatpak (GPU)
+
+A Flatpak with the full FDTD stack *and* JAX's CUDA build, so simulations and
+training run on an NVIDIA GPU, is built by
+[`packaging/flatpak/build.sh`](packaging/flatpak/README.md):
+
+```
+packaging/flatpak/build.sh                 # -> Phidler.flatpak (~2.3 GB)
+flatpak install --user Phidler.flatpak
+flatpak run io.github.ngpaladi.Phidler
+```
+
 ## Running it
 
 ```

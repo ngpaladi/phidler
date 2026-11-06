@@ -120,8 +120,13 @@ class JaxGpuReport:
 
 
 def _nvidia() -> tuple[str, int | None] | None:
-    """(GPU name, driver's max CUDA major) from nvidia-smi, or None."""
+    """(GPU name, driver's max CUDA major) from nvidia-smi, or None when there
+    is no NVIDIA GPU. Inside a sandbox such as the Flatpak there's no
+    nvidia-smi, so fall back to the driver's device nodes (name and CUDA
+    version then unknown)."""
     if shutil.which("nvidia-smi") is None:
+        if os.path.exists("/dev/nvidiactl") or os.path.exists("/dev/nvidia0"):
+            return ("NVIDIA GPU (nvidia-smi not available here)", None)
         return None
     try:
         out = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=15)
