@@ -754,6 +754,18 @@ class ModeWorker(QObject):
         self.finished.emit(result, elapsed)
 
 
+class JaxCheckWorker(QObject):
+    """Runs phidler.jax_check off the GUI thread (it starts JAX in a child
+    process, which takes a few seconds)."""
+
+    finished = Signal(object)  # JaxGpuReport
+
+    def run(self) -> None:
+        from phidler.jax_check import check_jax_gpu
+
+        self.finished.emit(check_jax_gpu())
+
+
 class FdtdWorker(QObject):
     finished = Signal(object, object, float)  # Simulation, Result, elapsed_seconds
     failed = Signal(str)
@@ -1118,6 +1130,7 @@ class FdtdWindow(QMainWindow):
         self.view = view
 
         self._mode_thread: QThread | None = None
+        self._jax_thread: QThread | None = None
         self._mode_worker: ModeWorker | None = None
         self._fdtd_thread: QThread | None = None
         self._fdtd_worker: FdtdWorker | None = None
@@ -1142,6 +1155,10 @@ class FdtdWindow(QMainWindow):
         self.setCentralWidget(tabs)
         tabs.addTab(self._build_mode_tab(), "Vertical Mode Profile")
         tabs.addTab(self._build_propagation_tab(), "Propagation (FDTD)")
+        from phidler.panels.train_tab import TrainTab
+
+        self.train_tab = TrainTab(document, view, self)
+        tabs.addTab(self.train_tab, "Train (inverse design)")
 
         self.view.source_placement_requested.connect(self._on_source_placement_requested)
         self.view.probe_placement_requested.connect(self._on_probe_placement_requested)
@@ -1175,6 +1192,14 @@ class FdtdWindow(QMainWindow):
         # before the next project save (the window instance is reused on reopen,
         # so its widgets persist, but the document copy must stay current too).
         self.sync_config_to_document()
+        self.train_tab.shutdown()
+        if self._jax_thread is not None and self._jax_thread.isRunning():
+            try:
+                self._jax_worker.finished.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self._jax_thread.quit()
+            self._jax_thread.wait()
         # The worker QThreads are parented to this window, so closing it while a
         # solve/run is still in flight would destroy a running thread — Qt aborts
         # the process ("QThread: Destroyed while thread is still running"), and a
@@ -1440,6 +1465,15 @@ class FdtdWindow(QMainWindow):
             "2.5-D run."
         )
         accel_layout.addWidget(self.run_device_label)
+        self.jax_check_button = QPushButton("Check JAX GPU…")
+        self.jax_check_button.setToolTip(
+            "Start JAX in a fresh process and report whether it's really using the GPU: "
+            "the jax and CUDA-plugin versions, the devices it sees, the NVIDIA driver, and a "
+            "test computation. If it's on the CPU, says why (no GPU, CUDA build missing, "
+            "driver too old, or the plugin failing to load its libraries)."
+        )
+        self.jax_check_button.clicked.connect(self._on_check_jax)
+        accel_layout.addWidget(self.jax_check_button)
         accel_layout.addWidget(self.run_low_memory_check)
         accel_layout.addStretch(1)
 
@@ -2245,6 +2279,32 @@ class FdtdWindow(QMainWindow):
             bottoms.append(spec.y_um); tops.append(spec.y_um)
         m = _REGION_MARGIN_UM
         return (min(lefts) - m, min(bottoms) - m, max(rights) + m, max(tops) + m)
+
+    def _on_check_jax(self) -> None:
+        self.jax_check_button.setEnabled(False)
+        self.jax_check_button.setText("Checking JAX…")
+        self._jax_thread = QThread(self)
+        self._jax_worker = JaxCheckWorker()
+        self._jax_worker.moveToThread(self._jax_thread)
+        self._jax_thread.started.connect(self._jax_worker.run)
+        self._jax_worker.finished.connect(self._on_jax_checked)
+        self._jax_worker.finished.connect(self._jax_thread.quit)
+        self._jax_thread.start()
+
+    def _on_jax_checked(self, report) -> None:
+        self.jax_check_button.setEnabled(True)
+        self.jax_check_button.setText("Check JAX GPU…")
+        self._last_jax_report = report
+        box = QMessageBox(self)
+        box.setWindowTitle("JAX GPU check")
+        box.setIcon(QMessageBox.Information if report.status in ("ok", "no_gpu") else QMessageBox.Warning)
+        box.setText(report.summary)
+        if report.advice:
+            box.setInformativeText(report.advice)
+        box.setDetailedText(report.text())
+        box.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        box.open()  # non-blocking, so tests and the event loop keep running
+        self._jax_report_box = box
 
     def _on_configure_remote(self) -> None:
         """Open the remote-server setup dialog (host, paths, test/deploy)."""

@@ -870,6 +870,16 @@ Projects that place **custom components** (local `.py` files) can't be offloaded
 (those files don't exist on the remote), and that case is reported as a clear
 error rather than failing mid-run.
 
+#### Training a design (the Train tab)
+
+The third tab of the simulation window, **Train (inverse design)**, fits a box
+of your layout to a task the way a neural network is fitted to data: you mark a
+design box and the input/output ports, pick a task (the built-in priority
+encoder, your own dataset, or a target transfer matrix), and the etch pattern
+inside the box is optimized by gradient descent. The result goes back on the
+layout as an ordinary component. See the
+[priority-encoder tutorial](training.md) for a complete walkthrough.
+
 #### Running on Tidy3D (the cloud solver)
 
 The **Engine** dropdown at the top of the run controls picks *which* FDTD solver
