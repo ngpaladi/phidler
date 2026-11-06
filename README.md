@@ -34,7 +34,7 @@ pip install -e ".[dev]"
 ### Linux AppImage
 
 A portable, self-contained **AppImage** bundles Python, the app, and the full
-FDTD simulation stack (photonfdtd + numba + matplotlib) — nothing to install, and
+FDTD simulation stack (photonfdtd + JAX + matplotlib) — nothing to install, and
 **FDTD works out of the box**. Download the latest
 [**nightly release**](https://github.com/ngpaladi/phidler/releases/tag/nightly):
 

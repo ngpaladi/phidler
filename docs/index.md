@@ -46,7 +46,7 @@ end-to-end in about fifteen minutes.
 
 The quickest way to run Phidler on Linux is the **AppImage**: a single
 self-contained file that bundles Python, the app, and the full FDTD simulation
-stack (photonfdtd + numba + matplotlib). Nothing to install, no Python needed.
+stack (photonfdtd + JAX + matplotlib). Nothing to install, no Python needed.
 
 Grab the latest [**nightly release**](https://github.com/ngpaladi/phidler/releases/tag/nightly),
 then:

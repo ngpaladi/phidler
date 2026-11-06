@@ -1,10 +1,10 @@
 """Run an FDTD simulation in a separate process.
 
-This exists for the GPU (CuPy) backend. CuPy's CUDA context cannot be torn
-down inside a Qt worker thread without crashing the process, and running it on
-the main thread freezes the UI for the whole run. A child process sidesteps
-both: it gets its own CUDA context (clean teardown when the process exits), and
-the parent's worker thread merely waits on it, so the UI stays responsive.
+It was written for photonfdtd's old CuPy GPU backend, whose CUDA context could
+not be torn down inside a Qt worker thread; photonfdtd now steps on JAX, which
+runs in the worker thread, so local runs no longer come here. The same job entry
+point (``_run_job``) is what the SSH remote host and the nereid server run, so a
+remote run produces exactly the result a local one would.
 
 Shipping the result back is cheap because the recorded movie is just the single
 mid-core plane of one component (see build_simulation) — a few MB through a temp
@@ -28,7 +28,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .fdtd_sim import FdtdParams, SourceSpec
+from .fdtd_sim import FdtdParams, SourceSpec, known_fields
 
 # The child (run as `python -m phidler.fdtd_subprocess`) prints one of these
 # lines to stdout every ~1% of the solve, so the parent — local subprocess or
@@ -66,7 +66,7 @@ def _params_to_dict(params: FdtdParams) -> dict:
 def _params_from_dict(d: dict) -> FdtdParams:
     d = dict(d)
     sources = tuple(SourceSpec(**s) for s in d.pop("sources", ()) or ())
-    return FdtdParams(sources=sources, **d)
+    return FdtdParams(sources=sources, **known_fields(FdtdParams, d))
 
 
 def write_bundle(tmp: Path, document, params: FdtdParams, region_um=None) -> Path:
@@ -99,7 +99,7 @@ def write_bundle(tmp: Path, document, params: FdtdParams, region_um=None) -> Pat
 def load_result_npz(path) -> tuple[Any, Any]:
     """Parse a result ``.npz`` (written by _run_job) into the
     ``(sim_stub, result_stub)`` pair the display reads: ``sim_stub.grid.coords``
-    / ``.shape`` / ``.use_gpu`` / ``.use_numba`` and
+    / ``.shape`` / ``.device`` and
     ``result_stub.fields['field']['Ez']``. Shared by the local and remote paths
     so both hand the UI exactly the same shape."""
     with np.load(path) as data:
@@ -107,17 +107,12 @@ def load_result_npz(path) -> tuple[Any, Any]:
             coords=[data["x"], data["y"], data["z"]],
             shape=tuple(int(s) for s in data["shape"]),
         )
-        # The run reports the backend it *actually* used, not what was
-        # requested: cupy may be importable in the parent but fall back to
-        # CPU in the child, which would otherwise be an invisible slowdown.
+        # The run reports the device JAX *actually* used on the executing host
+        # (a remote box's GPU is a property of that box). Result files from an
+        # older phidler don't carry it, so default rather than KeyError.
         sim_stub = SimpleNamespace(
             grid=grid,
-            use_gpu=bool(data["use_gpu"]),
-            use_numba=bool(data["use_numba"]),
-            # Written since the Rust cores landed; older result files don't have
-            # it, and a bundle can be produced by a remote host running an older
-            # phidler, so default rather than KeyError on them.
-            backend=str(data["backend"]) if "backend" in data else "auto",
+            device=str(data["device"]) if "device" in data else None,
         )
         result_stub = SimpleNamespace(fields={"field": {"Ez": data["ez"]}})
     return sim_stub, result_stub
@@ -229,7 +224,7 @@ def _run_job(job_path: str) -> None:
 
     get_generic_pdk().activate()
 
-    from .fdtd_sim import build_simulation, limit_solver_threads, run_simulation
+    from .fdtd_sim import build_simulation, jax_device_label, limit_solver_threads, run_simulation
     from .model.document import LayoutDocument
     from .project_io import load_project
 
@@ -250,9 +245,8 @@ def _run_job(job_path: str) -> None:
     # Stream progress out as stdout markers; the parent (local subprocess or
     # remote over SSH) parses them to drive its progress bar.
     sim.progress_callback = emit_progress_marker
-    # Honour out-of-core (disk-streamed) stepping on the remote/nereid path too,
-    # so a large job can run on a box with modest RAM (build_simulation already
-    # forced the NumPy backend it requires).
+    # Honour disk-tiled stepping on the remote/nereid path too, so a large job
+    # can run on a box with modest memory.
     result = run_simulation(sim, out_of_core=params.out_of_core)
 
     coords = sim.grid.coords
@@ -263,15 +257,10 @@ def _run_job(job_path: str) -> None:
         y=np.asarray(coords[1]),
         z=np.asarray(coords[2]),
         shape=np.asarray([int(s) for s in sim.grid.shape]),
-        # The backend the Simulation resolved to (use_gpu is AND-ed with cupy
-        # availability *in this process*), so the parent can tell the user
-        # whether GPU actually engaged or quietly fell back to CPU.
-        use_gpu=bool(getattr(sim, "use_gpu", False)),
-        use_numba=bool(getattr(sim, "use_numba", False)),
-        # Which stepping core photonfdtd settled on ("auto"/"rust"/"rust-cuda").
-        # Same reasoning as use_gpu above, and it matters most on the remote
-        # path: whether the Rust extension is built is a property of *that* host.
-        backend=str(getattr(sim, "backend", "auto")),
+        # Where JAX ran in *this* process, so the parent can tell the user
+        # whether the GPU actually engaged — on the remote path that's a
+        # property of the remote host.
+        device=jax_device_label(),
     )
 
 

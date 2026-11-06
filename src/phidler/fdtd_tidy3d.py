@@ -256,9 +256,8 @@ def _result_stubs(sim, sim_data, elapsed: float) -> tuple[Any, Any, float]:
     y = np.asarray(ez_plane.coords["y"].values, dtype=float)
     nx, ny, nz = (int(n) for n in sim.grid.num_cells)
     grid = SimpleNamespace(coords=[x, y, np.asarray([0.0])], shape=(nx, ny, nz))
-    # engine="tidy3d" lets the window label the backend; use_gpu/use_numba are the
-    # photonfdtd flags the shared result handler otherwise reads.
-    sim_stub = SimpleNamespace(grid=grid, use_gpu=False, use_numba=False, engine="tidy3d")
+    # engine="tidy3d" lets the window label the run.
+    sim_stub = SimpleNamespace(grid=grid, engine="tidy3d")
     result_stub = SimpleNamespace(fields={"field": {"Ez": movie}})
     return sim_stub, result_stub, elapsed
 

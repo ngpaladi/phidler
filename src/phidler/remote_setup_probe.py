@@ -105,45 +105,30 @@ def detect_hardware() -> Hardware:
 
 def decide_backend(hw: Hardware, requested: str = "auto") -> Recommendation:
     """Pick the concrete backend + pip package for this hardware and the user's
-    request. ``requested`` is "auto" (let this choose), or a specific "cpu",
-    "jax" or "cupy" to honour where the hardware allows it.
-
-    Preference order for a GPU: JAX (the recommended path) where it works
-    (NVIDIA + CUDA 12), else CuPy (CUDA 11, or AMD/ROCm). No GPU falls back to
-    CPU/Numba (auto) or CPU JAX (if JAX was explicitly asked for)."""
+    request. ``requested`` is "auto" (let this choose), "cpu" or "jax" (the
+    GPU). photonfdtd (>=0.13) steps only on JAX, which it installs itself, so
+    the only choice left is whether to add JAX's CUDA build so runs go to the
+    GPU. A legacy "cupy" request (CuPy was removed in photonfdtd 0.13) is
+    treated as a GPU request."""
     requested = (requested or "auto").lower()
+    if requested == "cupy":
+        requested = "jax"
 
     if requested == "cpu":
-        return Recommendation("cpu", None, "CPU/Numba (Numba ships with photonfdtd; nothing extra to install).")
+        return Recommendation("cpu", None, "JAX on the CPU (ships with photonfdtd; nothing extra to install).")
 
-    if requested == "cupy":
-        if hw.gpu == "nvidia":
-            spec = "cupy-cuda11x" if hw.cuda_major == 11 else "cupy-cuda12x"
-            return Recommendation("cupy", spec, f"CuPy on the NVIDIA GPU ({hw.summary()}).")
-        if hw.gpu == "amd":
-            return Recommendation("cupy", "cupy-rocm-5-0", "CuPy on the AMD/ROCm GPU.")
-        return Recommendation("cpu", None, "CuPy needs a GPU and none was detected — using CPU/Numba instead.")
-
-    # "jax" or "auto": prefer a GPU path, best-available.
+    # "jax" or "auto": use the GPU where JAX's CUDA wheels can.
     if hw.gpu == "nvidia":
         if hw.cuda_major is not None and hw.cuda_major >= 12:
             return Recommendation("jax", "jax[cuda12]", f"NVIDIA GPU with CUDA {hw.cuda_major} → JAX runs on the GPU via XLA.")
-        # CUDA 11 (or unknown-but-old): current JAX GPU wheels need CUDA 12, so
-        # CuPy's cuda11 build is the reliable GPU path here.
-        spec = "cupy-cuda11x" if hw.cuda_major == 11 else "cupy-cuda12x"
-        why = (
-            f"NVIDIA GPU with CUDA {hw.cuda_major} → CuPy (JAX's GPU build needs CUDA 12)."
-            if hw.cuda_major == 11
-            else "NVIDIA GPU, CUDA version unclear → CuPy CUDA 12 build (adjust in Advanced if it's CUDA 11)."
+        return Recommendation(
+            "cpu", None,
+            f"NVIDIA GPU with CUDA {hw.cuda_major or 'unknown'} → JAX's GPU build needs a CUDA 12 "
+            "driver, so runs stay on the CPU (update the driver, then set up again).",
         )
-        return Recommendation("cupy", spec, why)
     if hw.gpu == "amd":
-        return Recommendation("cupy", "cupy-rocm-5-0", "AMD/ROCm GPU → CuPy's ROCm build (the most reliable ROCm path).")
-
-    # No GPU.
-    if requested == "jax":
-        return Recommendation("jax", "jax", "No GPU detected → JAX on the CPU (as requested).")
-    return Recommendation("cpu", None, "No GPU detected → CPU/Numba.")
+        return Recommendation("cpu", None, "AMD/ROCm GPU → no supported JAX GPU build is installed automatically; using JAX on the CPU.")
+    return Recommendation("cpu", None, "No GPU detected → JAX on the CPU.")
 
 
 def _pip_install(pip_spec: str, python: str) -> bool:

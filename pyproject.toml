@@ -23,38 +23,16 @@ dev = [
 docs = [
     "mkdocs>=1.6.0",
 ]
-# photonfdtd isn't published on PyPI yet (sibling project, not a Phidler
-# package) — install it from its own checkout first
-# (pip install -e /path/to/photonfdtd), then this version constraint will
-# already be satisfied and `pip install -e ".[fdtd]"` won't need network
-# access for it. Phidler tracks photonfdtd 0.12.x. Since 0.4 it has gained the
-# differentiable JAX backend and anisotropic subpixel smoothing; 0.9 makes JAX
-# the GPU backend (it runs on the GPU through XLA) and deprecates the old CuPy
-# use_gpu path; 0.12 adds the compiled Rust stepping cores (backend="rust" /
-# "rust-cuda") and the 2.5-D effective-index reduction. The FDTD window surfaces
-# the JAX (GPU), Rust, Rust (CUDA), subpixel and 2.5-D options and marks the
-# CuPy GPU box as legacy (see panels/fdtd_window.py).
-#
-# The Rust cores are a compiled extension, not a pip dependency: they're built
-# from photonfdtd's own rust/ directory (cargo build --release, plus
-# --features cuda for the GPU core) and copied next to the package. Nothing here
-# can express that, so it stays unpinned — without it the Rust checkboxes are
-# simply disabled and every other backend works as before.
-#
-# GPU acceleration is optional and unpinned. Prefer JAX: install a GPU-capable
-# jax (e.g. pip install "jax[cuda12]" for an NVIDIA GPU, or plain `pip install
-# jax` for CPU) to enable the "JAX (GPU)" checkbox. The legacy CuPy path is also
-# unpinned — install CuPy to match your hardware (pip install cupy-cuda12x for
-# NVIDIA, cupy-rocm-5-0 for AMD) if you specifically need it. Leaving both out
-# just runs on CPU (NumPy/Numba).
+# The FDTD solver. photonfdtd (published on PyPI) steps only on JAX/XLA since
+# 0.13 and pulls jax in itself; it runs on the GPU when a CUDA build of jax is
+# installed (pip install "jax[cuda12]" for an NVIDIA GPU) and on the CPU
+# otherwise. The FDTD window's "Check JAX GPU" button reports which, and why.
+# 0.15 adds design regions and chip training (photonfdtd.train), which the
+# Train tab uses (see phidler.chip_train). matplotlib is for field colour maps;
+# photonfdtd's GDS contouring uses contourpy, which matplotlib depends on.
 fdtd = [
-    "photonfdtd>=0.12.0",
+    "photonfdtd>=0.15.0",
     "matplotlib>=3.7",
-    # Numba JIT-compiles photonfdtd's field-update kernel (parallel, cached to
-    # disk) — ~5x faster than the plain NumPy engine and, like JAX, runs in the
-    # worker thread so the UI stays responsive. Enabled by default when
-    # importable.
-    "numba>=0.59",
 ]
 # Optional AI assistant: an in-process MCP server exposes phidler's live
 # scripting session, and the Console panel's "Ask Claude" mode drives the

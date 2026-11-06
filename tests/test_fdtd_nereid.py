@@ -162,14 +162,14 @@ def _install(monkeypatch, recorder):
     monkeypatch.setattr(fn, "_grpc", lambda: (grpc, FakePb2, pb2_grpc))
 
 
-def _fake_result_bytes(tmp_path, *, use_gpu=False, use_numba=True):
+def _fake_result_bytes(tmp_path, *, device="CPU"):
     p = tmp_path / "fake_result.npz"
     np.savez(
         p,
         ez=np.zeros((3, 10, 8), dtype=np.float32),
         x=np.arange(10), y=np.arange(8), z=np.arange(5),
         shape=np.asarray([10, 8, 5]),
-        use_gpu=use_gpu, use_numba=use_numba,
+        device=device,
     )
     # The server streams back the *framed* tensor body (post-header); the client
     # unframes it. So the scripted response must carry the framed npz, not raw.
@@ -200,7 +200,7 @@ def test_run_on_nereid_streams_bundle_and_parses_result(qapp, monkeypatch, tmp_p
     # parsed into exactly the stub contract the display reads
     assert sim_stub.grid.shape == (10, 8, 5)
     assert result_stub.fields["field"]["Ez"].shape == (3, 10, 8)
-    assert sim_stub.use_numba is True
+    assert sim_stub.device == "CPU"
     assert elapsed >= 0
 
     # the client sent the right meta and uploaded the bundle as one packed tensor
@@ -223,14 +223,13 @@ def test_run_on_nereid_forwards_progress(qapp, monkeypatch, tmp_path):
     assert ticks == [(0, 10), (5, 10), (10, 10)]  # markers parsed, not treated as errors
 
 
-def test_run_on_nereid_uses_backend_gpu_flag_from_result(qapp, monkeypatch, tmp_path):
-    """The displayed backend comes from what the server actually ran (the
-    returned npz), not what was requested."""
-    rec = Recorder(_fake_result_bytes(tmp_path, use_gpu=True, use_numba=False))
+def test_run_on_nereid_uses_backend_device_from_result(qapp, monkeypatch, tmp_path):
+    """The displayed device comes from where JAX actually ran on the server
+    (the returned npz), not what was requested."""
+    rec = Recorder(_fake_result_bytes(tmp_path, device="GPU"))
     _install(monkeypatch, rec)
-    sim_stub, _, _ = fn.run_on_nereid(_doc(), FdtdParams(cell_size_um=0.1, use_gpu=True), None,
-                                      _cfg(use_gpu=True))
-    assert sim_stub.use_gpu is True
+    sim_stub, _, _ = fn.run_on_nereid(_doc(), FdtdParams(cell_size_um=0.1), None, _cfg(use_gpu=True))
+    assert sim_stub.device == "GPU"
 
 
 def test_run_on_nereid_propagates_backend_failure(qapp, monkeypatch, tmp_path):

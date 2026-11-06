@@ -19,7 +19,6 @@ from phidler.fdtd_sim import (
     nearest_z_index,
     photon_energy_ev_from_wavelength_um,
     run_simulation,
-    rust_available,
     solve_mode_profile,
     wavelength_um_from_photon_energy_ev,
 )
@@ -296,9 +295,21 @@ def test_estimate_grid_cell_count_is_cheap_and_does_not_build_structures(qapp):
 
 
 def test_estimate_run_seconds_scales_with_cells_and_steps():
-    base = estimate_run_seconds((10, 10, 10), 100)
-    assert estimate_run_seconds((20, 10, 10), 100) == pytest.approx(base * 2)
-    assert estimate_run_seconds((10, 10, 10), 200) == pytest.approx(base * 2)
+    # The estimate is a fixed one-off XLA compile plus a cost linear in
+    # cells*steps; zero work leaves just the compile.
+    compile_s = estimate_run_seconds((0, 0, 0), 0)
+    assert compile_s >= 0
+    base = estimate_run_seconds((10, 10, 10), 100) - compile_s
+    assert base > 0
+    assert estimate_run_seconds((20, 10, 10), 100) - compile_s == pytest.approx(base * 2)
+    assert estimate_run_seconds((10, 10, 10), 200) - compile_s == pytest.approx(base * 2)
+
+
+def test_estimate_run_seconds_is_faster_on_gpu():
+    shape, steps = (100, 100, 100), 1000
+    cpu = estimate_run_seconds(shape, steps, device="cpu")
+    assert estimate_run_seconds(shape, steps) == cpu  # CPU is the default
+    assert estimate_run_seconds(shape, steps, device="gpu") < cpu
 
 
 def test_fdtd_params_resolves_defaults_relative_to_wavelength_and_pulse_width():
@@ -610,56 +621,18 @@ def test_simulation_wavelength_default_matches_the_project_default():
     assert SimulationConfig().mode_wavelength_um == project_default
 
 
-# --- photonfdtd 0.12: compiled Rust cores and the 2.5-D reduction -------------
+# --- subpixel rebuild and the photonfdtd 0.12 2.5-D reduction ---------------
 
 
-def test_rust_backend_reaches_the_simulation(qapp):
-    """Ticking Rust has to actually select photonfdtd's compiled core — the flag
-    is applied by a *rebuild* of the Simulation (from_gdsfactory has no backend
-    parameter), which is easy to drop silently."""
+def test_subpixel_reaches_the_simulation(qapp):
+    """Subpixel smoothing is applied by a *rebuild* of the Simulation
+    (from_gdsfactory has no subpixel parameter), which is easy to drop silently."""
     pytest.importorskip("photonfdtd")
-    if not rust_available():
-        pytest.skip("photonfdtd's Rust extension isn't built in this environment")
     doc = _tiny_document()
-    sim = build_simulation(doc, dataclasses.replace(_FAST_PARAMS, use_rust=True))
-    assert sim.backend == "rust"
-    # Default stays on photonfdtd's own dispatch, unchanged from before.
-    assert build_simulation(doc, _FAST_PARAMS).backend == "auto"
-
-
-def test_rust_backend_agrees_with_numpy(qapp):
-    """The whole point of a second stepping core is that it computes the same
-    thing. float32 round-off differs (the loop order does), so this is a
-    tolerance check, not equality — photonfdtd's own suite puts f32 agreement at
-    ~5e-6 and this grid lands well inside that."""
-    pytest.importorskip("photonfdtd")
-    if not rust_available():
-        pytest.skip("photonfdtd's Rust extension isn't built in this environment")
-    import numpy as np
-
-    doc = _tiny_document()
-    ref = run_simulation(build_simulation(doc, _FAST_PARAMS))
-    rust = run_simulation(build_simulation(doc, dataclasses.replace(_FAST_PARAMS, use_rust=True)))
-    a = np.asarray(ref.fields["field"]["Ez"])
-    b = np.asarray(rust.fields["field"]["Ez"])
-    assert a.shape == b.shape
-    peak = np.abs(a).max()
-    assert peak > 0
-    assert np.abs(a - b).max() / peak < 1e-5
-
-
-def test_subpixel_outranks_rust_so_photonfdtd_never_raises(qapp):
-    """photonfdtd's Rust cores raise on subpixel smoothing. The resolver is
-    supposed to keep that combination from ever being built, so asking for both
-    must produce a working non-Rust Simulation rather than an exception."""
-    pytest.importorskip("photonfdtd")
-    if not rust_available():
-        pytest.skip("photonfdtd's Rust extension isn't built in this environment")
-    sim = build_simulation(
-        _tiny_document(), dataclasses.replace(_FAST_PARAMS, use_rust=True, subpixel=True),
-    )
-    assert sim.backend == "auto"
+    sim = build_simulation(doc, dataclasses.replace(_FAST_PARAMS, subpixel=True, subpixel_factor=2))
     assert sim.subpixel is True
+    assert sim.subpixel_factor == 2
+    assert build_simulation(doc, _FAST_PARAMS).subpixel is False
 
 
 def test_eim_reduction_orders_the_indices_it_produces(qapp):
@@ -755,15 +728,22 @@ def test_eim_refuses_a_cherenkov_source_instead_of_degrading_it(qapp):
     assert len(sim.sources) > 1
 
 
-def test_eim_and_rust_compose(qapp):
-    """2.5-D is a method and Rust is a backend — they're independent choices and
-    have to work together, which is also the fastest configuration available."""
-    pytest.importorskip("photonfdtd")
-    if not rust_available():
-        pytest.skip("photonfdtd's Rust extension isn't built in this environment")
+def test_sources_land_where_placed_on_a_layout_away_from_the_origin(qapp):
+    """from_gdsfactory centres the grid on the layout, while sources are placed
+    in absolute layout coordinates. A source on a layout far from the origin
+    must still sit in the waveguide it was dropped on, not clamped at the grid
+    edge (the bug before build_simulation shifted sources into the grid frame)."""
     import numpy as np
 
-    params = dataclasses.replace(_FAST_PARAMS, eim=True, use_rust=True)
-    sim = build_simulation(_tiny_document(), params)
-    assert sim.backend == "rust" and sim.grid.ndim == 2
-    assert np.abs(np.asarray(run_simulation(sim).fields["field"]["Ez"])).max() > 0
+    from phidler.fdtd_sim import grid_origin_um
+
+    doc = LayoutDocument()
+    doc.add_instance("straight", {"length": 3.0, "width": 0.5}, x=10.0, y=5.0)
+    doc.add_instance("straight", {"length": 3.0, "width": 0.5}, x=16.0, y=5.0)
+    assert grid_origin_um(doc) == (14.5, 5.0)
+    params = FdtdParams(eim=True, cell_size_um=0.05, sources=(SourceSpec(x_um=10.5, y_um=5.0),))
+    sim = build_simulation(doc, params)
+    x, y, _ = sim.sources[0].position
+    assert abs(x * 1e6 - (10.5 - 14.5)) < 1e-9 and abs(y * 1e6) < 1e-9
+    xs = np.asarray(sim.grid.coords[0]) * 1e6
+    assert xs[0] < x * 1e6 < xs[-1]

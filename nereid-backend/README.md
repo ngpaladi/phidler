@@ -87,11 +87,9 @@ The `model_inference.textproto` is **required** — a Python model without a
 declared `output_shape` is treated as text-only and can't return the result. Ours
 declares `input_shape`/`output_shape` `[-1]`, so any bundle/result length passes.
 
-For a **GPU** host, set the model's `device` to `cuda` and add the matching CuPy
-wheel to `requirements.txt` (see the comment there) — `cupy-cuda12x` for an
-NVIDIA/CUDA host or `cupy-rocm-5-0` for an AMD/ROCm host. photonfdtd uses only
-generic CuPy array ops, so either drives the solve; it honours `use_gpu` from the
-job's `FdtdParams`, set from phidler's `NereidConfig.use_gpu`.
+For a **GPU** host, set the model's `device` to `cuda` and add JAX's CUDA build
+(`jax[cuda12]`) to `requirements.txt`. photonfdtd steps on JAX, which runs on
+the GPU by itself whenever it can see one.
 
 ## Use from phidler
 

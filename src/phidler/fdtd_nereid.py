@@ -98,9 +98,9 @@ class NereidConfig:
 
     ``host``/``port`` address the gRPC server; ``model`` is the folder name of
     the phidler FDTD backend configured there (default ``phidler-fdtd``).
-    ``use_gpu`` requests the server's GPU backend independently of the local
-    machine — the backend honours it the same way the SSH path does, through the
-    saved job's FdtdParams. Plaintext gRPC, like nereid itself (no TLS)."""
+    ``use_gpu`` is kept so saved configs load; photonfdtd now runs on JAX, which
+    uses the server's GPU by itself when its CUDA build is installed there.
+    Plaintext gRPC, like nereid itself (no TLS)."""
 
     host: str = ""
     port: int = DEFAULT_PORT

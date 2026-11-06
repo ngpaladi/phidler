@@ -5,6 +5,13 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+# photonfdtd runs on JAX, which by default reserves 75% of the GPU's memory the
+# first time it touches it. The app is a long-lived desktop process that may
+# sit next to other GPU users (a second run, a training job, the JAX GPU check),
+# so allocate on demand instead. Must be set before jax is first imported; an
+# explicit setting in the environment wins.
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+
 # Command-line project files are recognised by extension — the same two the
 # Open dialog accepts (.phidler native projects, .py generated scripts). Keying
 # off the suffix (rather than "first non-flag arg") lets Qt's own options and

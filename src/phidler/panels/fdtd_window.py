@@ -61,22 +61,14 @@ from phidler.fdtd_sim import (
     estimate_memory_gb,
     estimate_run_seconds,
     feasible_cell_budget,
-    gpu_available,
-    gpu_backend_name,
-    jax_available,
+    jax_device_label,
     jax_gpu_available,
     limit_solver_threads,
     mode_confinement,
     nearest_z_index,
-    numba_available,
     photon_energy_ev_from_wavelength_um,
     probe_intensity_trace,
-    resolve_accel_flags,
-    resolve_backend,
-    resolve_use_jax,
     run_simulation,
-    rust_available,
-    rust_cuda_available,
     solve_mode_profile,
     suggest_region_um,
     wavelength_um_from_photon_energy_ev,
@@ -798,37 +790,19 @@ class FdtdWorker(QObject):
             elif self.remote:
                 # Ship the job to the configured SSH host, run it there, bring
                 # the result back. The worker thread blocks on ssh while the UI
-                # stays live — same shape as the GPU subprocess path below.
-                # Checked before the GPU branch so a remote-GPU run doesn't take
-                # the local subprocess branch.
+                # stays live.
                 from phidler.fdtd_remote import run_on_remote
 
                 sim, result, elapsed = run_on_remote(
                     self.document, self.params, self.region_um, self.remote_cfg,
                     progress_callback=self.progress.emit,
                 )
-            elif resolve_accel_flags(self.params)[0] and not self.params.out_of_core:
-                # The GPU (CuPy) backend can't tear down in a worker thread
-                # without crashing, and freezes the UI on the main thread — so
-                # run it in a child process and just wait on it here. CuPy lives
-                # in the child (clean teardown), this thread only blocks on the
-                # subprocess, so the UI stays responsive. (out_of_core is
-                # NumPy-only, so it falls through to the in-process branch.)
-                from phidler.fdtd_subprocess import run_in_subprocess
-
-                sim, result, elapsed = run_in_subprocess(
-                    self.document, self.params, self.region_um,
-                    progress_callback=self.progress.emit,
-                )
             else:
-                # In-process CPU/numba solve (also the out-of-core path): it
-                # shares this (GUI) process, so cap numba's parallel kernel to
-                # leave the desktop some cores — otherwise a long run pins every
-                # core and freezes the whole machine (mouse still moves) until it
-                # finishes. renice=False: this thread is discarded after the run,
-                # but lowering the GUI process's own priority would slow the UI,
-                # so only cap threads. Out-of-core keeps peak RAM bounded to a
-                # tile, so a grid too big for RAM can still run here.
+                # In-process JAX solve (also the disk-tiled path), on the GPU
+                # when XLA sees one. renice=False: this thread is discarded
+                # after the run, but lowering the GUI process's own priority
+                # would slow the UI. Disk tiling keeps peak memory bounded to a
+                # tile, so a grid too big for memory can still run here.
                 limit_solver_threads(renice=False)
                 t0 = time.time()
                 sim = build_simulation(self.document, self.params, region_um=self.region_um)
@@ -930,19 +904,17 @@ class RemoteConfigDialog(QDialog):
         # has installed.
         self.backend_combo = QComboBox()
         self.backend_combo.addItem("Auto — detect on the remote (recommended)", "auto")
-        self.backend_combo.addItem("CPU (Numba)", "cpu")
-        self.backend_combo.addItem("GPU — JAX", "jax")
-        self.backend_combo.addItem("GPU — CuPy (legacy)", "cupy")
+        self.backend_combo.addItem("CPU (JAX)", "cpu")
+        self.backend_combo.addItem("GPU (JAX on CUDA 12)", "jax")
         # Show the stored backend; a fresh config defaults to Auto.
-        stored = cfg.backend if cfg.backend in ("auto", "cpu", "jax", "cupy") else cfg.resolved_backend()
+        stored = cfg.backend if cfg.backend in ("auto", "cpu", "jax") else cfg.resolved_backend()
         idx = self.backend_combo.findData(stored)
         self.backend_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.backend_combo.setToolTip(
-            "Accelerator for the remote solve. Auto inspects the remote's GPU during "
-            "'Connect & set up' and installs the ideal backend (JAX on CUDA 12, CuPy "
-            "on CUDA 11 / ROCm, or CPU/Numba with no GPU), then remembers the choice. "
-            "Or pin a specific one: GPU — JAX is the recommended GPU path (photonfdtd "
-            "0.9 runs JAX on the GPU via XLA); CuPy is the legacy GPU backend."
+            "Where the remote solve runs. photonfdtd runs on JAX; Auto inspects the "
+            "remote's GPU during 'Connect & set up' and installs JAX's CUDA build when "
+            "the driver supports CUDA 12, otherwise runs on the CPU, then remembers "
+            "the choice. Or pin CPU or GPU."
         )
         form.addRow("Acceleration", self.backend_combo)
         layout.addLayout(form)
@@ -1030,7 +1002,7 @@ class RemoteConfigDialog(QDialog):
             remote_dir=self.remote_dir_edit.text().strip() if advanced else "",
             remote_python=self.remote_python_edit.text().strip() if advanced else "",
             backend=backend,
-            use_gpu=(backend == "cupy"),  # kept in sync for older readers of use_gpu
+            use_gpu=(backend == "jax"),  # kept in sync for older readers of use_gpu
             local_photonfdtd_dir=self.local_pf_edit.text().strip() if advanced else "",
         )
 
@@ -1095,7 +1067,7 @@ class RemoteConfigDialog(QDialog):
         marker = "PHIDLER_RECOMMEND="
         if marker in text:
             value = text.split(marker, 1)[1].strip().split()[0]
-            if value in ("cpu", "jax", "cupy"):
+            if value in ("cpu", "jax"):
                 self._detected_backend = value
 
     def _on_op_thread_finished(self) -> None:
@@ -1446,125 +1418,28 @@ class FdtdWindow(QMainWindow):
         accel_widget = self.accel_widget = QWidget()
         accel_layout = QHBoxLayout(accel_widget)
         accel_layout.setContentsMargins(0, 0, 0, 0)
-        # GPU/Numba are disabled unless their backend is actually importable —
-        # photonfdtd silently ignores the request otherwise (it ANDs use_gpu
-        # with availability), so a stray check would quietly run on the CPU.
-        # Legacy CuPy GPU path. As of photonfdtd 0.9 this is deprecated in favour
-        # of JAX, which runs on the GPU through XLA (and is differentiable) — see
-        # the JAX box below. Kept for CuPy-only setups (e.g. AMD/ROCm); a run on
-        # it prints photonfdtd's own deprecation notice.
-        self.run_gpu_check = QCheckBox("GPU (CuPy)")
-        if gpu_available():
-            backend = gpu_backend_name()  # "CUDA" (NVIDIA) or "ROCm" (AMD)
-            self.run_gpu_check.setToolTip(
-                f"Run on the GPU via photonfdtd's legacy CuPy backend ({backend}). "
-                "Deprecated in photonfdtd 0.9 — prefer JAX for the GPU (it runs on "
-                "the GPU too, via XLA, and stays in the worker thread)."
-            )
-        else:
-            self.run_gpu_check.setEnabled(False)
-            self.run_gpu_check.setToolTip(
-                "The legacy CuPy GPU backend needs CuPy — the CUDA build "
-                "(pip install cupy-cuda12x) or the ROCm build "
-                "(pip install cupy-rocm-5-0). Not installed here. For GPU work, "
-                "prefer JAX (pip install jax) — the recommended GPU backend now."
-            )
-        self.run_numba_check = QCheckBox("Numba")
-        if numba_available():
-            # On by default: ~5x over plain NumPy and, unlike GPU, runs in the
-            # worker thread so the UI doesn't freeze. (First-ever run JIT-compiles
-            # the kernel — cached to disk, so only that one run is slow.)
-            self.run_numba_check.setChecked(True)
-            self.run_numba_check.setToolTip(
-                "JIT-compile the update loop with Numba (~5x faster than NumPy, "
-                "runs in the background). First run compiles and is slower; cached after."
-            )
-        else:
-            self.run_numba_check.setEnabled(False)
-            self.run_numba_check.setToolTip(
-                "Numba acceleration needs the numba package (pip install numba) — "
-                "not installed in this environment."
-            )
-        # photonfdtd's differentiable JAX backend, and (since 0.9) the recommended
-        # way to use the GPU: JAX runs on the GPU through XLA when one is present,
-        # otherwise on the CPU. Exclusive of GPU/Numba (photonfdtd raises
-        # otherwise), so ticking it clears those — see _on_jax_toggled. Disabled
-        # unless jax is importable, since (unlike GPU/Numba) photonfdtd does not
-        # silently fall back for JAX.
-        _jax_on_gpu = jax_available() and jax_gpu_available()
-        self.run_jax_check = QCheckBox("JAX (GPU)" if _jax_on_gpu else "JAX")
-        if jax_available():
-            where = (
-                "Runs on your GPU through XLA. "
-                if _jax_on_gpu
-                else "Runs on the CPU (no GPU visible to JAX). "
-            )
-            self.run_jax_check.setToolTip(
-                "Run on photonfdtd's differentiable JAX backend — the recommended "
-                "GPU path as of photonfdtd 0.9. " + where + "Stays in the worker "
-                "thread so the UI stays responsive; the first run traces and "
-                "compiles the stepper, so it's slower, then it's cached."
-            )
-        else:
-            self.run_jax_check.setEnabled(False)
-            self.run_jax_check.setToolTip(
-                "The JAX backend needs the jax package (pip install jax, or a CUDA "
-                "build like 'pip install jax[cuda12]' for the GPU) — not installed "
-                "in this environment. This is now the recommended GPU backend."
-            )
-        # photonfdtd 0.12's compiled Rust stepping cores. Unlike GPU/Numba/JAX
-        # these aren't pip packages — they're a compiled extension built from
-        # photonfdtd's own rust/ directory — so the box is disabled outright when
-        # the extension isn't there (photonfdtd raises rather than falling back).
-        # They step the whole time loop natively, so they supersede the other
-        # three rather than combining with them; see _on_rust_toggled.
-        self.run_rust_check = QCheckBox("Rust")
-        if rust_available():
-            self.run_rust_check.setToolTip(
-                "Run on photonfdtd 0.12's compiled Rust CPU core: fused field passes "
-                "and ghost-zone temporal blocking, measured here at ~17x plain NumPy "
-                "(~2.5x Numba) and agreeing with it to float32 round-off. It also "
-                "keeps the CPML state compacted to the PML slabs, so it's the "
-                "lowest-memory in-core backend. No JIT warm-up — it's already compiled."
-            )
-        else:
-            self.run_rust_check.setEnabled(False)
-            self.run_rust_check.setToolTip(
-                "photonfdtd's Rust core is a compiled extension, not a pip package: "
-                "build it with 'cargo build --release' in photonfdtd's rust/ "
-                "directory and copy the resulting library to "
-                "src/photonfdtd/_photonfdtd_rs.so. Not built in this environment."
-            )
-        self.run_rust_cuda_check = QCheckBox("Rust (CUDA)")
-        if rust_cuda_available():
-            self.run_rust_cuda_check.setToolTip(
-                "Run on photonfdtd 0.12's CUDA core — the whole domain stays resident "
-                "in VRAM (and streams through the copy engines in temporally-blocked "
-                "tiles when it doesn't fit), so it holds a far larger grid on the GPU "
-                "than the other GPU paths. Note the availability check only queries "
-                "the device: if the driver is older than the toolchain the extension "
-                "was built with, the run will fail at start-up with photonfdtd's own "
-                "CUDA error — fall back to Rust or JAX if that happens."
-            )
-        else:
-            self.run_rust_cuda_check.setEnabled(False)
-            self.run_rust_cuda_check.setToolTip(
-                "photonfdtd's CUDA core needs the Rust extension built with the "
-                "'cuda' feature (cargo build --release --features cuda) and a CUDA "
-                "device present. Not available in this environment."
-            )
+        # photonfdtd (>=0.13) steps only on JAX/XLA: on the GPU when XLA sees
+        # one, otherwise on the CPU. There's nothing to pick, so the row just
+        # says where runs will go.
+        _on_gpu = jax_gpu_available()
+        self.run_device_label = QLabel(
+            "JAX on the GPU" if _on_gpu else "JAX on the CPU (no GPU visible to JAX)"
+        )
+        self.run_device_label.setToolTip(
+            "photonfdtd runs every simulation on JAX (XLA). It uses the GPU when JAX "
+            "can see one (a CUDA build of jax, e.g. pip install 'jax[cuda12]') and the "
+            "CPU otherwise. The first run of a given grid size compiles, so it's "
+            "slower; later runs reuse the compiled program."
+        )
         self.run_low_memory_check = QCheckBox("Low memory (disk)")
         self.run_low_memory_check.setToolTip(
-            "Out-of-core stepping: stream the field arrays to scratch disk and step "
-            "the grid a slab at a time, so peak RAM stays bounded by one tile and a "
-            "grid too big for memory can still run. NumPy-only (overrides GPU/Numba/"
-            "Rust) and slower — for when a run would otherwise run out of memory."
+            "Disk-tiled stepping: keep the fields in scratch files on disk and stream "
+            "the grid through the CPU/GPU a slab at a time, so peak memory stays "
+            "bounded by one tile and a grid too big for memory can still run. Slower "
+            "— for when a run would otherwise run out of memory. Not available on a "
+            "2.5-D run."
         )
-        accel_layout.addWidget(self.run_gpu_check)
-        accel_layout.addWidget(self.run_numba_check)
-        accel_layout.addWidget(self.run_jax_check)
-        accel_layout.addWidget(self.run_rust_check)
-        accel_layout.addWidget(self.run_rust_cuda_check)
+        accel_layout.addWidget(self.run_device_label)
         accel_layout.addWidget(self.run_low_memory_check)
         accel_layout.addStretch(1)
 
@@ -1595,14 +1470,12 @@ class FdtdWindow(QMainWindow):
 
         # Anisotropic subpixel smoothing (photonfdtd 0.4): sub-cell-accurate
         # permittivity at material interfaces — more accurate for a given cell
-        # size. Incompatible with the Numba backend (photonfdtd raises), so
-        # ticking it clears Numba, and vice versa (see _on_subpixel_toggled).
+        # size.
         self.run_subpixel_check = QCheckBox("Subpixel smoothing (more accurate)")
         self.run_subpixel_check.setToolTip(
             "Anisotropic subpixel smoothing of material interfaces (photonfdtd "
             "0.4): sub-cell-accurate permittivity at boundaries, so a given cell "
-            "size resolves the geometry more faithfully — at some setup cost. "
-            "Works on the NumPy, GPU and JAX backends, but not Numba."
+            "size resolves the geometry more faithfully — at some setup cost."
         )
         form.addRow("Accuracy", self.run_subpixel_check)
 
@@ -1626,18 +1499,6 @@ class FdtdWindow(QMainWindow):
             "mode of the reduced index map instead of the vertical cross-section."
         )
         form.addRow("Method", self.run_eim_check)
-
-        # Keep the mutually-exclusive backends consistent so a conflicting
-        # combination never reaches photonfdtd (which raises on one). Each
-        # handler only clears *other* boxes when its own is switched on, so the
-        # resulting re-entrant toggled() signals (which arrive with checked=
-        # False) are no-ops and can't loop.
-        self.run_jax_check.toggled.connect(self._on_jax_toggled)
-        self.run_gpu_check.toggled.connect(self._on_gpu_toggled)
-        self.run_numba_check.toggled.connect(self._on_numba_toggled)
-        self.run_rust_check.toggled.connect(self._on_rust_toggled)
-        self.run_rust_cuda_check.toggled.connect(self._on_rust_cuda_toggled)
-        self.run_subpixel_check.toggled.connect(self._on_subpixel_toggled)
 
         self.run_region_check = QCheckBox("Simulate selected components only")
         self.run_region_check.setToolTip(
@@ -2284,11 +2145,6 @@ class FdtdWindow(QMainWindow):
             cell_size_um=params.cell_size_um,
             run_time_fs=params.run_time_fs,
             clad_index=params.clad_index,
-            use_gpu=params.use_gpu,
-            use_numba=params.use_numba,
-            use_jax=params.use_jax,
-            use_rust=params.use_rust,
-            use_rust_cuda=params.use_rust_cuda,
             eim=params.eim,
             subpixel=params.subpixel,
             region_selected_only=self.run_region_check.isChecked(),
@@ -2312,25 +2168,6 @@ class FdtdWindow(QMainWindow):
             self.run_time_spin.setValue(config.run_time_fs)  # slider follows via signal
         if config.clad_index is not None:
             self.run_clad_row.set_clad_index(config.clad_index)
-        # Only toggle accelerators whose backend is actually available, so a
-        # project saved on a GPU box doesn't tick a disabled box on a CPU box.
-        if self.run_gpu_check.isEnabled():
-            self.run_gpu_check.setChecked(config.use_gpu)
-        if self.run_numba_check.isEnabled():
-            self.run_numba_check.setChecked(config.use_numba)
-        # New in 0.4; getattr keeps projects saved by an older phidler (whose
-        # SimulationConfig had no such field) loading cleanly.
-        if self.run_jax_check.isEnabled():
-            self.run_jax_check.setChecked(getattr(config, "use_jax", False))
-        # Same story for the 0.12 Rust cores — and the same availability guard,
-        # which matters more here: the extension is compiled per-machine, so a
-        # project saved on a box that has it must not tick a dead box elsewhere.
-        if self.run_rust_check.isEnabled():
-            self.run_rust_check.setChecked(getattr(config, "use_rust", False))
-        if self.run_rust_cuda_check.isEnabled():
-            self.run_rust_cuda_check.setChecked(getattr(config, "use_rust_cuda", False))
-        # 2.5-D is a method, not a backend: it needs nothing installed, so it
-        # restores unconditionally.
         self.run_eim_check.setChecked(getattr(config, "eim", False))
         self.run_subpixel_check.setChecked(getattr(config, "subpixel", False))
         self.run_region_check.setChecked(config.region_selected_only)
@@ -2372,56 +2209,6 @@ class FdtdWindow(QMainWindow):
         if check is not None:
             check.setChecked(spec.graph)
 
-    # -- backend exclusivity ---------------------------------------------------
-
-    def _on_jax_toggled(self, checked: bool) -> None:
-        # JAX is exclusive of the GPU, Numba and Rust backends.
-        if checked:
-            self.run_gpu_check.setChecked(False)
-            self.run_numba_check.setChecked(False)
-            self.run_rust_check.setChecked(False)
-            self.run_rust_cuda_check.setChecked(False)
-
-    def _on_gpu_toggled(self, checked: bool) -> None:
-        # GPU is exclusive of JAX and the Rust cores.
-        if checked:
-            self.run_jax_check.setChecked(False)
-            self.run_rust_check.setChecked(False)
-            self.run_rust_cuda_check.setChecked(False)
-
-    def _on_numba_toggled(self, checked: bool) -> None:
-        # Numba is exclusive of JAX and Rust, and can't do subpixel smoothing.
-        if checked:
-            self.run_jax_check.setChecked(False)
-            self.run_rust_check.setChecked(False)
-            self.run_rust_cuda_check.setChecked(False)
-            self.run_subpixel_check.setChecked(False)
-
-    def _on_rust_toggled(self, checked: bool) -> None:
-        # A Rust core steps the whole time loop natively, so it replaces the
-        # other three backends outright, and it raises on subpixel smoothing.
-        if checked:
-            self.run_gpu_check.setChecked(False)
-            self.run_numba_check.setChecked(False)
-            self.run_jax_check.setChecked(False)
-            self.run_rust_cuda_check.setChecked(False)
-            self.run_subpixel_check.setChecked(False)
-
-    def _on_rust_cuda_toggled(self, checked: bool) -> None:
-        if checked:
-            self.run_gpu_check.setChecked(False)
-            self.run_numba_check.setChecked(False)
-            self.run_jax_check.setChecked(False)
-            self.run_rust_check.setChecked(False)
-            self.run_subpixel_check.setChecked(False)
-
-    def _on_subpixel_toggled(self, checked: bool) -> None:
-        # Subpixel smoothing is unsupported on the Numba and Rust backends.
-        if checked:
-            self.run_numba_check.setChecked(False)
-            self.run_rust_check.setChecked(False)
-            self.run_rust_cuda_check.setChecked(False)
-
     # -- running the simulation ------------------------------------------------
 
     def _current_params(self) -> FdtdParams:
@@ -2431,11 +2218,6 @@ class FdtdWindow(QMainWindow):
             run_time_fs=self.run_time_spin.value(),
             sources=self._collect_source_specs(),
             clad_index=self.run_clad_row.clad_index(),
-            use_gpu=self.run_gpu_check.isChecked(),
-            use_numba=self.run_numba_check.isChecked(),
-            use_jax=self.run_jax_check.isChecked(),
-            use_rust=self.run_rust_check.isChecked(),
-            use_rust_cuda=self.run_rust_cuda_check.isChecked(),
             eim=self.run_eim_check.isChecked(),
             subpixel=self.run_subpixel_check.isChecked(),
             out_of_core=self.run_low_memory_check.isChecked(),
@@ -2587,29 +2369,6 @@ class FdtdWindow(QMainWindow):
                     "or untick it to run locally.",
                 )
                 return
-            # The local backend checkboxes reflect *this* machine's hardware,
-            # which is irrelevant to a remote run — the remote's is what matters.
-            # So set the backend entirely from the remote config's Acceleration
-            # choice (subpixel / low-memory / 2.5-D stay as chosen, being
-            # hardware-agnostic accuracy/memory/method options).
-            # resolve_accel_flags on the remote still sorts out any conflict
-            # (e.g. subpixel drops numba).
-            #
-            # The Rust cores are cleared for the same reason and then some:
-            # whether the compiled extension exists is a property of the remote
-            # host, and the remote installer doesn't build it, so shipping a
-            # rust request there would just fail on arrival. The remote
-            # Acceleration dropdown is the only thing that should pick a backend
-            # for a remote run.
-            backend = remote_cfg.resolved_backend()
-            params = dataclasses.replace(
-                params,
-                use_gpu=(backend == "cupy"),
-                use_jax=(backend == "jax"),
-                use_numba=(backend == "cpu"),
-                use_rust=False,
-                use_rust_cuda=False,
-            )
         self._last_params = params
 
         region_um = None
@@ -2653,22 +2412,8 @@ class FdtdWindow(QMainWindow):
 
         grid = (cell_count, 1, 1)
         memory_gb = estimate_memory_gb(cell_count)
-        # JAX on a GPU runs at roughly the GPU tier; JAX on a CPU-only build is
-        # closer to the NumPy tier, so estimate it as NumPy (the fall-through).
-        # Ask the same resolver the build uses, so the estimate can't disagree
-        # with what actually runs (e.g. subpixel silently outranking Rust).
-        rust_backend = resolve_backend(params)
-        jax_on_gpu = resolve_use_jax(params) and jax_gpu_available()
-        eff_gpu, eff_numba = resolve_accel_flags(params)
-        if rust_backend != "auto":
-            selected = rust_backend
-        elif eff_gpu or jax_on_gpu:
-            selected = "gpu"
-        elif eff_numba:
-            selected = "numba"
-        else:
-            selected = "numpy"
-        selected_seconds = estimate_run_seconds(grid, n_steps, backend=selected)
+        selected = "gpu" if jax_gpu_available() else "cpu"
+        selected_seconds = estimate_run_seconds(grid, n_steps, device=selected)
 
         # The run-time estimates are calibrated on *local* hardware, so they're
         # meaningless for a remote box — show only the (machine-independent)
@@ -2689,14 +2434,9 @@ class FdtdWindow(QMainWindow):
         elif region_confirmed:
             pass  # user already accepted this (feasibility-sized) region — don't double-prompt
         elif selected_seconds > _RUN_TIME_WARNING_SECONDS or memory_gb > _MEMORY_WARNING_GB:
-            t_numba = estimate_run_seconds(grid, n_steps, "numba")
+            t_cpu = estimate_run_seconds(grid, n_steps, "cpu")
             t_gpu = estimate_run_seconds(grid, n_steps, "gpu")
-            t_numpy = estimate_run_seconds(grid, n_steps, "numpy")
-            t_rust = estimate_run_seconds(grid, n_steps, "rust")
-            mark = {
-                "numba": "Numba", "gpu": "GPU", "numpy": "plain NumPy",
-                "rust": "the Rust CPU core", "rust-cuda": "the Rust CUDA core",
-            }[selected]
+            mark = {"gpu": "a GPU", "cpu": "the CPU"}[selected]
             # 2.5-D changes the size of the problem, not just its speed, so say
             # so — a user staring at a big number here should know the cheapest
             # lever available is one row up in the dialog they came from.
@@ -2711,11 +2451,9 @@ class FdtdWindow(QMainWindow):
                 f"{memory_gb:.1f} GB of memory — large grids can run out of memory "
                 f"(try a coarser cell size, or simulate a smaller region).\n\n"
                 f"Estimated run time:\n"
-                f"    Rust (CPU):  ~{t_rust:.0f} s\n"
-                f"    Numba (CPU):  ~{t_numba:.0f} s\n"
                 f"    GPU:  ~{t_gpu:.0f} s\n"
-                f"    plain NumPy:  ~{t_numpy:.0f} s\n\n"
-                f"You have {mark} selected.{hint} Continue?",
+                f"    CPU:  ~{t_cpu:.0f} s\n\n"
+                f"This run will use {mark}.{hint} Continue?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -2729,14 +2467,7 @@ class FdtdWindow(QMainWindow):
         if remote:
             self.run_status_label.setText("Running on remote server…")
         else:
-            if selected == "rust-cuda":
-                self.run_status_label.setText("Running on GPU (Rust CUDA)…")
-            elif selected == "rust":
-                self.run_status_label.setText("Running on the Rust CPU core…")
-            elif selected == "gpu":
-                self.run_status_label.setText("Running on GPU…")
-            else:
-                self.run_status_label.setText("Running…")
+            self.run_status_label.setText("Running on GPU…" if selected == "gpu" else "Running…")
         self._field_image_initialized = False
 
         # Start the progress bar busy (indeterminate): there's a startup phase —
@@ -2779,23 +2510,12 @@ class FdtdWindow(QMainWindow):
         gx, gy, gz = (int(s) for s in sim.grid.shape)  # full sim grid (the movie keeps only z=0)
         # Report the backend that actually ran (not what was requested) — a GPU
         # request can quietly fall back to CPU, which this makes visible.
-        resolved_backend = str(getattr(sim, "backend", "auto"))
         if getattr(sim, "engine", None) == "tidy3d":
             backend = "Tidy3D"
-        elif resolved_backend == "rust-cuda":
-            backend = "Rust CUDA"
-        elif resolved_backend == "rust":
-            backend = "Rust CPU"
-        elif getattr(sim, "use_gpu", False):
-            # Name the GPU vendor backend (CUDA/ROCm) when we can identify it.
-            gpu_kind = gpu_backend_name()
-            backend = f"GPU ({gpu_kind})" if gpu_kind and gpu_kind != "GPU" else "GPU"
-        elif getattr(sim, "use_numba", False):
-            backend = "Numba"
-        elif getattr(sim, "use_jax", False):
-            backend = "JAX"
         else:
-            backend = "CPU"
+            # The device JAX ran on: the subprocess/remote stubs report it,
+            # in-process runs ask JAX here.
+            backend = f"JAX ({getattr(sim, 'device', None) or jax_device_label()})"
         if getattr(sim, "subpixel", False):
             backend += " + subpixel"
         # 2.5-D changes what was solved, not just how fast — the grid dimensions

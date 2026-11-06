@@ -7,8 +7,10 @@
 # pins. Bare names / a git+ URL / a plain path are safe; hence the forms below
 # (and the bare checkout path appended by build.sh).
 #
-# photonfdtd (the FDTD solver) isn't on PyPI — install it from GitHub. First, so
-# it's present before phidler needs it. A bare git URL (no ref) installs main's
+# photonfdtd (the FDTD solver), from GitHub rather than PyPI. First, so it's
+# present before phidler needs it. It pulls in jax (the CPU build: JAX's CUDA
+# build needs a "jax[cuda12]" extra, which this file can't express, and would
+# add gigabytes; the Flatpak bundles it instead). A bare git URL (no ref) installs main's
 # current HEAD, so every nightly bundles the newest solver; build.sh sets
 # PIP_NO_CACHE_DIR (no stale wheel) and logs the resolved commit for provenance.
 git+https://github.com/ngpaladi/photonfdtd.git
@@ -18,7 +20,6 @@ git+https://github.com/ngpaladi/photonfdtd.git
 # fetches recent, Python-3.12-compatible builds. Keep in sync with the [fdtd]
 # group in pyproject.toml.
 matplotlib
-numba
 #
 # phidler itself is appended by packaging/appimage/build.sh as the absolute path
 # to the current checkout — so the AppImage bundles this exact source. Bundling

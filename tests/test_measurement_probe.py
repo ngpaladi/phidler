@@ -33,7 +33,7 @@ def _run_a_tiny_sim(document, **kwargs):
     from phidler.fdtd_sim import build_simulation, run_simulation
 
     params = FdtdParams(
-        cell_size_um=0.1, run_time_fs=20.0, use_numba=True,
+        cell_size_um=0.1, run_time_fs=20.0,
         sources=(SourceSpec(x_um=-4.0, y_um=0.0),), **kwargs,
     )
     sim = build_simulation(document, params)

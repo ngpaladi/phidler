@@ -42,13 +42,11 @@ class RemoteConfig:
     alias: str = ""
     remote_dir: str = ""
     remote_python: str = ""
-    # Which accelerator the remote solve should use: "auto" (let the remote
-    # hardware probe pick and install the ideal one at setup, then remember it),
-    # "cpu" (Numba), "jax" (the GPU path as of photonfdtd 0.9 — JAX on the remote's
-    # GPU via XLA), or "cupy" (the legacy CuPy GPU backend). Defaults to "auto".
-    # `use_gpu` is retained only so configs saved by an older phidler (which had
-    # just that bool, no `backend` key) still load; resolved_backend maps such a
-    # config to "cupy".
+    # Where the remote solve should run: "auto" (let the remote hardware probe
+    # pick at setup, then remember it), "cpu" (JAX on the CPU) or "jax" (JAX on
+    # the remote's GPU via XLA). Defaults to "auto". "cupy" (the CuPy backend
+    # photonfdtd 0.13 removed) and the older `use_gpu` bool are still read so
+    # saved configs load; resolved_backend maps both to "jax".
     backend: str = "auto"
     use_gpu: bool = False
     local_photonfdtd_dir: str = ""
@@ -57,11 +55,13 @@ class RemoteConfig:
         """The concrete backend to run with. "auto" is resolved to a real backend
         by the remote hardware probe at setup time (see remote_setup_probe); if a
         run happens before that resolution it falls back to CPU here. Also honours
-        a legacy use_gpu=True config that predates the `backend` field (CuPy)."""
-        if self.backend in ("cpu", "jax", "cupy"):
+        a legacy use_gpu=True config that predates the `backend` field."""
+        if self.backend == "cupy":
+            return "jax"
+        if self.backend in ("cpu", "jax"):
             return self.backend
         # "auto" (not yet resolved by setup) or unset.
-        return "cupy" if self.use_gpu else "cpu"
+        return "jax" if self.use_gpu else "cpu"
 
     def resolved_remote_dir(self) -> str:
         """The install dir to use — the override, or the default under $HOME."""

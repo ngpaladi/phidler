@@ -5,7 +5,7 @@ import math
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -38,32 +38,13 @@ DISCLAIMER = (
     "simulation tool."
 )
 
-# Measured directly on dev hardware across three scales (141k cells/394
-# steps -> 2.5s; 525k cells/1312 steps -> 40.8s), NumPy backend, no GPU/
-# numba. Cost scales close to linearly with cells*timesteps. This is a
-# rough estimate for warning users before a run, not a guarantee — actual
-# time depends on the machine.
-_SECONDS_PER_CELL_STEP = 6e-8
-
-# Speedup of each backend over the plain-NumPy baseline above, measured on dev
-# hardware (a 5.2M-cell run: NumPy 32.6s, Numba 6.0s, GPU 2.4s compute). GPU
-# also pays a fixed subprocess startup. All rough — they only feed the
-# pre-flight warning, never correctness.
-#
-# "rust" is photonfdtd 0.12's compiled CPU core (fused H/E passes + ghost-zone
-# temporal blocking): measured here at 17.6x NumPy on a 6.2M-cell / 204-step
-# grid, the same run that put Numba at 7.0x against this table's 5.5, so the
-# two are consistent to within the usual machine-to-machine spread.
-#
-# "rust-cuda" is deliberately pessimistic. photonfdtd's own benchmark table
-# (RTX 4080) has rust-cuda f32 at ~12x its CPU core, which would put it near
-# 200x here, but it couldn't be verified on this machine (the prebuilt
-# extension's PTX is newer than the installed driver — see rust_cuda_available).
-# Since an over-estimated speedup means *under*-estimating run time and
-# suppressing the "this will take a while" warning, the unverified entry errs
-# low on purpose.
-_BACKEND_SPEEDUP = {"numpy": 1.0, "numba": 5.5, "gpu": 13.5, "rust": 17.5, "rust-cuda": 40.0}
-_GPU_STARTUP_SECONDS = 1.0
+# Seconds per cell per time step, by where photonfdtd's JAX stepper runs.
+# photonfdtd (>=0.13) steps only on JAX/XLA, on the GPU when XLA sees one and
+# on the CPU otherwise. Rough figures measured on dev hardware; they only feed
+# the pre-flight "this will take a while" warning, never correctness. Each run
+# also pays a one-off XLA compile before the first step.
+_SECONDS_PER_CELL_STEP = {"cpu": 1.2e-8, "gpu": 1.0e-9}
+_JAX_COMPILE_SECONDS = 2.0
 
 # Peak working-set memory per grid cell for the solve (6 field components + eps
 # + update coefficients + CPML + rasterisation/temporaries, all float32).
@@ -114,64 +95,10 @@ def photonfdtd_available() -> bool:
         return False
 
 
-def gpu_available() -> bool:
-    """Whether photonfdtd's GPU backend can actually run here — it uses CuPy,
-    so this is True only when CuPy imports. photonfdtd silently falls back to
-    NumPy when it can't (use_gpu is AND'd with availability), so without this
-    check a requested GPU run would quietly execute on the CPU. (CuPy importing
-    doesn't by itself guarantee a working device, but it's the same signal
-    photonfdtd keys off.)
-
-    Backend-agnostic: this is True for CuPy's CUDA build (NVIDIA) *or* its
-    ROCm/HIP build (AMD) — photonfdtd only uses generic CuPy array ops, so
-    either drives the solve. See gpu_backend_name() for which one is live."""
-    try:
-        import cupy  # noqa: F401
-        return True
-    except Exception:
-        return False
-
-
-def gpu_backend_name() -> str | None:
-    """Which CuPy GPU backend is active — "CUDA" (NVIDIA), "ROCm" (AMD), or None
-    when no CuPy is importable ("GPU" as a last resort if CuPy is present but the
-    build can't be identified). Used to tell the user *which* accelerator a run
-    actually used, since phidler supports both through the same code path."""
-    try:
-        import cupy
-    except Exception:
-        return None
-    try:
-        # CuPy's ROCm build sets cupy.cuda.runtime.is_hip; the CUDA build leaves
-        # it False/absent. getattr-guarded so an unexpected CuPy layout can't
-        # raise here.
-        if getattr(cupy.cuda.runtime, "is_hip", False):
-            return "ROCm"
-        return "CUDA"
-    except Exception:
-        return "GPU"
-
-
-def numba_available() -> bool:
-    """Whether photonfdtd's Numba JIT backend can run here (numba importable).
-    Same silent-fallback caveat as gpu_available()."""
-    try:
-        import numba  # noqa: F401
-        return True
-    except Exception:
-        return False
-
-
 def jax_available() -> bool:
-    """Whether photonfdtd's differentiable JAX backend can run here — it needs
-    the ``jax`` package (photonfdtd 0.4+ ships the stepper, but importing it
-    without jax raises). Unlike numba/gpu, photonfdtd does *not* silently fall
-    back for JAX: it raises if use_jax is set without jax, so the FDTD window
-    only enables the JAX checkbox when this is True.
-
-    As of photonfdtd 0.9 JAX is also the recommended *GPU* backend: it runs on
-    the GPU through XLA (see jax_gpu_available), superseding the CuPy use_gpu
-    path, which is now deprecated. On a CPU-only jax it runs on the CPU."""
+    """Whether JAX imports. photonfdtd (>=0.13) steps only on JAX, so this is
+    effectively the same as photonfdtd_available(); kept separate so the UI can
+    say which of the two is missing."""
     try:
         import jax  # noqa: F401
         return True
@@ -180,10 +107,9 @@ def jax_available() -> bool:
 
 
 def jax_gpu_available() -> bool:
-    """Whether JAX will run on a GPU here — i.e. XLA sees a GPU device. photonfdtd
-    0.9 makes JAX the GPU backend (via XLA), so this is how the UI tells the user
-    that ticking JAX means "run on the GPU" rather than the CPU. False when jax
-    isn't installed or is a CPU-only build."""
+    """Whether JAX will run on a GPU here, i.e. XLA sees a GPU device. That's
+    where photonfdtd's runs go when it does; otherwise they run on the CPU.
+    False when jax isn't installed or is a CPU-only build."""
     try:
         import jax
 
@@ -192,92 +118,9 @@ def jax_gpu_available() -> bool:
         return False
 
 
-def rust_available() -> bool:
-    """Whether photonfdtd's compiled Rust CPU stepping core (0.12+,
-    ``backend="rust"``) can run here. Unlike GPU/Numba it isn't a pip package —
-    it's a compiled extension (``photonfdtd._photonfdtd_rs``) built from
-    photonfdtd's own ``rust/`` directory, so it's present or it isn't. photonfdtd
-    *raises* rather than silently falling back when the extension is missing, so
-    the FDTD window only enables the Rust checkbox when this is True.
-
-    False on photonfdtd < 0.12, which has no rustbackend module at all."""
-    try:
-        from photonfdtd.rustbackend import rust_available as _avail
-
-        return bool(_avail())
-    except Exception:
-        return False
-
-
-def rust_cuda_available() -> bool:
-    """Whether photonfdtd's CUDA stepping core (``backend="rust-cuda"``) can run
-    here: the extension has to be built with the ``cuda`` feature *and* a device
-    has to answer. This is photonfdtd's own probe.
-
-    Note it is an optimistic probe — it queries the device, which can succeed on
-    a machine whose driver is nonetheless too old for the PTX the extension was
-    compiled against (that combination only fails when the stepper is actually
-    constructed, at the start of a run). Observed on this dev box, so a run can
-    still fail here with the checkbox enabled; the error surfaces through the
-    normal failed-run path with photonfdtd's own message."""
-    try:
-        from photonfdtd.rustbackend import cuda_available as _avail
-
-        return bool(_avail())
-    except Exception:
-        return False
-
-
-def resolve_backend(params) -> str:
-    """The photonfdtd ``backend=`` string this run should use: ``"rust"``,
-    ``"rust-cuda"``, or ``"auto"`` (photonfdtd's own NumPy/JAX dispatch, which is
-    what phidler has always asked for).
-
-    The compiled Rust cores step the whole time loop natively, so they replace
-    the GPU/Numba/JAX in-Python steppers entirely rather than combining with
-    them. They also can't do everything those can, so two things outrank them:
-
-      * out-of-core is a NumPy-only path (photonfdtd's run_out_of_core is
-        reached before any backend dispatch), and
-      * subpixel smoothing is unsupported by the Rust cores, which *raise* on
-        it — so subpixel wins, matching how it already outranks Numba.
-
-    CUDA outranks the CPU core when both are ticked. Kept a pure function (no
-    photonfdtd import) so the precedence is unit-tested directly."""
-    if params.out_of_core or params.subpixel:
-        return "auto"
-    if params.use_rust_cuda:
-        return "rust-cuda"
-    if params.use_rust:
-        return "rust"
-    return "auto"
-
-
-def resolve_use_jax(params) -> bool:
-    """Whether the JAX stepper is actually installed on the built Simulation.
-    JAX loses to out-of-core (NumPy-only) and to a Rust backend, which steps the
-    whole loop natively and is dispatched ahead of JAX inside photonfdtd."""
-    return bool(params.use_jax) and not params.out_of_core and resolve_backend(params) == "auto"
-
-
-def resolve_accel_flags(params) -> tuple[bool, bool]:
-    """The (use_gpu, use_numba) actually passed to photonfdtd's from_gdsfactory,
-    resolving the mutually-exclusive backends so a conflicting combination never
-    reaches photonfdtd (which raises on one). Priority:
-
-      * out-of-core is NumPy-only, so it drops both accelerators;
-      * JAX is exclusive of GPU and Numba (build_simulation applies JAX itself
-        by rebuilding the Simulation), so it drops both;
-      * a Rust backend steps natively and supersedes both (see resolve_backend);
-      * subpixel smoothing is unsupported on Numba, so it drops Numba.
-
-    Kept a pure function (no photonfdtd import) so the precedence is unit-tested
-    directly. ``params`` is an FdtdParams."""
-    oc = params.out_of_core
-    rust = resolve_backend(params) != "auto"
-    eff_gpu = params.use_gpu and not oc and not params.use_jax and not rust
-    eff_numba = params.use_numba and not oc and not params.use_jax and not params.subpixel and not rust
-    return eff_gpu, eff_numba
+def jax_device_label() -> str:
+    """Where a run will execute, for status text: "GPU" or "CPU"."""
+    return "GPU" if jax_gpu_available() else "CPU"
 
 
 def wavelength_um_from_photon_energy_ev(energy_ev: float) -> float:
@@ -408,27 +251,6 @@ class FdtdParams:
     # Override the project's cladding index (e.g. from a UI dropdown).
     # None means use document.project_settings.clad_index.
     clad_index: float | None = None
-    # Optional acceleration backends passed through to photonfdtd. Both need
-    # their own extra dependency (a CUDA-capable torch for GPU, numba for the
-    # JIT path); leaving them False keeps the plain NumPy engine. A run with an
-    # unavailable backend surfaces photonfdtd's own error via the worker.
-    use_gpu: bool = False
-    use_numba: bool = False
-    # photonfdtd 0.4's differentiable JAX backend (functional stepper). It's
-    # exclusive of the GPU/Numba backends — build_simulation drops those when
-    # this is set — and runs in-process in the worker thread like the NumPy/
-    # Numba path. Needs the jax package (see jax_available()).
-    use_jax: bool = False
-    # photonfdtd 0.12's compiled Rust stepping cores (backend="rust" /
-    # "rust-cuda"). They run the whole time loop natively — fused H/E passes,
-    # ghost-zone temporal blocking on the CPU core, a VRAM-resident (or
-    # host-streamed) domain on the CUDA one — so they supersede the GPU/Numba/JAX
-    # steppers rather than combining with them (see resolve_backend). They also
-    # store the CPML state compacted to the PML slabs, so they're the
-    # lowest-memory in-core path. Measured at 17.6x plain NumPy here; verified
-    # bit-identical to the NumPy engine's field on the same grid.
-    use_rust: bool = False
-    use_rust_cuda: bool = False
     # 2.5-D effective-index reduction (photonfdtd 0.12's eim module): collapse
     # the vertical layer stack into effective indices and simulate the chip plane
     # as a 2-D problem. Orders of magnitude fewer cells than the true-3-D build
@@ -442,9 +264,8 @@ class FdtdParams:
     eim_polarization: str = "TE"  # "TE" (in-plane E, the usual device mode) or "TM"
     # Anisotropic subpixel smoothing of material interfaces (photonfdtd 0.4).
     # Sub-cell-accurate permittivity at boundaries — more accurate for a given
-    # cell size, at some setup cost. Works on the NumPy/GPU/JAX backends but not
-    # Numba, so build_simulation drops Numba when this is on. subpixel_factor is
-    # the per-axis oversampling used to estimate each boundary cell's fill.
+    # cell size, at some setup cost. subpixel_factor is the per-axis
+    # oversampling used to estimate each boundary cell's fill.
     subpixel: bool = False
     subpixel_factor: int = 3
     # Field precision. float32 halves the field/CPML/monitor memory and is
@@ -452,11 +273,12 @@ class FdtdParams:
     # qualitative field movie this app shows. float64 is bit-for-bit the old
     # behavior if a run ever needs it.
     precision: str = "float32"
-    # Out-of-core (disk-streamed) tiled stepping (photonfdtd >=0.3): the full
-    # field/CPML arrays live in memmapped scratch files and the domain is
-    # stepped a slab at a time, so peak RAM is bounded by a tile instead of the
-    # whole grid — the way to run a grid too big for RAM (it trades RAM for disk
-    # and speed). NumPy backend only, so it overrides use_gpu/use_numba.
+    # Disk-tiled stepping (photonfdtd's run(disk_tiled=True)): the fields live
+    # in memmapped scratch files and the domain is streamed through the device
+    # a slab at a time, so peak memory is bounded by a tile instead of the
+    # whole grid — the way to run a grid too big for RAM or VRAM (it trades
+    # memory for disk and speed). Not available on a 2.5-D run, whose grid is
+    # small anyway.
     out_of_core: bool = False
     # Spatial stride for the recorded field movie: keep every Nth cell on each
     # axis, cutting stored-movie memory by downsample**2 in the z=0 plane. 1 is
@@ -493,17 +315,10 @@ class SimulationConfig:
     cell_size_um: float | None = None  # None -> FdtdParams' λ/15 default
     run_time_fs: float | None = None  # None -> FdtdParams' pulse-width default
     clad_index: float | None = None  # None -> project_settings.clad_index
-    use_gpu: bool = False
-    use_numba: bool = False
-    # photonfdtd 0.4 backends. New fields default False so projects saved by an
-    # older phidler (which never wrote them) load unchanged.
-    use_jax: bool = False
+    # New fields default False so projects saved by an older phidler (which
+    # never wrote them) load unchanged; keys an older phidler wrote that this
+    # one no longer has are dropped on load (see simulation_config_from_dict).
     subpixel: bool = False
-    # photonfdtd 0.12 backends / methods. Same story as the 0.4 fields above:
-    # defaulting False means a project saved by an older phidler (which never
-    # wrote them) still loads unchanged.
-    use_rust: bool = False
-    use_rust_cuda: bool = False
     eim: bool = False
     region_selected_only: bool = False
     sources: tuple[SourceSpec, ...] = ()
@@ -516,6 +331,15 @@ class SimulationConfig:
     mode_core_width_um: float = 0.5
     mode_num_modes: int = 1
     mode_clad_index: float | None = None  # None -> project_settings.clad_index
+
+
+def known_fields(cls, data: dict) -> dict:
+    """``data`` restricted to the fields of dataclass ``cls``. Saved projects and
+    job files can carry keys an older phidler wrote for options that no longer
+    exist (the GPU/Numba/JAX/Rust backend switches photonfdtd 0.13 removed), so
+    loaders drop them instead of failing on an unexpected keyword."""
+    names = {f.name for f in fields(cls)}
+    return {k: v for k, v in data.items() if k in names}
 
 
 @dataclass(frozen=True)
@@ -758,16 +582,14 @@ def estimate_grid_cell_count(
     return int(grid.shape[0]) * int(grid.shape[1]) * int(grid.shape[2])
 
 
-def estimate_run_seconds(grid_shape: tuple[int, int, int], n_steps: int, backend: str = "numpy") -> float:
-    """Rough, empirically-calibrated estimate (see _SECONDS_PER_CELL_STEP's
-    docstring) — not a guarantee, just enough to warn before a run that
-    would otherwise look like a frozen app. `backend` is one of "numpy",
-    "numba", "gpu"; GPU also includes its fixed subprocess startup."""
+def estimate_run_seconds(grid_shape: tuple[int, int, int], n_steps: int, device: str = "cpu") -> float:
+    """Rough, empirically-calibrated estimate (see _SECONDS_PER_CELL_STEP) —
+    not a guarantee, just enough to warn before a run that would otherwise look
+    like a frozen app. `device` is "cpu" or "gpu", where JAX will run. Includes
+    the one-off XLA compile."""
     total_cells = int(grid_shape[0]) * int(grid_shape[1]) * int(grid_shape[2])
-    seconds = total_cells * int(n_steps) * _SECONDS_PER_CELL_STEP / _BACKEND_SPEEDUP.get(backend, 1.0)
-    if backend == "gpu":
-        seconds += _GPU_STARTUP_SECONDS
-    return seconds
+    per = _SECONDS_PER_CELL_STEP.get(device, _SECONDS_PER_CELL_STEP["cpu"])
+    return total_cells * int(n_steps) * per + _JAX_COMPILE_SECONDS
 
 
 def estimate_memory_gb(cell_count: int) -> float:
@@ -777,9 +599,9 @@ def estimate_memory_gb(cell_count: int) -> float:
     return int(cell_count) * _SOLVE_BYTES_PER_CELL / 1e9
 
 
-# Out-of-core on-disk working set per cell: the six field components + the
-# update coefficient field + the CPML psi arrays, all streamed to memmapped
-# scratch files at float32. Rounded up from the arrays run_out_of_core creates.
+# Disk-tiled on-disk working set per cell: the six field components + the
+# update coefficients + the CPML psi arrays, in memmapped scratch files at
+# float32 (photonfdtd.tiled.disk_bytes gives the exact figure for a built sim).
 _OOC_DISK_BYTES_PER_CELL = 56
 # Leave headroom below total RAM (and free disk) for the OS, the GUI process,
 # Python/gdsfactory overhead, and allocation spikes the flat per-cell estimate
@@ -1268,6 +1090,20 @@ def build_eim_layer_media_map(
     return layers_map
 
 
+def grid_origin_um(
+    document: LayoutDocument, region_um: tuple[float, float, float, float] | None = None
+) -> tuple[float, float]:
+    """Absolute layout position (µm) of the FDTD grid's centre. from_gdsfactory
+    centres ``grid.coords`` on 0 over the simulated window: the region when one
+    is given, otherwise the layout's bounding box. Absolute layout coordinates
+    map into the grid as ``coord - origin``."""
+    if region_um is not None:
+        left, bottom, right, top = region_um
+    else:
+        left, bottom, right, top = _layout_bbox_um_tuple(document)
+    return ((left + right) / 2.0, (bottom + top) / 2.0)
+
+
 def build_simulation(
     document: LayoutDocument,
     params: FdtdParams = FdtdParams(),
@@ -1319,23 +1155,9 @@ def build_simulation(
     cell_size_m = params.resolved_cell_size_um() * 1e-6
     padding_m = params.padding_um * 1e-6
 
-    # Resolve mutually-exclusive backends before handing flags to photonfdtd,
-    # which raises on a conflicting combination (see resolve_accel_flags). JAX
-    # and subpixel aren't parameters of from_gdsfactory, so from_gdsfactory
-    # builds the grid+structures on the plain backend and we rebuild the
-    # Simulation with those flags below.
-    oc = params.out_of_core
-    eff_gpu, eff_numba = resolve_accel_flags(params)
-    backend = resolve_backend(params)
-    eff_jax = resolve_use_jax(params)
-
     common = dict(
         cell_size=cell_size_m,
         run_time=params.resolved_run_time_fs() * 1e-15,
-        # Out-of-core stepping is NumPy-only, so it overrides the accel backends
-        # (photonfdtd's run_out_of_core rejects a gpu/numba Simulation).
-        use_gpu=eff_gpu,
-        use_numba=eff_numba,
         precision=params.precision,
         xy_bounds=xy_bounds,
     )
@@ -1392,16 +1214,10 @@ def build_simulation(
             **common,
         )
 
-    # JAX / subpixel / the compiled Rust cores aren't from_gdsfactory parameters,
-    # so rebuild the Simulation from the grid+structures it produced with those
-    # set. The first construction runs on the cheap default backend; this second
-    # one does the real work (installs the JAX stepper, selects the Rust core,
-    # and/or precomputes the smoothed permittivity). Out-of-core stays plain
-    # NumPy, so it's skipped: `not oc` still guards subpixel specifically, since
-    # photonfdtd's run_out_of_core raises on a subpixel Simulation and this app
-    # has always let out-of-core quietly win that conflict. (eff_jax and backend
-    # have already resolved out-of-core out themselves.)
-    if (eff_jax or params.subpixel or backend != "auto") and not oc:
+    # Subpixel smoothing isn't a from_gdsfactory parameter, so rebuild the
+    # Simulation from the grid+structures it produced with it set (the rebuild
+    # precomputes the smoothed permittivity).
+    if params.subpixel:
         sim = pf.Simulation(
             grid=sim.grid,
             structures=sim.structures,
@@ -1409,17 +1225,21 @@ def build_simulation(
             monitors=[],
             run_time=sim.run_time,
             courant=sim.courant,
-            use_jax=eff_jax,
-            subpixel=params.subpixel,
+            subpixel=True,
             subpixel_factor=params.subpixel_factor,
             precision=params.precision,
-            backend=backend,
         )
 
     sources = params.sources
     if not sources:
         sources = (SourceSpec(x_um=bbox.left, y_um=(bbox.top + bbox.bottom) / 2, wavelength_um=params.wavelength_um, fwhm_fs=params.pulse_fwhm_fs),)
+    # from_gdsfactory centres the grid on the simulated window (the region, or
+    # the layout bbox), while sources are placed in absolute layout coordinates,
+    # so shift them into the grid's frame. Without this a source on a layout
+    # that isn't centred on the origin lands clamped at the grid's edge.
+    ox, oy = grid_origin_um(document, region_um)
     for spec in sources:
+        spec = replace(spec, x_um=spec.x_um - ox, y_um=spec.y_um - oy)
         built = build_source(settings, spec, reduction=reduction)
         # A cherenkov spec expands into a whole track of point dipoles.
         for src in built if isinstance(built, list) else [built]:
@@ -1493,9 +1313,12 @@ def run_simulation(sim: Any, out_of_core: bool = False, tile_cells: int | None =
     layer only has to call this one function — the actual compute, with
     no Qt/threading concerns mixed in, stays directly unit-testable.
 
-    ``out_of_core`` streams the field/CPML arrays to disk and steps the domain
-    in slabs so peak RAM is bounded by a tile (photonfdtd >=0.3); ``tile_cells``
-    is the planes-per-tile knob (None lets photonfdtd pick grid.shape[0]//8)."""
+    ``out_of_core`` runs disk-tiled: the fields live in scratch files and the
+    domain is streamed through the device in x-slabs, so peak memory is bounded
+    by a tile; ``tile_cells`` is the planes-per-tile knob (None lets photonfdtd
+    size it to the device). Otherwise the run is in memory, unless photonfdtd's
+    own estimate says it won't fit, in which case it falls back to disk tiling
+    itself with a warning."""
     if out_of_core:
-        return sim.run(out_of_core=True, tile_cells=tile_cells)
+        return sim.run(disk_tiled=True, tile_cells=tile_cells)
     return sim.run()

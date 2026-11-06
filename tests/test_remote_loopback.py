@@ -36,7 +36,7 @@ def _cfg():
         alias=os.environ.get("PHIDLER_REMOTE_ALIAS", "phidler-ci"),
         remote_dir=os.environ.get("PHIDLER_REMOTE_DIR", ""),
         remote_python=remote_python,
-        use_gpu=False,
+        backend="cpu",
         local_photonfdtd_dir=os.environ.get("PHIDLER_LOCAL_PHOTONFDTD", ""),
     )
 
@@ -69,7 +69,7 @@ def test_remote_setup_end_to_end_over_real_ssh():
     doc = LayoutDocument()
     doc.add_instance("straight", {"length": 6.0, "width": 0.5})
     params = FdtdParams(
-        cell_size_um=0.1, use_numba=False,  # plain NumPy: no remote JIT-compile wait
+        cell_size_um=0.1,
         sources=(SourceSpec(x_um=-4.0, y_um=0.0),),
     )
 
