@@ -44,7 +44,7 @@ chmod +x Phidler-x86_64.AppImage
 ```
 
 A fresh AppImage is built and published every night from `main` by the
-[Build AppImage](.github/workflows/appimage.yml) workflow (which also attaches it
+[Build AppImage + Flatpak](.github/workflows/appimage.yml) workflow (which also attaches it
 to every run as an artifact). To build one yourself:
 
 ```
@@ -56,17 +56,35 @@ The recipe lives in [`packaging/appimage/`](packaging/appimage/). The simulation
 packages are bundled at build time on purpose: an AppImage is read-only, so the
 app's in-app "install photonfdtd" step can't run inside one.
 
-### Linux Flatpak (GPU)
+### Linux Flatpak
 
-A Flatpak with the full FDTD stack *and* JAX's CUDA build, so simulations and
-training run on an NVIDIA GPU, is built by
-[`packaging/flatpak/build.sh`](packaging/flatpak/README.md):
+The same nightly release also carries a **Flatpak bundle**, with the same
+bundled FDTD stack, running sandboxed on the KDE runtime from Flathub:
 
 ```
-packaging/flatpak/build.sh                 # -> Phidler.flatpak (~2.3 GB)
-flatpak install --user Phidler.flatpak
+flatpak install --user Phidler-x86_64.flatpak   # pulls the runtime from Flathub
 flatpak run io.github.ngpaladi.Phidler
 ```
+
+To build it yourself (needs `flatpak-builder`):
+
+```
+packaging/flatpak/build.sh           # -> ./Phidler-x86_64.flatpak
+```
+
+The manifest lives in [`packaging/flatpak/`](packaging/flatpak/). The sandbox can
+reach your home directory (for GDS / `.phidler` files), the network, and your SSH
+agent (for remote FDTD runs). The optional `[ai]`, `[tidy3d]` and `[nereid]`
+extras aren't bundled; see the [docs](docs/index.md#linux-flatpak) for adding
+them.
+
+**GPU.** The bundle runs JAX on the CPU. For an NVIDIA GPU, add JAX's CUDA
+build inside the sandbox once, as described in the
+[docs](docs/index.md#linux-flatpak), then restart Phidler; the FDTD window's
+**Check JAX GPU…** confirms it.
+
+Or build a bundle with CUDA baked in: `GPU=1 packaging/flatpak/build.sh`
+(about 2.3 GB, too big for a GitHub release asset).
 
 ## Running it
 

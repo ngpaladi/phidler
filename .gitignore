@@ -7,3 +7,9 @@ __pycache__/
 site/
 .claude/
 *.phidler
+build/
+.flatpak-builder/
+packaging/flatpak/.*.gpu.yml
+*.AppImage
+*.flatpak
+squashfs-root/

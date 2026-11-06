@@ -61,6 +61,56 @@ no separate photonfdtd install. (A fresh AppImage is built and published every
 night from `main`. It needs a reasonably recent glibc, so any current desktop
 distro is fine.)
 
+### Linux — Flatpak
+
+The nightly release also includes a **Flatpak bundle**,
+`Phidler-x86_64.flatpak`, with the same bundled FDTD stack (photonfdtd + JAX +
+matplotlib). Choose it over the AppImage if you'd rather have Phidler installed,
+sandboxed and in your desktop's app menu. It runs on the KDE runtime, which
+Flatpak fetches from Flathub the first time you install:
+
+```sh
+flatpak install --user Phidler-x86_64.flatpak
+flatpak run io.github.ngpaladi.Phidler      # or launch "Phidler" from your app menu
+```
+
+The bundle isn't on Flathub, so `flatpak update` won't pick up new builds. To
+update, download the latest nightly and run the same `flatpak install` command
+again. To remove it: `flatpak uninstall --user io.github.ngpaladi.Phidler`.
+
+**What the sandbox can reach.** Your home directory (so you can open and save GDS
+and `.phidler` files anywhere under it), the network, and your SSH agent.
+[Remote FDTD over SSH](guide.md#running-on-a-remote-server) works as it does outside the sandbox: it reads
+your `~/.ssh/config` and uses the keys loaded in your agent.
+Files outside your home directory, such as an external drive under `/run/media`
+or `/mnt`, aren't visible until you grant access:
+
+```sh
+flatpak override --user --filesystem=/mnt/data io.github.ngpaladi.Phidler
+```
+
+**Optional extras.** The Flatpak bundles only the core app and the FDTD stack,
+with JAX on the CPU. The `[ai]`, `[tidy3d]` and `[nereid]` extras and JAX's GPU
+build aren't included, and the runtime has no `pip`. If you have the KDE SDK installed
+(`flatpak install --user flathub org.kde.Sdk//6.11`, about 1 GB), you can add
+them to the app's own persistent Python environment, which lives under
+`~/.var/app/io.github.ngpaladi.Phidler/`:
+
+```sh
+flatpak run --devel --command=pip3 io.github.ngpaladi.Phidler install --user "jax[cuda12]"
+```
+
+That one adds the **GPU**: the sandbox already has access to `/dev/nvidia*`, and
+Flatpak supplies the NVIDIA driver libraries through the
+`org.freedesktop.Platform.GL.nvidia-*` extension matching your driver. Restart
+Phidler and click **Check JAX GPU…** in the FDTD window to confirm. (Building
+the bundle yourself with `GPU=1 packaging/flatpak/build.sh` bakes the CUDA build
+in instead, for a ~2.3 GB bundle.)
+
+**Ask Claude** won't work inside the Flatpak in any case: it needs the
+`claude` CLI on your host, which the sandbox can't see. For that, install
+[from source](#from-source).
+
 ### From source
 
 Requires Python 3.10+.

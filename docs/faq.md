@@ -58,6 +58,28 @@ it creates the `.venv` and installs Phidler for you. On Windows, create the venv
 and `pip install -e ".[dev]"` as shown on the [home page](index.md#installation),
 then launch with `python -m phidler`.
 
+
+### AppImage or Flatpak?
+
+They carry the same app and the same bundled FDTD stack. The **AppImage** is one
+file you `chmod +x` and run: nothing is installed and nothing needs to be
+downloaded first. The **Flatpak** installs like a regular app, shows up in your
+app menu and runs sandboxed, at the cost of a one-off download of the KDE runtime
+from Flathub. If you want the optional extras (Ask Claude, Tidy3D, remote FDTD,
+GPU JAX), install from source instead. See [Installation](index.md#installation).
+
+### The Flatpak can't see files on my external drive
+
+The Flatpak sandbox can only see your home directory. Grant it the other path,
+for example `flatpak override --user --filesystem=/run/media/$USER
+io.github.ngpaladi.Phidler`, and restart the app. Details are in
+[Installation → Flatpak](index.md#linux-flatpak).
+
+### In the Flatpak, the "Ask Claude" mode is missing
+
+That's expected. Ask Claude runs the `claude` CLI installed on your host, and the
+Flatpak sandbox can't see it (the `mcp` package it also needs isn't bundled
+either). Use a [from-source install](index.md#from-source) for the AI assistant.
 ## Layout & routing
 
 ### My length-matched route didn't hit the goal exactly
