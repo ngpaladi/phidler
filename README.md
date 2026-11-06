@@ -44,7 +44,7 @@ chmod +x Phidler-x86_64.AppImage
 ```
 
 A fresh AppImage is built and published every night from `main` by the
-[Build AppImage + Flatpak](.github/workflows/appimage.yml) workflow (which also attaches it
+[Build Linux packages](.github/workflows/appimage.yml) workflow (which also attaches it
 to every run as an artifact). To build one yourself:
 
 ```
@@ -82,6 +82,26 @@ them.
 build inside the sandbox once, as described in the
 [docs](docs/index.md#linux-flatpak), then restart Phidler; the FDTD window's
 **Check JAX GPU…** confirms it.
+
+### Linux .deb / .rpm
+
+Native packages for Debian/Ubuntu and Fedora/RHEL/openSUSE are on the same
+nightly release. They install a bundled Python with the app and the FDTD stack
+to `/opt/phidler`, plus a `phidler` command and a desktop entry:
+
+```
+sudo apt install ./phidler_*_amd64.deb     # or: sudo dnf install ./phidler-*.x86_64.rpm
+```
+
+To build them yourself (needs [uv](https://docs.astral.sh/uv/); nfpm is
+downloaded if missing):
+
+```
+packaging/linux/build.sh             # -> ./phidler_<ver>-1_amd64.deb, ./phidler-<ver>-1.x86_64.rpm
+```
+
+See [`packaging/linux/`](packaging/linux/) and the
+[docs](docs/index.md#linux-deb-rpm) for adding the GPU build of JAX.
 
 Or build a bundle with CUDA baked in: `GPU=1 packaging/flatpak/build.sh`
 (about 2.3 GB, too big for a GitHub release asset).

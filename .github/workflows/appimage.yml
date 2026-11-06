@@ -1,12 +1,14 @@
-name: Build AppImage + Flatpak
+name: Build Linux packages
 
-# Builds a portable Linux AppImage and a Flatpak bundle of the app and uploads
-# each as a workflow artifact. AppImage: python-appimage bundles a relocatable CPython, pip-installs phidler +
+# Builds a portable Linux AppImage, a Flatpak bundle, and .deb / .rpm packages of
+# the app and uploads each as a workflow artifact. AppImage: python-appimage bundles a relocatable CPython, pip-installs phidler +
 # the FDTD simulation stack (photonfdtd + JAX + matplotlib) into it, and
 # repackages — no FUSE needed (it extracts rather than mounts), so it runs on the
 # stock runner. Flatpak: flatpak-builder against the KDE runtime from Flathub (see
-# packaging/flatpak/). On the nightly schedule (and manual runs) it also publishes
-# a rolling `nightly` pre-release with both attached.
+# packaging/flatpak/). deb / rpm: a relocatable CPython with the same stack under
+# /opt/phidler, packed by nfpm (see packaging/linux/). On the nightly schedule
+# (and manual runs) it also publishes a rolling `nightly` pre-release with all
+# of them attached.
 #
 # Runners are pinned to ubuntu-24.04 rather than ubuntu-latest (which moves to
 # Ubuntu 26 from Oct 2026): the Flatpak job's apt packages and its AppArmor
@@ -19,6 +21,7 @@ on:
       - "pyproject.toml"
       - "packaging/appimage/**"
       - "packaging/flatpak/**"
+      - "packaging/linux/**"
       - ".github/workflows/appimage.yml"
   schedule:
     # 08:00 UTC = 03:00 America/New_York during EST. GitHub Actions cron is
@@ -119,12 +122,66 @@ jobs:
           path: Phidler-*.flatpak
           if-no-files-found: error
 
+  linux-packages:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+
+      - name: Build the .deb and .rpm
+        # Fetches a python-build-standalone CPython with uv, pip-installs the
+        # stack into it, and packs it under /opt/phidler with nfpm.
+        run: packaging/linux/build.sh
+
+      - name: Smoke-test the .deb (install on Ubuntu, import, uninstall)
+        # A real apt install proves the declared dependencies resolve; then the
+        # same import check as the other packages, through the installed tree.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./phidler_*_amd64.deb
+          /opt/phidler/bin/python3 -s - <<'PY'
+          import phidler, gdsfactory, PySide6.QtCore
+          import photonfdtd, jax, matplotlib  # the bundled FDTD simulation stack
+          from PySide6.QtWidgets import QApplication
+          QApplication([])
+          print(".deb import OK — phidler", phidler.__version__,
+                "| photonfdtd", photonfdtd.__version__, "| jax", jax.__version__)
+          PY
+          test -x /usr/bin/phidler
+          sudo apt-get remove -y phidler
+          test ! -e /opt/phidler
+
+      - name: Smoke-test the .rpm (install on Fedora, import)
+        run: |
+          cat > smoke_rpm.py <<'PY'
+          import phidler, gdsfactory, photonfdtd, jax, matplotlib
+          from PySide6.QtWidgets import QApplication
+          QApplication([])
+          print(".rpm import OK — phidler", phidler.__version__, "| photonfdtd", photonfdtd.__version__)
+          PY
+          docker run --rm -v "$PWD:/pkg" -e QT_QPA_PLATFORM=offscreen fedora:42 bash -ec '
+            dnf install -y -q /pkg/phidler-*.x86_64.rpm
+            /opt/phidler/bin/python3 -s /pkg/smoke_rpm.py
+            test -x /usr/bin/phidler'
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Phidler-deb-rpm-x86_64
+          path: |
+            phidler_*.deb
+            phidler-*.rpm
+          if-no-files-found: error
+
   nightly-release:
-    # Publish the built AppImage + Flatpak as a rolling `nightly` pre-release.
+    # Publish the built AppImage, Flatpak, .deb and .rpm as a rolling `nightly`
+    # pre-release.
     # Only on the schedule or a manual run — ordinary pushes just produce the CI
     # artifacts above. Runs after (and only if) the build + smoke test passed, so a broken
     # build is never released. Scoped contents:write lives here, not on the builds.
-    needs: [build, flatpak]
+    needs: [build, flatpak, linux-packages]
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     permissions:
@@ -132,7 +189,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: Phidler-*-x86_64
+          pattern: Phidler-*x86_64
           merge-multiple: true
 
       - name: Publish / refresh the nightly pre-release
@@ -140,13 +197,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         # Move the rolling `nightly` tag to this commit and re-publish the
-        # release with the fresh AppImage + Flatpak. Delete-then-create keeps
-        # stable download URLs (…/releases/download/nightly/Phidler-x86_64.AppImage
-        # and …/Phidler-x86_64.flatpak).
+        # release with the fresh packages. Delete-then-create keeps stable download
+        # URLs for the AppImage and Flatpak (…/releases/download/nightly/Phidler-x86_64.AppImage
+        # and …/Phidler-x86_64.flatpak); the .deb and .rpm names carry the version.
         run: |
           gh release delete nightly --yes --cleanup-tag || true
-          gh release create nightly Phidler-*.AppImage Phidler-*.flatpak \
+          gh release create nightly Phidler-*.AppImage Phidler-*.flatpak phidler_*.deb phidler-*.rpm \
             --title "Nightly build ($(date -u +%Y-%m-%d))" \
-            --notes "Automated nightly build from \`${{ github.sha }}\`. Both packages bundle phidler and the FDTD simulation stack (photonfdtd + JAX + matplotlib). **AppImage:** self-contained, no install — \`chmod +x\` it and run. **Flatpak:** \`flatpak install --user Phidler-x86_64.flatpak\` (pulls the KDE runtime from Flathub), then \`flatpak run io.github.ngpaladi.Phidler\`." \
+            --notes "Automated nightly build from \`${{ github.sha }}\`. All four packages bundle phidler and the FDTD simulation stack (photonfdtd + JAX + matplotlib). **AppImage:** self-contained, no install — \`chmod +x\` it and run. **Flatpak:** \`flatpak install --user Phidler-x86_64.flatpak\` (pulls the KDE runtime from Flathub), then \`flatpak run io.github.ngpaladi.Phidler\`. **.deb / .rpm:** \`sudo apt install ./phidler_*_amd64.deb\` or \`sudo dnf install ./phidler-*.x86_64.rpm\`, then run \`phidler\`." \
             --prerelease \
             --target "${{ github.sha }}"

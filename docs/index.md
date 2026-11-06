@@ -111,6 +111,34 @@ in instead, for a ~2.3 GB bundle.)
 `claude` CLI on your host, which the sandbox can't see. For that, install
 [from source](#from-source).
 
+### Linux — .deb / .rpm
+
+The nightly release also has native packages for Debian/Ubuntu (`.deb`) and
+Fedora, RHEL and openSUSE (`.rpm`), with the same bundled FDTD stack. Each
+package carries its own Python under `/opt/phidler`, so it doesn't touch the
+system Python. It adds a `phidler` command and an entry in your app menu, and
+installs the few desktop libraries Qt needs from your distro:
+
+```sh
+sudo apt install ./phidler_*_amd64.deb      # Debian, Ubuntu
+sudo dnf install ./phidler-*.x86_64.rpm     # Fedora, RHEL
+sudo zypper install ./phidler-*.x86_64.rpm  # openSUSE
+```
+
+To update, install a newer package the same way. To remove it:
+`sudo apt remove phidler` or `sudo dnf remove phidler`.
+
+**GPU.** The packages run JAX on the CPU. For an NVIDIA GPU (driver supporting
+CUDA 12 or newer), add JAX's CUDA build to the bundled Python, then restart
+Phidler and click **Check JAX GPU…** in the FDTD window to confirm:
+
+```sh
+sudo /opt/phidler/bin/python3 -m pip install "jax[cuda12]==$(/opt/phidler/bin/python3 -c 'import jax; print(jax.__version__)')"
+```
+
+Pinning to the bundled JAX version keeps the plugin and JAX in step. Run it
+again after updating Phidler, since an update may bring a newer JAX.
+
 ### From source
 
 Requires Python 3.10+.
