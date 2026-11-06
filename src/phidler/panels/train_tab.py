@@ -46,6 +46,7 @@ _BOX_COLOR = "#ff9800"
 _TASKS = (
     ("Priority encoder (built-in)", "priority", 0),
     ("Classify a dataset (CSV / NPZ)", "classify", 1),
+    ("Detector bits from a dataset (CSV / NPZ)", "bits", 1),
     ("Output power fractions (CSV / NPZ)", "regress", 1),
     ("Target transfer matrix", "transfer", 2),
 )
@@ -413,16 +414,19 @@ class TrainTab(QWidget):
         self.pe_lines_spin.setRange(2, 8)
         self.pe_lines_spin.setValue(4)
         f.addRow("Lines", self.pe_lines_spin)
+        self.pe_encoding_combo = QComboBox()
+        self.pe_encoding_combo.addItem("Binary (⌈log₂ N⌉ detector bits)", "binary")
+        self.pe_encoding_combo.addItem("One-hot (N outputs, light goes to port k)", "one-hot")
+        self.pe_encoding_combo.currentIndexChanged.connect(self._update_pe_note)
+        f.addRow("Output", self.pe_encoding_combo)
         self.pe_thermo_check = QCheckBox("Thermometer codes only (lines 0..k lit, as from a TDC delay line)")
         f.addRow("", self.pe_thermo_check)
-        pe_note = QLabel(
-            "Each input line is lit or dark (in phase, equal amplitude). The chip must put "
-            "its light into output port k, where k is the highest-numbered lit line. Needs "
-            "as many outputs as lines."
-        )
-        pe_note.setWordWrap(True)
-        pe_note.setStyleSheet("color: gray; font-size: 9pt;")
-        f.addRow(pe_note)
+        self.pe_note = QLabel()
+        self.pe_note.setWordWrap(True)
+        self.pe_note.setStyleSheet("color: gray; font-size: 9pt;")
+        f.addRow(self.pe_note)
+        self.pe_lines_spin.valueChanged.connect(self._update_pe_note)
+        self._update_pe_note()
         self.task_stack.addWidget(pe)
 
         # 1: dataset file
@@ -465,6 +469,30 @@ class TrainTab(QWidget):
         v.addWidget(self.task_stack)
         return group
 
+    def pe_n_outputs(self) -> int:
+        n = self.pe_lines_spin.value()
+        if self.pe_encoding_combo.currentData() == "binary":
+            return max(1, (n - 1).bit_length())
+        return n
+
+    def _update_pe_note(self, *_args) -> None:
+        n, m = self.pe_lines_spin.value(), self.pe_n_outputs()
+        if self.pe_encoding_combo.currentData() == "binary":
+            self.pe_note.setText(
+                f"Each of the {n} input lines is lit or dark (in phase, equal amplitude). The {m} "
+                f"output ports are detector bits, port 0 the least significant: together they "
+                f"read k in binary, where k is the highest lit line (k = 0 reads all dark). Each "
+                f"port is read against its own threshold, and training maximizes the worst-case "
+                f"on/off contrast. With every pattern allowed, one linear chip can't exceed about "
+                f"6 dB on bit 0; thermometer codes have no such limit."
+            )
+        else:
+            self.pe_note.setText(
+                f"Each of the {n} input lines is lit or dark (in phase, equal amplitude). The chip "
+                f"must put its light into output port k, where k is the highest lit line. Needs "
+                f"{n} outputs."
+            )
+
     def _on_task_changed(self, idx: int) -> None:
         kind = _TASKS[idx][1]
         self.task_stack.setCurrentIndex(_TASKS[idx][2])
@@ -473,6 +501,13 @@ class TrainTab(QWidget):
                 "NPZ with arrays X (n samples × N inputs, complex) and Y (n integer labels; "
                 "class m is output port m), or CSV with columns in0, in1, … (complex amplitudes "
                 "such as 1 or 0.5+0.5j) and label."
+            )
+        elif kind == "bits":
+            self.data_note.setText(
+                "NPZ with X (n × N, complex) and Y (n × M of 0s and 1s, one column per output "
+                "port), or CSV with columns in0, in1, … and out0, out1, … holding 0 or 1. Each "
+                "output is a detector read against its own threshold; training maximizes the "
+                "worst-case on/off contrast."
             )
         elif kind == "regress":
             self.data_note.setText(
@@ -489,7 +524,8 @@ class TrainTab(QWidget):
     def current_task(self) -> ct.Task:
         kind = self.task_combo.currentData()
         if kind == "priority":
-            return ct.priority_encoder_task(self.pe_lines_spin.value(), self.pe_thermo_check.isChecked())
+            return ct.priority_encoder_task(self.pe_lines_spin.value(), self.pe_thermo_check.isChecked(),
+                                            self.pe_encoding_combo.currentData())
         if kind == "transfer":
             return ct.Task("transfer", "target matrix", target_T=parse_matrix(self.matrix_edit.toPlainText()))
         path = self.data_path_edit.text().strip()
@@ -565,7 +601,8 @@ class TrainTab(QWidget):
             center = (bb.right + 8.0 + 4.0, (bb.top + bb.bottom) / 2.0)
         else:
             center = (0.0, 0.0)
-        placements, box = ct.priority_encoder_stubs(n, center_um=center)
+        n_out = self.pe_n_outputs()
+        placements, box = ct.priority_encoder_stubs(n, center_um=center, n_out=n_out)
         stack = self.view.undo_stack
         scene = self.view.scene()
         placed = []
@@ -590,8 +627,8 @@ class TrainTab(QWidget):
         self.set_box_um(box)
         self.task_combo.setCurrentIndex(0)
         self.status_label.setText(
-            f"Inserted a {n}-line demo: {n} inputs on the left, {n} outputs on the right, and the "
-            "gap between them as the design box. Click Train."
+            f"Inserted a {n}-line demo: {n} inputs on the left, {n_out} outputs on the right, and "
+            "the gap between them as the design box. Click Train."
         )
         try:
             self.view.fitInView(scene.itemsBoundingRect(), Qt.KeepAspectRatio)
@@ -623,7 +660,8 @@ class TrainTab(QWidget):
         self.train_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.results_table.setRowCount(0)
-        metric = {"classify": "accuracy", "regress": "1 − rms error", "transfer": "fidelity"}[task.kind]
+        metric = {"classify": "accuracy", "bits": "accuracy", "regress": "1 − rms error",
+                  "transfer": "fidelity"}[task.kind]
         self.plot.clear(metric)
         self.status_label.setText("Building the port simulations…")
 
@@ -669,6 +707,8 @@ class TrainTab(QWidget):
         extra = ""
         if "accuracy" in rec:
             extra = f", accuracy {rec['accuracy']:.0%}"
+            if "contrast_db" in rec:
+                extra += f", worst contrast {rec['contrast_db']:.1f} dB"
         elif "fidelity" in rec:
             extra = f", fidelity {rec['fidelity']:.3f}"
         elif "rms_error" in rec:
@@ -695,6 +735,8 @@ class TrainTab(QWidget):
         head = "Stopped" if result.stopped else "Done"
         if "accuracy" in m:
             score = f"accuracy {m['accuracy']:.0%}"
+            if "contrast_db" in m:
+                score += f", worst on/off contrast {m['contrast_db']:.1f} dB"
         elif "fidelity" in m:
             score = f"fidelity {m['fidelity']:.3f}"
         else:
@@ -718,6 +760,9 @@ class TrainTab(QWidget):
             for i in range(T.shape[0]):
                 for j in range(T.shape[1]):
                     t.setItem(i, j, QTableWidgetItem(f"{T[i, j]:.3f}"))
+            return
+        if task.kind == "bits":
+            self._fill_bits(result)
             return
         frac = result.metrics["fractions"]
         M = frac.shape[1]
@@ -745,6 +790,32 @@ class TrainTab(QWidget):
             t.setItem(r, 2, item)
             for m in range(M):
                 t.setItem(r, 3 + m, QTableWidgetItem(f"{f[m]:.2f}"))
+
+    @staticmethod
+    def _input_text(x) -> str:
+        if np.allclose(x.imag, 0) and np.all(np.isin(x.real, (0, 1))):
+            return "".join(str(int(v)) for v in x.real)
+        return " ".join(f"{v:.2g}" for v in x)
+
+    def _fill_bits(self, result: ct.TrainResult) -> None:
+        """One row per sample: target and decoded bits (most significant first)
+        and each port's power relative to its threshold (> 1 reads 1)."""
+        task, t, m = self._task, self.results_table, result.metrics
+        rel, bits = m["relative"], m["bits"]
+        M = rel.shape[1]
+        t.setRowCount(len(rel))
+        t.setColumnCount(3 + M)
+        t.setHorizontalHeaderLabels(["Input", "Target", "Read"]
+                                    + [f"b{k} P/threshold" for k in reversed(range(M))])
+        t.verticalHeader().setVisible(False)
+        for r in range(len(rel)):
+            t.setItem(r, 0, QTableWidgetItem(self._input_text(task.X[r])))
+            t.setItem(r, 1, QTableWidgetItem("".join(str(b) for b in task.Y[r][::-1])))
+            item = QTableWidgetItem("".join(str(b) for b in bits[r][::-1]))
+            item.setForeground(QColor("#2e7d32" if np.array_equal(bits[r], task.Y[r]) else "#c62828"))
+            t.setItem(r, 2, item)
+            for c, k in enumerate(reversed(range(M))):
+                t.setItem(r, 3 + c, QTableWidgetItem(f"{rel[r, k]:.3g}"))
 
     def _on_failed(self, message: str) -> None:
         self.train_button.setEnabled(True)

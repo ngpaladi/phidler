@@ -22,6 +22,10 @@ the propagation tab's), so every loss here is scale-invariant:
 
 * ``classify``: cross-entropy on the share of power in each output port (class
   ``m`` is output port ``m``);
+* ``bits``: each output port is a detector read against its own threshold
+  (bright = 1, dark = 0). The loss is the on/off *contrast* at each port: the
+  dimmest sample that should read 1 against the brightest that should read 0,
+  in log power, pushed past a target margin;
 * ``regress``: mean-squared error between the output power *fractions* and
   target fractions (each target row sums to one);
 * ``transfer``: one minus the fidelity ``|<T, T_target>|**2 / (|T|**2 |T_target|**2)``,
@@ -60,7 +64,7 @@ _C0 = 299_792_458.0
 TRAINED_CELL = "trained_design"
 _CORE_LAYER = (1, 0)
 
-TASK_KINDS = ("classify", "regress", "transfer")
+TASK_KINDS = ("classify", "bits", "regress", "transfer")
 
 
 # --------------------------------------------------------------------------- #
@@ -133,8 +137,9 @@ def _axis_of(port: Port) -> str:
 @dataclass
 class Task:
     """What to train for. ``X`` is (n, N) complex input amplitudes; ``Y`` is
-    (n,) class labels (``classify``) or (n, M) target power fractions
-    (``regress``); ``target_T`` is the (M, N) linear map for ``transfer``."""
+    (n,) class labels (``classify``), (n, M) target bits, 0 or 1 per output
+    port (``bits``), or (n, M) target power fractions (``regress``);
+    ``target_T`` is the (M, N) linear map for ``transfer``."""
 
     kind: str
     name: str = ""
@@ -162,6 +167,11 @@ class Task:
             self.Y = np.asarray(self.Y).astype(int)
             if self.Y.shape != (self.X.shape[0],):
                 raise ValueError("classification labels Y must be (n_samples,)")
+        elif self.kind == "bits":
+            Y = np.asarray(self.Y)
+            if Y.ndim != 2 or Y.shape[0] != self.X.shape[0] or not np.all(np.isin(Y, (0, 1))):
+                raise ValueError("bit targets Y must be (n_samples, n_outputs) of 0s and 1s")
+            self.Y = Y.astype(int)
         else:
             Y = np.asarray(self.Y, float)
             if Y.ndim != 2 or Y.shape[0] != self.X.shape[0]:
@@ -179,28 +189,51 @@ class Task:
     def n_outputs(self) -> int | None:
         if self.kind == "transfer":
             return int(self.target_T.shape[0])
-        if self.kind == "regress":
+        if self.kind in ("regress", "bits"):
             return int(self.Y.shape[1])
         return int(self.Y.max()) + 1
 
 
-def priority_encoder_task(n_inputs: int = 4, thermometer: bool = False) -> Task:
-    """An ``n_inputs``-line priority encoder, one-hot: each input line is lit
-    (amplitude 1) or dark, and the chip must put its light into the output port
-    numbered after the *highest* lit line. ``thermometer=True`` keeps only the
-    thermometer codes (lines ``0..k`` lit), the patterns a tapped delay line's
-    TDC produces; the default trains on every non-empty pattern."""
+def priority_encoder_task(n_inputs: int = 4, thermometer: bool = False,
+                          encoding: str = "binary") -> Task:
+    """An ``n_inputs``-line priority encoder. Each input line is lit (amplitude
+    1, all in phase) or dark, and the output encodes the *highest* lit line k.
+
+    * ``encoding="binary"`` (a true priority encoder): ``ceil(log2 n_inputs)``
+      output ports carry k in binary, port 0 the least significant bit. Each
+      port is a thresholded detector (a ``bits`` task), so code 0 means every
+      output dark.
+    * ``encoding="one-hot"``: ``n_inputs`` output ports, and the light goes to
+      port k (a ``classify`` task).
+
+    ``thermometer=True`` keeps only the thermometer codes (lines ``0..k`` lit),
+    the patterns a tapped delay line's TDC produces; the default trains on every
+    non-empty pattern.
+
+    A single linear chip with power detection can't make every binary pattern
+    perfectly dark where it must be: for 4 lines, bit 0 has to read 1 for line 1
+    alone but 0 for line 2 alone and for lines 1 and 2 together, which caps the
+    worst-case on/off contrast at 2:1 in amplitude, 4:1 in power (6 dB).
+    Thermometer codes have no such conflict.
+    """
     if n_inputs < 2:
         raise ValueError("a priority encoder needs at least two inputs")
+    if encoding not in ("binary", "one-hot"):
+        raise ValueError("encoding must be 'binary' or 'one-hot'")
     if thermometer:
         pats = [[1] * (k + 1) + [0] * (n_inputs - k - 1) for k in range(n_inputs)]
     else:
         pats = [p for p in itertools.product((0, 1), repeat=n_inputs) if any(p)]
     X = np.asarray(pats, complex)
-    Y = np.asarray([max(i for i, b in enumerate(p) if b) for p in pats])
-    kind = "thermometer codes" if thermometer else f"all {len(pats)} input patterns"
-    return Task("classify", f"{n_inputs}-line priority encoder", X, Y,
-                description=f"Output port k lights when input k is the highest lit line ({kind}).")
+    k = np.asarray([max(i for i, b in enumerate(p) if b) for p in pats])
+    which = "thermometer codes" if thermometer else f"all {len(pats)} input patterns"
+    if encoding == "one-hot":
+        return Task("classify", f"{n_inputs}-line priority encoder (one-hot)", X, k,
+                    description=f"Output port k lights when input k is the highest lit line ({which}).")
+    n_bits = max(1, math.ceil(math.log2(n_inputs)))
+    Y = (k[:, None] >> np.arange(n_bits)[None, :]) & 1
+    return Task("bits", f"{n_inputs}-to-{n_bits} priority encoder", X, Y,
+                description=f"Output port m reads bit m of the highest lit line's index ({which}).")
 
 
 def load_task_file(path: str, kind: str) -> Task:
@@ -210,7 +243,8 @@ def load_task_file(path: str, kind: str) -> Task:
     ``in1``, ... are the input amplitudes (anything Python's ``complex()``
     parses: ``1``, ``0.5+0.5j``, ``-1j``). For ``classify`` a ``label`` column
     holds the class; for ``regress`` columns ``out0``, ``out1``, ... hold the
-    target powers. For ``transfer`` each row is one output port and the ``in*``
+    target powers, for ``bits`` the same columns hold 0 or 1. For ``transfer``
+    each row is one output port and the ``in*``
     columns its matrix row.
     """
     if path.lower().endswith(".npz"):
@@ -240,6 +274,8 @@ def load_task_file(path: str, kind: str) -> Task:
             raise ValueError(f"{path} needs a 'label' column for classification")
         return Task("classify", path, X, [int(r["label"]) for r in rows])
     outs = cols("out")
+    if kind == "bits":
+        return Task("bits", path, X, [[int(float(r[k])) for k in outs] for r in rows])
     return Task("regress", path, X, [[float(r[k]) for k in outs] for r in rows])
 
 
@@ -405,6 +441,64 @@ def _regress_loss(pred, y):
     return jnp.mean((_fractions(pred) - y) ** 2) * pred.shape[-1]
 
 
+def _bit_masks(Y):
+    """Per output port, the samples that should read 1 and 0; ports with no
+    samples of one kind have no contrast to train and are left out."""
+    Y = np.asarray(Y)
+    return [(m, np.flatnonzero(Y[:, m] == 1), np.flatnonzero(Y[:, m] == 0))
+            for m in range(Y.shape[1]) if (Y[:, m] == 1).any() and (Y[:, m] == 0).any()]
+
+
+def _bits_loss(Y, margin_db: float = 10.0, sharpness: float = 8.0):
+    """Contrast loss for thresholded detectors. Per port, a soft minimum of
+    the log powers that should read 1 against a soft maximum of those that
+    should read 0; softplus(margin - gap) pushes the gap past ``margin_db``.
+    Scale-invariant, since only power ratios enter."""
+    import jax
+    import jax.numpy as jnp
+
+    masks = _bit_masks(Y)
+    margin = margin_db * math.log(10.0) / 10.0
+
+    def loss(P):
+        logp = jnp.log(P + 1e-12)
+        terms = []
+        for m, on, off in masks:
+            lo_on = -jax.scipy.special.logsumexp(-sharpness * logp[on, m]) / sharpness
+            hi_off = jax.scipy.special.logsumexp(sharpness * logp[off, m]) / sharpness
+            terms.append(jax.nn.softplus(margin - (lo_on - hi_off)))
+        return jnp.mean(jnp.stack(terms))
+    return loss
+
+
+def decode_bits(P, Y) -> dict:
+    """Read thresholded detectors: per port the threshold is the geometric
+    midpoint between the dimmest should-be-1 and brightest should-be-0 power.
+    Returns the decoded bits, power relative to threshold, per-port contrast
+    (dB; negative means the port can't be read right at any threshold), the
+    worst contrast, and accuracy (samples with every bit right)."""
+    P = np.asarray(P, float)
+    Y = np.asarray(Y)
+    n, M = Y.shape
+    thr = np.empty(M)
+    contrast = np.full(M, np.inf)
+    for m in range(M):
+        on, off = P[Y[:, m] == 1, m], P[Y[:, m] == 0, m]
+        if on.size and off.size:
+            thr[m] = math.sqrt(max(on.min(), 1e-300) * max(off.max(), 1e-300))
+            contrast[m] = 10.0 * math.log10(max(on.min(), 1e-300) / max(off.max(), 1e-300))
+        elif on.size:
+            thr[m] = on.min() / 2.0
+        else:
+            thr[m] = off.max() * 2.0 if off.max() > 0 else 1.0
+    rel = P / thr[None, :]
+    bits = (rel > 1.0).astype(int)
+    finite = contrast[np.isfinite(contrast)]
+    return {"accuracy": float(np.mean(np.all(bits == Y, axis=1))),
+            "contrast_db": float(finite.min()) if finite.size else float("inf"),
+            "port_contrast_db": contrast, "relative": rel, "bits": bits}
+
+
 def _fidelity_loss(target):
     import jax.numpy as jnp
     t = jnp.asarray(target)
@@ -459,8 +553,9 @@ def _schedule(opts: TrainOptions):
 
 
 def evaluate(model: ChipModel, task: Task, T: np.ndarray) -> dict:
-    """Task metrics for a transfer matrix: accuracy (classify), RMS fraction
-    error (regress) or fidelity (transfer), plus the per-sample predictions."""
+    """Task metrics for a transfer matrix: accuracy (classify, bits; for bits
+    also the worst on/off contrast in dB), RMS fraction error (regress) or
+    fidelity (transfer), plus the per-sample predictions."""
     if task.kind == "transfer":
         return {"fidelity": fidelity(T, task.target_T)}
     a = task.X @ T.T  # (n, M)
@@ -469,6 +564,8 @@ def evaluate(model: ChipModel, task: Task, T: np.ndarray) -> dict:
     if task.kind == "classify":
         acc = float(np.mean(np.argmax(P, 1) == task.Y))
         return {"accuracy": acc, "fractions": frac}
+    if task.kind == "bits":
+        return decode_bits(P, task.Y)
     return {"rms_error": float(np.sqrt(np.mean((frac - task.Y) ** 2))), "fractions": frac}
 
 
@@ -489,7 +586,7 @@ def train_chip(
         raise ValueError(f"the task has {task.n_inputs} inputs but {model.n_inputs} input ports are selected")
     if task.n_outputs is not None and task.n_outputs > model.n_outputs:
         raise ValueError(f"the task needs {task.n_outputs} outputs but only {model.n_outputs} output ports are selected")
-    if task.kind == "regress" and task.n_outputs != model.n_outputs:
+    if task.kind in ("regress", "bits") and task.n_outputs != model.n_outputs:
         raise ValueError(f"the targets have {task.n_outputs} columns but {model.n_outputs} output ports are selected")
     if task.kind == "transfer" and task.target_T.shape != (model.n_outputs, model.n_inputs):
         raise ValueError(f"target matrix is {task.target_T.shape[0]}x{task.target_T.shape[1]}, "
@@ -513,7 +610,13 @@ def train_chip(
 
         X = jnp.asarray(task.X)
         Y = jnp.asarray(task.Y)
-        lossf = _cross_entropy if task.kind == "classify" else _regress_loss
+        if task.kind == "bits":
+            bl = _bits_loss(task.Y)
+
+            def lossf(pred, _y):
+                return bl(pred)
+        else:
+            lossf = _cross_entropy if task.kind == "classify" else _regress_loss
 
         def loss_T(T):
             return lossf(model.model.apply(T / scale, X), Y)
@@ -625,22 +728,23 @@ def place_trained_design(document: LayoutDocument, model: ChipModel, rho_phys, t
 
 def priority_encoder_stubs(n: int = 4, pitch_um: float = 1.2, gap_um: float = 4.0,
                           stub_um: float = 2.0, width_um: float = 0.5,
-                          center_um: tuple[float, float] = (0.0, 0.0)):
+                          center_um: tuple[float, float] = (0.0, 0.0), n_out: int | None = None):
     """Where the built-in demo's waveguides go: ``n`` input stubs on the left
-    and ``n`` output stubs on the right of an empty gap, line 0 at the bottom.
-    Returns ``(placements, box_um)``: ``placements`` is a list of
+    and ``n_out`` (default ``n``) output stubs on the right of an empty gap,
+    line 0 / port 0 at the bottom, each column centred. Returns
+    ``(placements, box_um)``: ``placements`` is a list of
     ``(role, line, component_spec, kwargs, x, y)`` for add_instance (inputs
     face left out of their ``o1`` port, outputs right out of ``o2``), and
     ``box_um`` is the gap, the design box to train."""
+    n_out = n if n_out is None else n_out
     cx, cy = center_um
-    y0 = cy - (n - 1) * pitch_um / 2.0
     kwargs = {"length": stub_um, "width": width_um}
     placements = []
-    for k in range(n):
-        y = y0 + k * pitch_um
-        placements.append(("input", k, "straight", dict(kwargs), cx - gap_um / 2 - stub_um, y))
-        placements.append(("output", k, "straight", dict(kwargs), cx + gap_um / 2, y))
-    half = n * pitch_um / 2.0
+    for role, count, x in (("input", n, cx - gap_um / 2 - stub_um), ("output", n_out, cx + gap_um / 2)):
+        y0 = cy - (count - 1) * pitch_um / 2.0
+        for k in range(count):
+            placements.append((role, k, "straight", dict(kwargs), x, y0 + k * pitch_um))
+    half = max(n, n_out) * pitch_um / 2.0
     return placements, (cx - gap_um / 2, cy - half, cx + gap_um / 2, cy + half)
 
 
@@ -652,15 +756,19 @@ def demo_ports(document: LayoutDocument, placed: list[tuple[str, int, int]]):
     def port(inst_id, name):
         return ports[f"{document.instances[inst_id].component_spec}#{inst_id}:{name}"]
 
-    inputs = tuple(port(i, "o1") for role, _, i in sorted(placed, key=lambda t: t[1]) if role == "input")
-    outputs = tuple(port(i, "o2") for role, _, i in sorted(placed, key=lambda t: t[1]) if role == "output")
+    ordered = sorted(placed, key=lambda t: t[1])
+    inputs = tuple(port(i, "o1") for role, _, i in ordered if role == "input")
+    outputs = tuple(port(i, "o2") for role, _, i in ordered if role == "output")
     return inputs, outputs
 
 
-def demo_priority_encoder_layout(document: LayoutDocument, n: int = 4, **kwargs):
+def demo_priority_encoder_layout(document: LayoutDocument, n: int = 4, encoding: str = "binary", **kwargs):
     """Lay out the built-in demo directly on ``document`` (for scripts and the
-    console; the Train tab places the same stubs through undoable commands).
-    Returns ``(box_um, inputs, outputs)`` ready for a TrainConfig."""
+    console; the Train tab places the same stubs through undoable commands):
+    ``n`` inputs and, to match :func:`priority_encoder_task`'s ``encoding``,
+    ``ceil(log2 n)`` (binary) or ``n`` (one-hot) outputs. Returns
+    ``(box_um, inputs, outputs)`` ready for a TrainConfig."""
+    kwargs.setdefault("n_out", max(1, (n - 1).bit_length()) if encoding == "binary" else n)
     placements, box = priority_encoder_stubs(n, **kwargs)
     placed = []
     for role, line, spec, kw, x, y in placements:

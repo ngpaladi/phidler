@@ -7,6 +7,7 @@ from phidler.model.document import LayoutDocument
 
 
 def _demo(n=2, **kw):
+    kw.setdefault("n_out", n)
     doc = LayoutDocument()
     box, ins, outs = ct.demo_priority_encoder_layout(doc, n, **kw)
     return doc, box, ins, outs
@@ -15,14 +16,49 @@ def _demo(n=2, **kw):
 # -- tasks ------------------------------------------------------------------ #
 
 
-def test_priority_encoder_labels_the_highest_lit_line():
-    t = ct.priority_encoder_task(3)
+def test_one_hot_priority_encoder_labels_the_highest_lit_line():
+    t = ct.priority_encoder_task(3, encoding="one-hot")
     assert t.kind == "classify" and t.X.shape == (7, 3)
     for x, y in zip(t.X.real.astype(int), t.Y):
         assert y == max(i for i, b in enumerate(x) if b)
-    th = ct.priority_encoder_task(4, thermometer=True)
+    th = ct.priority_encoder_task(4, thermometer=True, encoding="one-hot")
     assert th.X.real.astype(int).tolist() == [[1, 0, 0, 0], [1, 1, 0, 0], [1, 1, 1, 0], [1, 1, 1, 1]]
     assert th.Y.tolist() == [0, 1, 2, 3]
+
+
+def test_binary_priority_encoder_reduces_four_lines_to_two_bits():
+    t = ct.priority_encoder_task(4)  # binary is the default
+    assert t.kind == "bits" and t.X.shape == (15, 4) and t.Y.shape == (15, 2)
+    for x, y in zip(t.X.real.astype(int), t.Y):
+        k = max(i for i, b in enumerate(x) if b)
+        assert y[0] == k & 1 and y[1] == (k >> 1) & 1  # port 0 is the LSB
+    th = ct.priority_encoder_task(4, thermometer=True)
+    assert th.Y.tolist() == [[0, 0], [1, 0], [0, 1], [1, 1]]
+    assert ct.priority_encoder_task(5).Y.shape[1] == 3
+    assert ct.priority_encoder_task(2).Y.shape[1] == 1
+
+
+def test_decode_bits_thresholds_each_port_at_the_geometric_midpoint():
+    Y = np.array([[1, 0], [0, 1], [1, 1], [0, 0]])
+    P = np.array([[4.0, 0.1], [1.0, 9.0], [8.0, 3.0], [0.5, 0.2]])
+    d = ct.decode_bits(P, Y)
+    assert d["accuracy"] == 1.0 and d["bits"].tolist() == Y.tolist()
+    # port 0: dimmest 1 is 4, brightest 0 is 1 -> 6.02 dB; port 1: 3 vs 0.2 -> 11.8 dB
+    assert d["port_contrast_db"][0] == pytest.approx(10 * np.log10(4.0))
+    assert d["contrast_db"] == pytest.approx(10 * np.log10(4.0))
+    bad = ct.decode_bits(np.array([[1.0], [2.0]]), np.array([[1], [0]]))
+    assert bad["contrast_db"] < 0 and bad["accuracy"] < 1.0
+
+
+def test_bits_loss_rewards_contrast_and_ignores_scale():
+    import jax.numpy as jnp
+
+    Y = np.array([[1], [0], [1], [0]])
+    loss = ct._bits_loss(Y)
+    good = jnp.array([[1.0], [0.01], [2.0], [0.02]])
+    poor = jnp.array([[1.0], [0.8], [2.0], [0.9]])
+    assert float(loss(good)) < float(loss(poor))
+    assert float(loss(good * 1e-6)) == pytest.approx(float(loss(good)), rel=1e-4)
 
 
 def test_regression_targets_are_normalized_to_fractions():
@@ -125,7 +161,7 @@ def small_model(qapp):
 
 def test_training_a_two_line_priority_encoder_reaches_full_accuracy(small_model):
     _doc, m = small_model
-    task = ct.priority_encoder_task(2)
+    task = ct.priority_encoder_task(2, encoding="one-hot")
     seen = []
     r = ct.train_chip(m, task, ct.TrainOptions(steps=25, learning_rate=0.08),
                       callback=lambda rec, rho: seen.append((rec, rho.shape)))
@@ -137,7 +173,7 @@ def test_training_a_two_line_priority_encoder_reaches_full_accuracy(small_model)
 
 def test_callback_returning_true_stops_training(small_model):
     _doc, m = small_model
-    r = ct.train_chip(m, ct.priority_encoder_task(2), ct.TrainOptions(steps=50),
+    r = ct.train_chip(m, ct.priority_encoder_task(2, encoding="one-hot"), ct.TrainOptions(steps=50),
                       callback=lambda rec, rho: rec["it"] >= 2)
     assert r.stopped and len(r.history) == 3
 
@@ -151,10 +187,22 @@ def test_transfer_and_regression_tasks_train(small_model):
     assert np.isfinite(r.metrics["rms_error"])
 
 
+def test_detector_bits_task_trains_to_full_accuracy(small_model):
+    """Two thresholded detectors: input 0 alone lights only port 0, input 1
+    alone only port 1, both together light both."""
+    _doc, m = small_model
+    task = ct.Task("bits", X=[[1, 0], [0, 1], [1, 1]], Y=[[1, 0], [0, 1], [1, 1]])
+    r = ct.train_chip(m, task, ct.TrainOptions(steps=25, learning_rate=0.08))
+    assert all(np.isfinite(h["value"]) for h in r.history)
+    assert r.metrics["accuracy"] == 1.0 and r.metrics["contrast_db"] > 3.0
+
+
 def test_task_and_port_count_mismatch_is_reported(small_model):
     _doc, m = small_model
     with pytest.raises(ValueError, match="3 inputs"):
         ct.train_chip(m, ct.priority_encoder_task(3), ct.TrainOptions(steps=1))
+    with pytest.raises(ValueError, match="1 columns but 2 output"):
+        ct.train_chip(m, ct.priority_encoder_task(2), ct.TrainOptions(steps=1))
 
 
 # -- placing the result ----------------------------------------------------- #
@@ -214,7 +262,10 @@ def test_train_tab_demo_trains_and_places_a_design(qapp):
     win = MainWindow()
     fw = FdtdWindow(win.document, win.view)
     tab = fw.train_tab
+    tab.pe_lines_spin.setValue(4)
+    assert tab.pe_n_outputs() == 2  # binary by default: 4 lines -> 2 bits
     tab.pe_lines_spin.setValue(2)
+    tab.pe_encoding_combo.setCurrentIndex(tab.pe_encoding_combo.findData("one-hot"))
     tab._on_insert_demo()
     assert len(win.document.instances) == 4
     ins, outs = tab.selected_ports()
@@ -263,4 +314,29 @@ def test_train_tab_rejects_a_task_that_does_not_match_the_ports(qapp, monkeypatc
     tab._on_train()
     assert warned and "3 inputs" in warned[0]
     assert not tab.is_training()
+    fw.close()
+
+
+def test_train_tab_binary_encoder_demo_reads_bits(qapp):
+    from phidler.main_window import MainWindow
+    from phidler.panels.fdtd_window import FdtdWindow
+
+    win = MainWindow()
+    fw = FdtdWindow(win.document, win.view)
+    tab = fw.train_tab
+    tab.pe_lines_spin.setValue(2)  # 2 lines -> 1 bit
+    tab._on_insert_demo()
+    ins, outs = tab.selected_ports()
+    assert len(ins) == 2 and len(outs) == 1 and len(win.document.instances) == 3
+    tab.cell_spin.setValue(0.1)
+    tab.steps_spin.setValue(20)
+    tab.lr_spin.setValue(0.08)
+    tab._on_train()
+    assert _pump_until(lambda: tab.place_button.isEnabled() or tab.train_button.isEnabled())
+    assert tab._result is not None, tab.status_label.text()
+    m = tab._result.metrics
+    assert m["accuracy"] == 1.0 and m["contrast_db"] > 0
+    assert "dB" in tab.status_label.text()
+    assert tab.results_table.rowCount() == 3 and tab.results_table.columnCount() == 4
+    assert not fw.grab().isNull()
     fw.close()
