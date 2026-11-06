@@ -23,6 +23,11 @@ on:
       - "packaging/flatpak/**"
       - "packaging/linux/**"
       - ".github/workflows/appimage.yml"
+  # PRs that change the packaging build every package too (but never publish).
+  pull_request:
+    paths:
+      - "packaging/**"
+      - ".github/workflows/appimage.yml"
   schedule:
     # 08:00 UTC = 03:00 America/New_York during EST. GitHub Actions cron is
     # UTC-only (no DST), so in EDT (summer) this lands at 04:00 Eastern.
