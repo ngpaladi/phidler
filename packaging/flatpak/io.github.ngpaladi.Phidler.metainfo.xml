@@ -22,4 +22,13 @@
     <category>Engineering</category>
   </categories>
   <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.2.0" date="2026-11-06">
+      <description>
+        <p>Runs FDTD on photonfdtd 0.15's JAX engine, on the GPU when JAX sees one,
+        adds a Train tab that fits a region of the layout to a task like a neural
+        network (with a built-in binary priority encoder), and a JAX GPU check.</p>
+      </description>
+    </release>
+  </releases>
 </component>
