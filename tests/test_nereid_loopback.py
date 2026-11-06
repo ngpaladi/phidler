@@ -185,7 +185,7 @@ def test_run_on_nereid_round_trips_a_real_solve(qapp, nereid_server):
 
     doc = LayoutDocument()
     doc.add_instance("straight", {"length": 6.0, "width": 0.5})
-    params = FdtdParams(cell_size_um=0.1, use_numba=False, sources=(SourceSpec(x_um=-4.0, y_um=0.0),))
+    params = FdtdParams(cell_size_um=0.1, sources=(SourceSpec(x_um=-4.0, y_um=0.0),))
 
     ticks: list[tuple[int, int]] = []
     sim, result, elapsed = run_on_nereid(

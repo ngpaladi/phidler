@@ -41,13 +41,22 @@ def test_backend_field_round_trips(tmp_path):
     assert loaded.resolved_backend() == "jax"
 
 
-def test_resolved_backend_maps_legacy_use_gpu_to_cupy():
+def test_resolved_backend_maps_legacy_use_gpu_to_jax():
     # A config saved by an older phidler had only use_gpu (no `backend`); it meant
-    # the CuPy GPU path.
-    assert RemoteConfig(alias="h", use_gpu=True).resolved_backend() == "cupy"
+    # the GPU, which is now JAX's GPU build (CuPy was removed in photonfdtd 0.13).
+    assert RemoteConfig(alias="h", use_gpu=True).resolved_backend() == "jax"
     assert RemoteConfig(alias="h").resolved_backend() == "cpu"
     # An explicit backend wins over the legacy bool.
     assert RemoteConfig(alias="h", backend="jax", use_gpu=True).resolved_backend() == "jax"
+    assert RemoteConfig(alias="h", backend="cpu", use_gpu=True).resolved_backend() == "cpu"
+
+
+def test_resolved_backend_maps_removed_cupy_to_jax(tmp_path):
+    assert RemoteConfig(alias="h", backend="cupy").resolved_backend() == "jax"
+    # ...including after a save/load round trip of an old config.
+    settings = _throwaway_settings(tmp_path)
+    save_remote_config(RemoteConfig(alias="h", backend="cupy", use_gpu=True), settings)
+    assert load_remote_config(settings).resolved_backend() == "jax"
 
 
 def test_unset_config_is_defaults(tmp_path):

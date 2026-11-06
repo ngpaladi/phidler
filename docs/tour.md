@@ -138,7 +138,7 @@ your waveguide cross-section and see its field and effective index.
 
 Then place **sources** on the canvas (a plain dipole, a mode-matched single
 photon, a scripted waveform, or a Cherenkov track), pick the cladding material,
-choose CPU/Numba/GPU, and run.
+and run (on the GPU when JAX can see one).
 
 <img src="screenshots/fdtd_source_setup.png" width="420" alt="The FDTD propagation controls with two sources placed in the source table"> <img src="screenshots/fdtd_source_kind_dropdown.png" width="150" alt="The source-kind dropdown listing dipole, single_photon, scripted, and cherenkov"> <img src="screenshots/fdtd_cladding_material_dropdown.png" width="300" alt="The cladding-material dropdown listing SiO2, air, Si3N4, and other presets">
 

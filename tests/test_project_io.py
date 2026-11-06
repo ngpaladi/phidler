@@ -191,7 +191,7 @@ def test_save_and_load_round_trips_simulation_config(qapp, tmp_path):
         cell_size_um=0.05,
         run_time_fs=40.0,
         clad_index=1.46,
-        use_numba=True,
+        subpixel=True,
         region_selected_only=True,
         sources=(
             SourceSpec(x_um=1.0, y_um=2.0, kind="dipole", wavelength_um=1.31),
@@ -213,7 +213,7 @@ def test_save_and_load_round_trips_simulation_config(qapp, tmp_path):
     assert math.isclose(cfg.cell_size_um, 0.05)
     assert math.isclose(cfg.run_time_fs, 40.0)
     assert math.isclose(cfg.clad_index, 1.46)
-    assert cfg.use_numba is True
+    assert cfg.subpixel is True
     assert cfg.region_selected_only is True
     assert cfg.mode_num_modes == 3
     assert math.isclose(cfg.mode_core_width_um, 0.7)
@@ -222,6 +222,41 @@ def test_save_and_load_round_trips_simulation_config(qapp, tmp_path):
     assert math.isclose(cfg.sources[0].x_um, 1.0)
     assert cfg.sources[1].kind == "single_photon"
     assert math.isclose(cfg.sources[1].core_width_um, 0.6)
+
+
+def test_load_drops_removed_backend_keys_from_an_old_simulation_config(qapp, tmp_path):
+    """A project saved before photonfdtd 0.13 went JAX-only carries the
+    GPU/Numba/JAX/Rust switches in its simulation_config. Those options no
+    longer exist; loading must drop them and keep everything else."""
+    import json
+
+    from phidler.fdtd_sim import SimulationConfig, SourceSpec
+
+    win = MainWindow()
+    _build_sample(win)
+    win.document.simulation_config = SimulationConfig(
+        wavelength_um=1.31, cell_size_um=0.05, eim=True,
+        sources=(SourceSpec(x_um=1.0, y_um=2.0, kind="dipole", wavelength_um=1.31),),
+    )
+    project_path = tmp_path / "old.phidler"
+    save_project(win.document, str(project_path))
+
+    data = json.loads(project_path.read_text())
+    data["simulation_config"].update(
+        use_numba=True, use_gpu=True, use_jax=False, use_rust=True, use_rust_cuda=False,
+    )
+    project_path.write_text(json.dumps(data))
+
+    win2 = MainWindow()
+    load_project(str(project_path), win2.document, win2.scene)  # must not raise
+    cfg = win2.document.simulation_config
+    assert cfg is not None
+    assert math.isclose(cfg.wavelength_um, 1.31)
+    assert math.isclose(cfg.cell_size_um, 0.05)
+    assert cfg.eim is True
+    assert len(cfg.sources) == 1 and cfg.sources[0].kind == "dipole"
+    assert not hasattr(cfg, "use_numba") and not hasattr(cfg, "use_gpu")
+    assert len(win2.document.instances) == 2  # the rest of the project loaded too
 
 
 def test_save_and_load_round_trips_etch_layers(qapp, tmp_path):

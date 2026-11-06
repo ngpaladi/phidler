@@ -2,7 +2,7 @@ name: Build AppImage + Flatpak
 
 # Builds a portable Linux AppImage and a Flatpak bundle of the app and uploads
 # each as a workflow artifact. AppImage: python-appimage bundles a relocatable CPython, pip-installs phidler +
-# the FDTD simulation stack (photonfdtd + numba + matplotlib) into it, and
+# the FDTD simulation stack (photonfdtd + JAX + matplotlib) into it, and
 # repackages — no FUSE needed (it extracts rather than mounts), so it runs on the
 # stock runner. Flatpak: flatpak-builder against the KDE runtime from Flathub (see
 # packaging/flatpak/). On the nightly schedule (and manual runs) it also publishes
@@ -59,7 +59,7 @@ jobs:
       - name: Smoke-test the AppImage (headless import)
         # Extract (no FUSE on runners) and drive the bundled Python directly:
         # importing the app + its heavy deps — including the FDTD simulation
-        # stack (photonfdtd, numba, matplotlib) — proves the bundle is populated
+        # stack (photonfdtd, jax, matplotlib) — proves the bundle is populated
         # and loadable, and guards that simulation stays bundled. A full GUI
         # launch can't be verified headlessly (it enters an event loop), so this
         # checks importability, not a running window.
@@ -70,9 +70,9 @@ jobs:
           "${{ steps.find.outputs.path }}" --appimage-extract >/dev/null
           squashfs-root/usr/bin/python3.12 - <<'PY'
           import phidler, gdsfactory, PySide6.QtCore
-          import photonfdtd, numba, matplotlib  # the bundled FDTD simulation stack
+          import photonfdtd, jax, matplotlib  # the bundled FDTD simulation stack
           print("AppImage import OK — phidler", phidler.__version__,
-                "| photonfdtd", photonfdtd.__version__, "| numba", numba.__version__)
+                "| photonfdtd", photonfdtd.__version__, "| jax", jax.__version__)
           PY
 
       - uses: actions/upload-artifact@v7
@@ -108,9 +108,9 @@ jobs:
           dbus-run-session -- flatpak run --env=QT_QPA_PLATFORM=offscreen \
             --env=PYTHONNOUSERSITE=1 --command=python3 "$APP_ID" - <<'PY'
           import phidler, gdsfactory, PySide6.QtCore
-          import photonfdtd, numba, matplotlib  # the bundled FDTD simulation stack
+          import photonfdtd, jax, matplotlib  # the bundled FDTD simulation stack
           print("Flatpak import OK — phidler", phidler.__version__,
-                "| photonfdtd", photonfdtd.__version__, "| numba", numba.__version__)
+                "| photonfdtd", photonfdtd.__version__, "| jax", jax.__version__)
           PY
 
       - uses: actions/upload-artifact@v7
@@ -147,6 +147,6 @@ jobs:
           gh release delete nightly --yes --cleanup-tag || true
           gh release create nightly Phidler-*.AppImage Phidler-*.flatpak \
             --title "Nightly build ($(date -u +%Y-%m-%d))" \
-            --notes "Automated nightly build from \`${{ github.sha }}\`. Both packages bundle phidler and the FDTD simulation stack (photonfdtd + numba + matplotlib). **AppImage:** self-contained, no install — \`chmod +x\` it and run. **Flatpak:** \`flatpak install --user Phidler-x86_64.flatpak\` (pulls the KDE runtime from Flathub), then \`flatpak run io.github.ngpaladi.Phidler\`." \
+            --notes "Automated nightly build from \`${{ github.sha }}\`. Both packages bundle phidler and the FDTD simulation stack (photonfdtd + JAX + matplotlib). **AppImage:** self-contained, no install — \`chmod +x\` it and run. **Flatpak:** \`flatpak install --user Phidler-x86_64.flatpak\` (pulls the KDE runtime from Flathub), then \`flatpak run io.github.ngpaladi.Phidler\`." \
             --prerelease \
             --target "${{ github.sha }}"

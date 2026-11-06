@@ -5,7 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .custom_components import load_custom_components
-from .fdtd_sim import ProbeSpec, SimulationConfig, SourceSpec
+from .fdtd_sim import ProbeSpec, SimulationConfig, SourceSpec, known_fields
 from .model.annotation import DEFAULT_ANNOTATION_COLOR, CalloutShape
 from .model.document import EtchLayer, LayoutDocument, ProjectSettings
 from .model.layers import LayerInfo
@@ -177,7 +177,7 @@ def load_project(path: str, document: LayoutDocument, scene) -> dict[str, Compon
         sources = tuple(SourceSpec(**s) for s in sim_data.get("sources", []))
         probes = tuple(ProbeSpec(**p) for p in sim_data.get("probes", []))
         document.simulation_config = SimulationConfig(
-            **{**sim_data, "sources": sources, "probes": probes}
+            **known_fields(SimulationConfig, {**sim_data, "sources": sources, "probes": probes})
         )
     else:
         document.simulation_config = None

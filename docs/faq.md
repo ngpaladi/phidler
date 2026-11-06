@@ -137,59 +137,38 @@ the "single photon" framing is semi-classical. It's for building intuition and
 checking that a device behaves, not a substitute for a calibrated photonic
 simulator.
 
-### Can I use an AMD GPU, not just NVIDIA?
+### How do I run on the GPU?
 
-Yes. As of photonfdtd 0.9 the GPU path is JAX, so the simplest route for either
-vendor is a GPU-capable jax (`pip install "jax[cuda12]"` for NVIDIA); tick **JAX**
-and it runs on the GPU through XLA. The older **GPU (CuPy)** box still covers AMD
-via CuPy's ROCm build (`pip install cupy-rocm-5-0`) or NVIDIA via the CUDA build
-(`pip install cupy-cuda12x`), but it's deprecated now, so prefer JAX. Either way
-the status line tells you which backend actually ran.
+photonfdtd runs on JAX, which uses an NVIDIA GPU by itself once JAX's CUDA build
+is installed (`pip install "jax[cuda12]"`, CUDA 12 or newer driver). The FDTD
+window's **Acceleration** row says whether runs will go to the GPU or the CPU.
+AMD GPUs aren't set up automatically; runs there use the CPU.
 
-### The GPU checkbox is greyed out
+### It says "JAX on the CPU" but I have a GPU
 
-That's the legacy **GPU (CuPy)** box, greyed out because CuPy isn't installed (or
-its build doesn't match your driver). You don't need it for GPU work anymore.
-Install a GPU jax instead (`pip install "jax[cuda12]"`) and use the **JAX** box.
-Numba (a CPU just-in-time compiler) is a lighter alternative, and it's on by
-default when installed.
+Click **Check JAX GPU** next to that label. It starts JAX in a fresh process and
+tells you why it isn't on the GPU: the CUDA build of jax isn't installed, your
+driver is too old for CUDA 12, or the CUDA plugin is installed but couldn't load
+its libraries (it shows what JAX logged, and the fix). After fixing it, restart
+Phidler: JAX picks its device once per process.
 
-### What are the JAX and Subpixel smoothing options?
+### Where did the Numba, GPU (CuPy) and Rust options go?
 
-**JAX** is photonfdtd's differentiable stepper and, since 0.9, the recommended way
-to use the GPU: it runs on the GPU through XLA when one is visible and on the CPU
-otherwise, always in the background (slow first compile, fast after). It's greyed
-out unless the `jax` package is installed. **Subpixel smoothing** is an accuracy
-option: it gives cells that straddle a material edge a blended permittivity so a
-slanted or curved boundary isn't forced onto the grid, letting a given cell size
-resolve your geometry more faithfully. JAX is exclusive of the GPU/Numba boxes,
-and subpixel works everywhere except Numba and Rust, so the checkboxes clear each
-other where they'd conflict. See [Speed](guide.md#speed) and
+photonfdtd 0.13 made JAX its only stepping engine and removed the NumPy, Numba,
+CuPy and Rust backends, so their checkboxes are gone. JAX covers both the CPU
+and the GPU. Projects saved with those boxes ticked still open; the settings are
+ignored.
+
+### What is the Subpixel smoothing option?
+
+An accuracy option: it gives cells that straddle a material edge a blended
+permittivity, so a slanted or curved boundary isn't forced onto the grid and a
+given cell size resolves your geometry more faithfully. See
 [A sharper run](guide.md#a-sharper-run-subpixel-smoothing).
-
-### What are the Rust and Rust (CUDA) options?
-
-They're photonfdtd 0.12's compiled stepping cores — the fastest backends
-available. **Rust** runs the whole time loop natively on the CPU, measured at
-about 17× plain NumPy (~2.5× Numba) with no JIT warm-up, and uses less memory
-than the other in-core backends. **Rust (CUDA)** is the same core on the GPU,
-keeping the domain resident in VRAM (and streaming it in tiles when it doesn't
-fit), so it holds a bigger grid on the GPU than the other GPU paths.
-
-Both are greyed out unless the compiled extension is present. Unlike every other
-backend it isn't a `pip install` — it's built from photonfdtd's own `rust/`
-directory with `cargo build --release` (add `--features cuda` for the GPU core)
-and copied next to the package. Everything else works exactly as before without
-it.
-
-One caveat on **Rust (CUDA)**: the availability check only asks whether a CUDA
-device is present, so if your driver is older than the toolchain the extension
-was built with, the box is enabled but the run fails immediately with a CUDA
-error about an unsupported PTX version. Use **Rust** or **JAX** if that happens.
 
 ### What is the 2.5-D (effective index) option?
 
-Everything else in the **Acceleration** row makes the same simulation run faster.
+Most options make the same simulation run faster.
 **2.5-D** makes it a smaller simulation, which is usually a much bigger win: it
 collapses your vertical layer stack into effective indices and simulates the chip
 plane as a 2-D problem, cutting the cell count by the whole vertical cell count

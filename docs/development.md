@@ -184,9 +184,12 @@ The nightly schedule (or a manual run) also replaces the rolling `nightly`
 pre-release with both files. That release job only runs if both builds and
 both smoke tests pass.
 
-Both packages install the same stack: photonfdtd from GitHub `main`'s current
-HEAD (not pinned, so each nightly gets the newest solver), the FDTD extras
-(matplotlib, numba), then the checkout being built. Keep the extras in
+Both packages install the same stack: photonfdtd (the AppImage from GitHub
+`main`'s current HEAD, so each nightly gets the newest solver; the Flatpak from
+PyPI), which pulls in JAX's CPU build, the FDTD extras (matplotlib), then the
+checkout being built. `GPU=1 packaging/flatpak/build.sh` adds JAX's CUDA build
+to the Flatpak; at ~2.3 GB that bundle is over GitHub's 2 GB release-asset
+limit, so CI ships the CPU one. Keep the extras in
 `packaging/appimage/phidler/requirements.txt` and in the Flatpak manifest in
 sync with the `[fdtd]` group in `pyproject.toml`.
 

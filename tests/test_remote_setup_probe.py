@@ -21,15 +21,17 @@ def test_auto_prefers_jax_on_cuda12():
     assert r.backend == "jax" and r.pip_spec == "jax[cuda12]"
 
 
-def test_auto_falls_back_to_cupy_on_cuda11():
-    # Current JAX GPU wheels need CUDA 12, so CUDA 11 gets CuPy's cuda11 build.
+def test_auto_stays_on_cpu_on_cuda11():
+    # JAX's GPU wheels need a CUDA 12 driver and CuPy is gone (photonfdtd 0.13),
+    # so an older driver runs JAX on the CPU and installs nothing extra.
     r = decide_backend(Hardware("nvidia", 11, "V100"), "auto")
-    assert r.backend == "cupy" and r.pip_spec == "cupy-cuda11x"
+    assert r.backend == "cpu" and r.pip_spec is None
+    assert "CUDA 12" in r.reason
 
 
-def test_auto_uses_cupy_rocm_on_amd():
+def test_auto_stays_on_cpu_on_amd():
     r = decide_backend(Hardware("amd", None, "MI250"), "auto")
-    assert r.backend == "cupy" and r.pip_spec == "cupy-rocm-5-0"
+    assert r.backend == "cpu" and r.pip_spec is None
 
 
 def test_auto_uses_cpu_with_no_gpu():
@@ -37,21 +39,29 @@ def test_auto_uses_cpu_with_no_gpu():
     assert r.backend == "cpu" and r.pip_spec is None
 
 
-def test_explicit_jax_without_gpu_runs_on_cpu_jax():
-    r = decide_backend(Hardware(None), "jax")
-    assert r.backend == "jax" and r.pip_spec == "jax"
+def test_explicit_jax_matches_auto():
+    """An explicit GPU request picks JAX's CUDA build where it can run and
+    otherwise degrades to the CPU rather than installing a build that can't."""
+    def pick(hw):
+        r = decide_backend(hw, "jax")
+        return r.backend, r.pip_spec
+
+    assert pick(Hardware("nvidia", 12)) == ("jax", "jax[cuda12]")
+    assert pick(Hardware("nvidia", 11)) == ("cpu", None)
+    assert pick(Hardware("amd")) == ("cpu", None)
+    assert pick(Hardware(None)) == ("cpu", None)
 
 
-def test_explicit_cupy_needs_a_gpu():
-    assert decide_backend(Hardware("nvidia", 12), "cupy").pip_spec == "cupy-cuda12x"
-    # No GPU: CuPy can't run, so it degrades to CPU rather than installing junk.
-    fallback = decide_backend(Hardware(None), "cupy")
-    assert fallback.backend == "cpu" and fallback.pip_spec is None
+def test_legacy_cupy_request_is_treated_as_jax():
+    for hw in (Hardware("nvidia", 12), Hardware("nvidia", 11), Hardware("amd"), Hardware(None)):
+        assert decide_backend(hw, "cupy") == decide_backend(hw, "jax")
+    assert decide_backend(Hardware("nvidia", 12), "CuPy").backend == "jax"  # case-insensitive
 
 
 def test_cpu_installs_nothing_even_with_a_gpu():
     r = decide_backend(Hardware("nvidia", 12), "cpu")
     assert r.backend == "cpu" and r.pip_spec is None
+    assert decide_backend(Hardware(None), None).backend == "cpu"  # None means auto
 
 
 # -- hardware detection --------------------------------------------------------

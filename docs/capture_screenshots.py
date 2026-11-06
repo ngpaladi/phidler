@@ -200,7 +200,7 @@ def fdtd_propagation() -> None:
     fdtd_win.centralWidget().setCurrentIndex(1)
     fdtd_win.run_cell_size_spin.setValue(0.06)
     fdtd_win.run_time_spin.setValue(20.0)
-    fdtd_win._on_source_placement_requested(-0.4, 0.0)
+    fdtd_win._on_source_placement_requested(1.1, 0.0)
     fdtd_win._on_run_clicked()
     _pump_events(app, lambda: fdtd_win._fdtd_thread is not None and not fdtd_win._fdtd_thread.isRunning())
     fdtd_win.frame_slider.setValue(fdtd_win.frame_slider.maximum())
@@ -231,7 +231,7 @@ def fdtd_run_progress() -> None:
     fdtd_win.centralWidget().setCurrentIndex(1)
     fdtd_win.run_cell_size_spin.setValue(0.07)
     fdtd_win.run_time_spin.setValue(40.0)  # enough steps to catch the bar partway
-    fdtd_win._on_source_placement_requested(-0.4, 0.0)
+    fdtd_win._on_source_placement_requested(1.1, 0.0)
     fdtd_win._on_run_clicked()
 
     # Stop pumping once the bar is determinate (first real tick) and at least a
@@ -702,8 +702,8 @@ def _fdtd_prop_window_with_sources():
     fdtd_win.resize(760, 960)
     fdtd_win.show()
     fdtd_win.centralWidget().setCurrentIndex(1)  # Propagation tab
-    fdtd_win._on_source_placement_requested(-1.5, 0.0)
-    fdtd_win._on_source_placement_requested(1.5, 0.4)
+    fdtd_win._on_source_placement_requested(1.5, 0.0)
+    fdtd_win._on_source_placement_requested(4.5, 0.4)
     from phidler.panels.fdtd_window import _COL_KIND
 
     fdtd_win.source_table.cellWidget(1, _COL_KIND).setCurrentText("cherenkov")
@@ -748,7 +748,7 @@ def fdtd_field_midframe() -> None:
     fdtd_win.centralWidget().setCurrentIndex(1)
     fdtd_win.run_cell_size_spin.setValue(0.06)
     fdtd_win.run_time_spin.setValue(30.0)
-    fdtd_win._on_source_placement_requested(-2.2, 0.0)
+    fdtd_win._on_source_placement_requested(0.8, 0.0)
     fdtd_win._on_run_clicked()
     _pump_events(app, lambda: fdtd_win._fdtd_thread is not None and not fdtd_win._fdtd_thread.isRunning())
     # ~40% through the movie: the pulse is mid-waveguide, both ends still visible.
@@ -921,6 +921,49 @@ def route_length_editor() -> None:
     save(win.properties_panel, "route_length_editor")
 
 
+def train_priority_encoder() -> None:
+    """The Train tab walkthrough: the demo set up, then trained, then placed."""
+    from phidler.panels.fdtd_window import FdtdWindow
+
+    win = MainWindow()
+    win.resize(1100, 700)
+    win.show()
+    fdtd_win = FdtdWindow(win.document, win.view)
+    fdtd_win.resize(820, 1250)
+    fdtd_win.show()
+    fdtd_win.centralWidget().setCurrentIndex(2)
+    tab = fdtd_win.train_tab
+    tab.pe_lines_spin.setValue(4)
+    tab._on_insert_demo()
+    app.processEvents()
+    win.view.zoom_to_fit()
+    app.processEvents()
+    save(win.view, "train_demo_canvas")
+    save(fdtd_win, "train_tab_setup")
+    tab._on_train()
+    _pump_events(app, lambda: tab._thread is not None and not tab._thread.isRunning(), max_iters=15000)
+    app.processEvents()
+    save(fdtd_win, "train_tab_trained")
+    t = tab.results_table
+    t.resizeColumnsToContents()
+    height = t.horizontalHeader().height() + sum(t.rowHeight(r) for r in range(t.rowCount())) + 4
+    width = t.verticalHeader().width() + sum(t.columnWidth(c) for c in range(t.columnCount())) + 4
+    t.setMinimumSize(width, height)
+    t.resize(width, height)
+    app.processEvents()
+    from PySide6.QtCore import QRect
+
+    path = OUT / "train_results_table.png"
+    t.grab(QRect(0, 0, width, height)).save(str(path))
+    print(f"saved {path.relative_to(OUT.parent.parent)} ({width}x{height})")
+    tab._on_place()
+    app.processEvents()
+    win.view.zoom_to_fit()
+    app.processEvents()
+    save(win.view, "train_placed_canvas")
+    fdtd_win.close()
+
+
 def regenerate_all() -> None:
     """Rebuild every embedded screenshot. Called by the standalone script and
     by the mkdocs pre-build hook (docs/hooks.py)."""
@@ -969,6 +1012,7 @@ def regenerate_all() -> None:
     console_ask_claude()
     fdtd_engine_dropdown()
     route_length_editor()
+    train_priority_encoder()
     print("done")
 
 

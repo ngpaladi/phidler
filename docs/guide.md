@@ -729,46 +729,29 @@ had to hide; **Export Graphs…** always includes all of them.
 
 #### Speed
 
-Propagation runs use a few accelerators so they don't crawl:
+photonfdtd runs every simulation on **JAX** (XLA): on your **GPU** when JAX can
+see one, otherwise on the CPU. There's nothing to choose. The **Acceleration**
+row says where runs will go (**JAX on the GPU** or **JAX on the CPU**), and the
+status line after a run names the device that actually ran (**"Done on JAX
+(GPU)…"**), so a run that quietly fell back to the CPU is visible.
 
-- **Numba** (the **Acceleration** row) is on by default when installed. It
-  JIT-compiles photonfdtd's field-update kernel (roughly 5× faster than the
-  plain NumPy engine) and runs in the background, so the window stays
-  responsive. The very first run compiles the kernel and is slower; that's
-  cached to disk, so every run after is fast.
-- **JAX** (the **Acceleration** row, shown when the `jax` package is installed)
-  is the way to use the **GPU** as of photonfdtd 0.9. Tick it and, if JAX sees a
-  GPU, the solve runs there through XLA; if not, it runs on the CPU. Either way
-  it stays in the worker thread, so the window stays responsive. The first run
-  traces and compiles the stepper (slower), then that's cached. The box reads
-  **JAX (GPU)** when a GPU is visible; to get the GPU build, install a CUDA jax
-  (e.g. `pip install "jax[cuda12]"`). It's exclusive of the GPU and Numba boxes,
-  so ticking it clears those.
-- **Rust** (the **Acceleration** row) is photonfdtd 0.12's compiled CPU core.
-  It runs the whole time loop natively — fused field passes and ghost-zone
-  temporal blocking — measured here at about **17× plain NumPy** (~2.5× Numba)
-  on a 6-million-cell grid, agreeing with the NumPy engine to float32 round-off.
-  There's no JIT warm-up, since it's already compiled, and it stores the
-  absorbing-boundary state compacted to the boundary itself, so it's also the
-  lowest-memory in-core backend. Unlike the others this isn't a `pip install`:
-  it's an extension built from photonfdtd's own `rust/` directory
-  (`cargo build --release`, then copy the library next to the package). Without
-  it the box is simply disabled.
-- **Rust (CUDA)** is the same core on the GPU. The whole domain stays resident
-  in VRAM, and streams through the copy engines in tiles when it doesn't fit, so
-  it holds a far bigger grid on the GPU than the other GPU paths. Needs the
-  extension built with `--features cuda`. One caveat: the availability check
-  only asks whether a device is present, so if your driver is older than the
-  toolchain the extension was built with, the box will be enabled but the run
-  fails at start-up with photonfdtd's CUDA error — fall back to **Rust** or
-  **JAX** if you see that.
-- **GPU (CuPy)** is the older GPU path, now **deprecated** in photonfdtd 0.9 in
-  favour of JAX. It still works if you have CuPy installed (the CUDA build,
-  `pip install cupy-cuda12x`, or the ROCm build for AMD,
-  `pip install cupy-rocm-5-0`) and runs in a separate process so it can't freeze
-  the app, but prefer JAX unless you specifically need CuPy. Whichever ran, the
-  status line names it (**"Done on GPU (CUDA)…"** / **"…on JAX…"** /
-  **"…on Numba…"**), so a request that quietly fell back to CPU is visible.
+- **Getting the GPU.** Install JAX's CUDA build into the environment Phidler
+  runs in: `pip install "jax[cuda12]"` for an NVIDIA GPU with a CUDA 12 (or
+  newer) driver. The Flatpak bundles it; the AppImage runs on the CPU.
+- **Check JAX GPU.** The button next to the device label starts JAX in a fresh
+  process and reports what it found: the jax and CUDA-plugin versions, the
+  devices JAX sees, your NVIDIA driver, and a test computation on the GPU. If
+  JAX is on the CPU it says why: no NVIDIA GPU, the CUDA build not installed, a
+  driver too old for CUDA 12, or the plugin installed but failing to load its
+  CUDA libraries, in which case it shows what JAX logged. That last case is
+  the one to watch for, because JAX only logs a warning and carries on, many
+  times slower, on the CPU.
+- **First runs compile.** The first run of a given grid size traces and
+  compiles the stepper, so it's slower; later runs of the same size reuse it.
+- **Low memory (disk)** keeps the fields in scratch files and streams the grid
+  through the CPU or GPU a slab at a time, so peak memory stays bounded by one
+  slab and a grid too big for memory still runs, more slowly. photonfdtd also
+  falls back to this by itself, with a warning, when a run plainly won't fit.
 - The propagation domain keeps only as much **cladding** as the mode's
   evanescent field actually needs (a few decay lengths, scaled by your
   platform's index contrast), rather than the full cladding the mode solver
@@ -788,9 +771,7 @@ smoothing on, cells that straddle an edge get a blended, direction-aware
 permittivity instead — the boundary lands where it actually is, not on the
 nearest cell wall. In practice that means a given cell size resolves your
 geometry more faithfully, which is often a cheaper way to clean up a result than
-shrinking the cell size everywhere. It works on the NumPy, GPU, and JAX backends
-(but not Numba or Rust, which ticking it will clear) and costs a little setup
-time before the run.
+shrinking the cell size everywhere. It costs a little setup time before the run.
 
 #### A much bigger run: 2.5-D (effective index)
 
@@ -808,8 +789,8 @@ cell count drops by that whole factor — on the default Silicon platform, aroun
 20× on a small device and far more on a real circuit. That's the difference
 between simulating a region of your layout and simulating the layout.
 
-It composes with everything in the **Acceleration** row, so 2.5-D plus **Rust**
-is the fastest configuration available.
+It composes with everything else, so 2.5-D on the GPU is the fastest
+configuration available.
 
 The catch is that it's an approximation: it assumes the vertical mode profile
 separates from the in-plane confinement. That holds very well for routing —
@@ -863,12 +844,11 @@ back, while the UI here stays responsive. Tick **Run on remote server** and clic
    SSH config and agent/keys handle authentication; it stores no passwords
    (key-based, non-interactive auth is required).
 2. Pick the remote **Acceleration**, or leave it on **Auto**. Auto inspects the
-   remote's GPU during setup and installs the ideal backend for it — JAX on an
-   NVIDIA CUDA 12 box (the recommended GPU path; photonfdtd 0.9 runs JAX on the
-   GPU through XLA), CuPy on CUDA 11 or an AMD/ROCm card, or plain CPU/Numba when
-   there's no GPU — then remembers what it chose. You can also pin a specific one
-   (**CPU (Numba)**, **GPU — JAX**, **GPU — CuPy**). Either way it's the
-   *remote's* hardware that matters, not this machine's.
+   remote's GPU during setup: on an NVIDIA box whose driver supports CUDA 12 it
+   installs JAX's CUDA build so runs go to the GPU, and otherwise runs stay on
+   the CPU. It then remembers what it chose. You can also pin **CPU (JAX)** or
+   **GPU (JAX on CUDA 12)**. Either way it's the *remote's* hardware that
+   matters, not this machine's.
 3. Click **Connect && set up**. That one button tests the connection, installs
    phidler + photonfdtd on the remote if they aren't there yet (a one-time step,
    streamed into the log), detects the remote's hardware and installs the ideal
@@ -880,8 +860,8 @@ The install location is derived for you (a managed venv under `~/phidler-remote`
 open **Advanced** only if you want to install into a specific directory or an
 existing interpreter. After setup, ticking **Run on remote server** sends each
 run to that host and brings the result back automatically. The progress bar fills
-from the remote solve just as it does locally, and the result reports the backend
-that actually ran, so a request the remote couldn't honour is visible.
+from the remote solve just as it does locally, and the result reports the device
+(GPU or CPU) the remote actually ran on, so a request the remote couldn't honour is visible.
 
 <img src="screenshots/remote_config_dialog.png" width="560" alt="Remote server setup dialog: an SSH host field, a remote Acceleration dropdown, and a single Connect and set up button over a log pane">
 
@@ -889,6 +869,16 @@ The remote must be a POSIX host (Linux/macOS) reachable by key-based SSH.
 Projects that place **custom components** (local `.py` files) can't be offloaded
 (those files don't exist on the remote), and that case is reported as a clear
 error rather than failing mid-run.
+
+#### Training a design (the Train tab)
+
+The third tab of the simulation window, **Train (inverse design)**, fits a box
+of your layout to a task the way a neural network is fitted to data: you mark a
+design box and the input/output ports, pick a task (the built-in priority
+encoder, your own dataset, or a target transfer matrix), and the etch pattern
+inside the box is optimized by gradient descent. The result goes back on the
+layout as an ordinary component. See the
+[priority-encoder tutorial](training.md) for a complete walkthrough.
 
 #### Running on Tidy3D (the cloud solver)
 

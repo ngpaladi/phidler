@@ -19,9 +19,8 @@ def _tiny_document() -> LayoutDocument:
 
 
 # 1000 iters * 20 ms = up to 20 s. Generous headroom because the first mode/FDTD
-# solve in a fresh process pays photonfdtd 0.4's one-time cost (Numba kernel
-# compilation, cached to disk afterwards) on top of the solve itself — well over
-# the old 6 s ceiling on a cold cache. The predicate returns as soon as the
+# solve in a fresh process pays a one-time compile (JAX/XLA for FDTD) on top of
+# the solve itself — well over the old 6 s ceiling on a cold cache. The predicate returns as soon as the
 # thread finishes, so already-fast solves don't wait the full budget.
 def _pump_until(predicate, max_iters: int = 1000, sleep_s: float = 0.02) -> bool:
     import time
@@ -37,70 +36,55 @@ def _pump_until(predicate, max_iters: int = 1000, sleep_s: float = 0.02) -> bool
 # -- construction ---------------------------------------------------------- #
 
 
-def test_window_has_two_tabs(qapp):
+def test_window_has_three_tabs(qapp):
     win = MainWindow()
     fdtd_win = FdtdWindow(win.document, win.view)
-    assert fdtd_win.centralWidget().count() == 2
+    assert fdtd_win.centralWidget().count() == 3
     assert fdtd_win.centralWidget().tabText(0) == "Vertical Mode Profile"
     assert fdtd_win.centralWidget().tabText(1) == "Propagation (FDTD)"
+    assert fdtd_win.centralWidget().tabText(2) == "Train (inverse design)"
 
 
-def test_gpu_and_numba_checkboxes_feed_into_params(qapp):
-    from phidler.fdtd_sim import gpu_available, numba_available
-
-    win = MainWindow()
-    fdtd_win = FdtdWindow(win.document, win.view)
-    # GPU is off by default (its main-thread run can briefly freeze the UI), but
-    # Numba is on by default when available — worker-thread, ~5x over NumPy.
-    params = fdtd_win._current_params()
-    assert params.use_gpu is False
-    assert params.use_numba is numba_available()
-
-    # The checkbox is enabled only when its backend is actually importable, so
-    # a request can't silently no-op on the CPU.
-    assert fdtd_win.run_gpu_check.isEnabled() == gpu_available()
-    assert fdtd_win.run_numba_check.isEnabled() == numba_available()
-
-    fdtd_win.run_gpu_check.setChecked(True)
-    fdtd_win.run_numba_check.setChecked(True)
-    params = fdtd_win._current_params()
-    assert params.use_gpu is True and params.use_numba is True
-
-
-def test_gpu_backend_name_tracks_availability_and_names_the_vendor(qapp):
-    """GPU support is backend-agnostic (CuPy's CUDA build for NVIDIA or its ROCm
-    build for AMD). gpu_backend_name() reports which is live, consistent with
-    gpu_available(), and the GPU checkbox's tooltip names it when enabled."""
-    from phidler.fdtd_sim import gpu_available, gpu_backend_name
-
-    name = gpu_backend_name()
-    # None exactly when no CuPy is importable; a vendor label otherwise.
-    assert (name is None) == (not gpu_available())
-    if name is not None:
-        assert name in {"CUDA", "ROCm", "GPU"}
+def test_default_params_and_device_label(qapp):
+    """photonfdtd (>=0.13) runs only on JAX, so there's no backend to pick: the
+    old GPU/Numba/JAX/Rust boxes are gone, and the row instead says where JAX
+    will run — the GPU exactly when XLA sees one."""
+    from phidler.fdtd_sim import jax_device_label, jax_gpu_available
 
     win = MainWindow()
     fdtd_win = FdtdWindow(win.document, win.view)
-    tip = fdtd_win.run_gpu_check.toolTip()
-    if gpu_available():
-        assert name in tip  # e.g. "...CuPy backend (CUDA)."
+    params = fdtd_win._current_params()
+    for old in ("use_gpu", "use_numba", "use_jax", "use_rust", "use_rust_cuda"):
+        assert not hasattr(params, old)
+    for old in ("run_gpu_check", "run_numba_check", "run_jax_check", "run_rust_check", "run_rust_cuda_check"):
+        assert not hasattr(fdtd_win, old)
+
+    text = fdtd_win.run_device_label.text()
+    assert "JAX" in text
+    if jax_gpu_available():
+        assert jax_device_label() == "GPU"
+        assert "GPU" in text and "CPU" not in text
     else:
-        # the disabled tip points at both wheels, not just CUDA
-        assert "cupy-cuda12x" in tip and "cupy-rocm" in tip
+        assert jax_device_label() == "CPU"
+        assert "CPU" in text
+    # The tooltip points at the CUDA build for users who expected the GPU.
+    assert "jax[cuda12]" in fdtd_win.run_device_label.toolTip()
+
+    # The disk-tiled low-memory option survives and feeds into params.
+    assert params.out_of_core is False
+    fdtd_win.run_low_memory_check.setChecked(True)
+    assert fdtd_win._current_params().out_of_core is True
 
 
-def test_gpu_run_goes_through_the_worker_thread_via_subprocess(qapp):
-    """A GPU-flagged run no longer blocks the main thread: it spawns a child
-    process (own CUDA context, clean teardown) that the worker thread waits on,
-    so the UI stays live. So a worker QThread *is* started and the result
-    arrives asynchronously — the opposite of the old main-thread behaviour.
-
-    CuPy's CUDA now lives in the child, isolated from the pytest process, so
-    this is safe to run whether or not CuPy is installed (the child falls back
-    to the CPU engine when CuPy is absent)."""
+def test_local_run_goes_through_the_worker_thread_and_reports_the_device(qapp):
+    """A local run is an in-process JAX solve on a worker QThread, so the UI
+    stays live: a worker thread *is* started and the result arrives
+    asynchronously. The finished status names the device JAX ran on."""
     import time
 
     from PySide6.QtTest import QTest
+
+    from phidler.fdtd_sim import jax_device_label
 
     win = MainWindow()
     inst = win.document.add_instance("straight", {"length": 2.0, "width": 0.5})
@@ -108,7 +92,6 @@ def test_gpu_run_goes_through_the_worker_thread_via_subprocess(qapp):
     fdtd_win = FdtdWindow(win.document, win.view)
     fdtd_win.run_cell_size_spin.setValue(0.15)  # tiny grid: stays under the warning threshold
     fdtd_win.run_time_spin.setValue(4.0)
-    fdtd_win.run_gpu_check.setChecked(True)  # setChecked works even if the box is disabled
     fdtd_win._on_source_placement_requested(0.0, 0.0)
 
     fdtd_win._on_run_clicked()
@@ -116,11 +99,12 @@ def test_gpu_run_goes_through_the_worker_thread_via_subprocess(qapp):
     assert fdtd_win._fdtd_thread is not None  # async worker, not a main-thread block
     assert fdtd_win._last_result is None  # not ready synchronously
 
-    deadline = time.time() + 60
+    deadline = time.time() + 120
     while fdtd_win._last_result is None and time.time() < deadline:
         QTest.qWait(50)
-    assert fdtd_win._last_result is not None  # the child finished and shipped its result back
+    assert fdtd_win._last_result is not None
     assert fdtd_win._last_result.fields["field"]["Ez"].shape[3] == 1  # the mid-core plane
+    assert fdtd_win.run_status_label.text().startswith(f"Done on JAX ({jax_device_label()}) in ")
 
 
 def test_simulate_selection_only_builds_a_region_from_the_selection(qapp):
@@ -159,7 +143,7 @@ def test_field_image_is_placed_in_absolute_layout_coords(qapp):
     fdtd_win = FdtdWindow(win.document, win.view)
     bb = win.document.top.bbox()
 
-    params = FdtdParams(cell_size_um=0.1, use_numba=True, sources=(SourceSpec(x_um=55.0, y_um=20.0),))
+    params = FdtdParams(cell_size_um=0.1, sources=(SourceSpec(x_um=55.0, y_um=20.0),))
     sim = build_simulation(win.document, params)
     result = run_simulation(sim)
     fdtd_win._last_params = params
@@ -193,7 +177,7 @@ def test_export_gif_writes_an_animated_gif(qapp, tmp_path):
     fdtd_win = FdtdWindow(win.document, win.view)
     fdtd_win.run_view.resize(160, 90)  # grab() needs a real size
 
-    params = FdtdParams(cell_size_um=0.1, run_time_fs=20.0, use_numba=True, sources=(SourceSpec(x_um=-4.0, y_um=0.0),))
+    params = FdtdParams(cell_size_um=0.1, run_time_fs=20.0, sources=(SourceSpec(x_um=-4.0, y_um=0.0),))
     sim = build_simulation(win.document, params)
     result = run_simulation(sim)
     fdtd_win._last_params = params
@@ -823,55 +807,12 @@ def test_offer_feasible_region_passes_a_feasible_run_through_unchanged(qapp):
     assert fdtd_win._offer_feasible_region(params, None, 1_000_000) == (None, 1_000_000, False)
 
 
-# --- photonfdtd 0.12 switches: Rust cores and the 2.5-D reduction -------------
-
-
-def test_rust_checkboxes_track_availability_and_feed_into_params(qapp):
-    """Like GPU/JAX, the Rust boxes are enabled only when the backend can really
-    run — more strictly here, since the Rust core is a compiled extension rather
-    than a pip install, so it's either built into photonfdtd or it isn't."""
-    from phidler.fdtd_sim import rust_available, rust_cuda_available
-
-    win = MainWindow()
-    fdtd_win = FdtdWindow(win.document, win.view)
-    assert fdtd_win.run_rust_check.isEnabled() == rust_available()
-    assert fdtd_win.run_rust_cuda_check.isEnabled() == rust_cuda_available()
-
-    # Off by default: the established backends stay the default experience.
-    params = fdtd_win._current_params()
-    assert params.use_rust is False and params.use_rust_cuda is False
-
-    if rust_available():
-        fdtd_win.run_rust_check.setChecked(True)
-        assert fdtd_win._current_params().use_rust is True
-
-
-def test_rust_is_exclusive_of_the_other_backends_and_of_subpixel(qapp):
-    """The Rust core steps the whole time loop natively, so it replaces the other
-    backends rather than combining with them, and photonfdtd raises outright if
-    it's asked for subpixel smoothing. The boxes have to keep that from being
-    expressible."""
-    from phidler.fdtd_sim import rust_available
-
-    win = MainWindow()
-    fdtd_win = FdtdWindow(win.document, win.view)
-    if not rust_available():
-        pytest.skip("photonfdtd's Rust extension isn't built in this environment")
-
-    fdtd_win.run_numba_check.setChecked(True)
-    fdtd_win.run_subpixel_check.setChecked(True)
-    fdtd_win.run_rust_check.setChecked(True)
-    assert fdtd_win.run_numba_check.isChecked() is False
-    assert fdtd_win.run_subpixel_check.isChecked() is False
-
-    # ...and back the other way: subpixel clears Rust.
-    fdtd_win.run_subpixel_check.setChecked(True)
-    assert fdtd_win.run_rust_check.isChecked() is False
+# --- photonfdtd 0.12 switch: the 2.5-D reduction ------------------------------
 
 
 def test_eim_checkbox_feeds_into_params_and_is_always_available(qapp):
-    """2.5-D is a method, not a backend — it needs nothing installed, so unlike
-    the accelerator boxes it's never disabled, and it composes with all of them."""
+    """2.5-D is a method, not a backend — it needs nothing installed, so it's
+    never disabled, and it composes with the other run options."""
     win = MainWindow()
     fdtd_win = FdtdWindow(win.document, win.view)
     assert fdtd_win.run_eim_check.isEnabled()
@@ -880,28 +821,24 @@ def test_eim_checkbox_feeds_into_params_and_is_always_available(qapp):
     fdtd_win.run_eim_check.setChecked(True)
     params = fdtd_win._current_params()
     assert params.eim is True
-    # Not a backend: it leaves the acceleration choices alone.
-    assert params.use_numba is fdtd_win.run_numba_check.isChecked()
+    # It leaves the other run options alone.
+    assert params.subpixel is fdtd_win.run_subpixel_check.isChecked()
+    assert params.out_of_core is fdtd_win.run_low_memory_check.isChecked()
 
 
 def test_new_switches_round_trip_through_the_saved_config(qapp):
-    """The 0.12 switches persist with the project like the rest of the sim set-up
-    — and restore only when the backend is actually available here, since the
-    Rust extension is compiled per-machine."""
-    from phidler.fdtd_sim import rust_available
-
+    """The 2.5-D and subpixel switches persist with the project like the rest of
+    the sim set-up."""
     win = MainWindow()
     fdtd_win = FdtdWindow(win.document, win.view)
     fdtd_win.run_eim_check.setChecked(True)
-    if rust_available():
-        fdtd_win.run_rust_check.setChecked(True)
+    fdtd_win.run_subpixel_check.setChecked(True)
     fdtd_win.sync_config_to_document()
 
     config = win.document.simulation_config
-    assert config.eim is True
-    assert config.use_rust is rust_available()
+    assert config.eim is True and config.subpixel is True
 
     fresh = FdtdWindow(win.document, win.view)
     fresh._restore_config(config)
     assert fresh.run_eim_check.isChecked() is True
-    assert fresh.run_rust_check.isChecked() is rust_available()
+    assert fresh.run_subpixel_check.isChecked() is True

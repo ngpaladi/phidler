@@ -1,6 +1,6 @@
 """Memory-safety features of the FDTD builder: the pre-flight feasibility
 guard (so an over-large layout fails fast instead of OOM-ing / freezing the
-machine), out-of-core stepping wiring, and the monitor spatial-downsample knob."""
+machine), disk-tiled (out-of-core) stepping wiring, and the monitor spatial-downsample knob."""
 
 import pytest
 
@@ -64,16 +64,26 @@ def test_build_simulation_refuses_an_impossible_region(qapp):
 # -- out-of-core + monitor wiring ------------------------------------------
 
 
-def test_build_simulation_out_of_core_forces_numpy_backend(qapp):
-    """Out-of-core stepping is NumPy-only, so build must drop GPU/Numba even
-    when they're requested (photonfdtd's run_out_of_core rejects them)."""
+def test_out_of_core_disk_tiled_run_matches_in_memory(qapp):
+    """The low-memory option now means photonfdtd's disk-tiled stepping. It is
+    a memory/speed trade, not an approximation: on a tiny grid it must record
+    the same field movie as the in-memory run, to float32 round-off."""
+    pytest.importorskip("photonfdtd")
+    import numpy as np
+
     params = FdtdParams(
         wavelength_um=1.55, cell_size_um=0.2, run_time_fs=2.0, padding_um=0.3,
-        use_numba=True, out_of_core=True,
+        out_of_core=True, sources=(SourceSpec(x_um=-0.5, y_um=0.0),),
     )
-    sim = build_simulation(_tiny_doc(), params)
-    assert getattr(sim, "use_numba", False) is False
-    assert getattr(sim, "use_gpu", False) is False
+    doc = _tiny_doc()
+    ref = np.asarray(run_simulation(build_simulation(doc, params)).fields["field"]["Ez"])
+    tiled = np.asarray(
+        run_simulation(build_simulation(doc, params), out_of_core=True, tile_cells=4).fields["field"]["Ez"]
+    )
+    assert tiled.shape == ref.shape
+    peak = np.abs(ref).max()
+    assert peak > 0
+    assert np.abs(tiled - ref).max() / peak < 1e-4
 
 
 def test_build_simulation_applies_monitor_downsample(qapp):
@@ -98,7 +108,10 @@ def test_run_simulation_passes_out_of_core_through_to_the_solver():
     assert sim.calls[-1] == {}  # in-core: plain run(), no kwargs
 
     run_simulation(sim, out_of_core=True, tile_cells=4)
-    assert sim.calls[-1] == {"out_of_core": True, "tile_cells": 4}
+    assert sim.calls[-1] == {"disk_tiled": True, "tile_cells": 4}
+
+    run_simulation(sim, out_of_core=True)  # tile size left to photonfdtd
+    assert sim.calls[-1] == {"disk_tiled": True, "tile_cells": None}
 
 
 # -- region suggestion (turn "too big" into a runnable region) --------------

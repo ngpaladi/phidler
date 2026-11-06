@@ -8,8 +8,9 @@
 # inside gdsfactory's supported 3.11–3.13 range; check that before bumping.
 #
 # Like the AppImage, the Python stack is pip-installed from the network at build
-# time (photonfdtd from GitHub main's HEAD, the unpinned FDTD extras, then this
-# checkout) — hence `--share=network` in the build args. That's fine for our own
+# time (photonfdtd from PyPI, which pulls in JAX, the FDTD extras, then this
+# checkout) — hence `--share=network` in the build args. build.sh with GPU=1 adds
+# JAX's CUDA 12 build to the same pip line (a ~2.3 GB bundle). That's fine for our own
 # CI / local builds; a Flathub submission would instead need every wheel listed
 # as a checksummed source (flatpak-pip-generator).
 id: io.github.ngpaladi.Phidler
@@ -22,7 +23,10 @@ finish-args:
   - --share=ipc
   - --socket=wayland
   - --socket=fallback-x11
-  - --device=dri
+  # all, not just dri: CUDA needs /dev/nvidia*. The NVIDIA driver's user-space
+  # libraries (libcuda) come from the matching org.freedesktop.Platform.GL.nvidia-*
+  # extension, which Flatpak installs to match the host driver.
+  - --device=all
   # Remote FDTD offload shells out to ssh/scp (in the runtime) using the user's
   # ~/.ssh/config (visible via --filesystem=home); ssh-auth exposes their SSH
   # agent so passphrase-protected keys work. rsync isn't in the runtime, but
@@ -32,6 +36,9 @@ finish-args:
   # A CAD tool: open/save GDS and .phidler files anywhere under $HOME.
   - --filesystem=home
   - --unset-env=QT_PLUGIN_PATH
+  # Allocate GPU memory on demand rather than JAX's default 75% up front (the app
+  # sets this too; kept here for the JAX GPU check's child process).
+  - --env=XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 modules:
   - name: phidler
@@ -44,10 +51,10 @@ modules:
         # the AppImage).
         PIP_NO_CACHE_DIR: "1"
     build-commands:
-      # photonfdtd first (not on PyPI — bare git URL = main's current HEAD), plus
-      # the FDTD extras; keep in sync with the [fdtd] group in pyproject.toml.
+      # photonfdtd first (it pulls in jax), plus the FDTD extras; keep in sync with
+      # the [fdtd] group in pyproject.toml. build.sh GPU=1 appends "jax[cuda12]".
       - pip3 install --prefix=${FLATPAK_DEST} --no-warn-script-location
-        git+https://github.com/ngpaladi/photonfdtd.git "matplotlib>=3.7" "numba>=0.59"
+        "photonfdtd>=0.15.0" "matplotlib>=3.7"
       # Then this checkout. Its `phidler` console script gets a /usr/bin/python3
       # shebang, which is exactly the runtime's interpreter.
       - pip3 install --prefix=${FLATPAK_DEST} --no-warn-script-location .

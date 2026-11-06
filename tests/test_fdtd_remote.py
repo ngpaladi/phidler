@@ -20,14 +20,14 @@ def _cp(returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
-def _write_fake_npz(path, *, use_gpu=False, use_numba=True):
+def _write_fake_npz(path, *, device="CPU"):
     """A stand-in for the result the remote run would produce."""
     np.savez(
         path,
         ez=np.zeros((3, 10, 8), dtype=np.float32),
         x=np.arange(10), y=np.arange(8), z=np.arange(5),
         shape=np.asarray([10, 8, 5]),
-        use_gpu=use_gpu, use_numba=use_numba,
+        device=device,
     )
 
 
@@ -62,7 +62,7 @@ class FakeTransport:
     def scp(self, src, dst):
         self.scp_calls.append((src, dst))
         if ":" in src and str(dst).endswith("result.npz"):  # the pull-back
-            _write_fake_npz(dst, use_gpu=self.gpu, use_numba=not self.gpu)
+            _write_fake_npz(dst, device="GPU" if self.gpu else "CPU")
         return _cp(0)
 
     def rsync(self, src, dst, excludes=()):
@@ -116,7 +116,7 @@ def test_run_on_remote_builds_commands_and_parses_result(qapp, monkeypatch):
     # parsed into exactly the stub contract the display reads
     assert sim_stub.grid.shape == (10, 8, 5)
     assert result_stub.fields["field"]["Ez"].shape == (3, 10, 8)
-    assert sim_stub.use_numba is True
+    assert sim_stub.device == "CPU"
     assert elapsed >= 0
 
     # the run command invokes the remote python's module entry on the remote job
@@ -145,13 +145,18 @@ def test_run_on_remote_cleanup_fires_even_on_failure(qapp, monkeypatch):
     assert any("rm -rf" in c and REMOTE_DIR in c for c in t.ssh_cmds)  # finally still ran
 
 
-def test_run_on_remote_uses_remote_gpu_flag_from_result(qapp, monkeypatch):
-    """The displayed backend comes from what the remote *actually* ran (the
-    returned npz), not what was requested."""
+def test_run_on_remote_uses_remote_device_from_result(qapp, monkeypatch):
+    """The displayed device comes from where JAX *actually* ran on the remote
+    (the returned npz), not what was requested."""
     t = FakeTransport(gpu=True)
     _install(monkeypatch, t)
-    sim_stub, _, _ = fr.run_on_remote(_doc(), FdtdParams(cell_size_um=0.1, use_gpu=True), None, _cfg(use_gpu=True))
-    assert sim_stub.use_gpu is True
+    sim_stub, _, _ = fr.run_on_remote(_doc(), FdtdParams(cell_size_um=0.1), None, _cfg(backend="jax"))
+    assert sim_stub.device == "GPU"
+    # ...and a GPU request on a box whose JAX fell back to the CPU says so.
+    t = FakeTransport(gpu=False)
+    _install(monkeypatch, t)
+    sim_stub, _, _ = fr.run_on_remote(_doc(), FdtdParams(cell_size_um=0.1), None, _cfg(backend="jax"))
+    assert sim_stub.device == "CPU"
 
 
 def test_run_on_remote_forwards_progress(qapp, monkeypatch):
@@ -326,11 +331,11 @@ def test_deploy_commands_keep_tilde_and_quote_extra(monkeypatch):
     assert "'phidler[fdtd]'" in phidler_cmd            # the glob-y extra stays literal
 
 
-# -- FdtdWorker dispatch (locks in the remote-before-gpu branch ordering) ----
+# -- FdtdWorker dispatch (locks in the remote branch) -------------------------
 
-def test_fdtd_worker_takes_remote_branch_before_gpu(qapp, monkeypatch):
-    """With remote=True the worker must call run_on_remote — even when
-    params.use_gpu is set, which must NOT divert it to the local subprocess."""
+def test_fdtd_worker_takes_remote_branch(qapp, monkeypatch):
+    """With remote=True the worker must call run_on_remote — not the local
+    subprocess, and not an in-process local solve."""
     from phidler.panels.fdtd_window import FdtdWorker
 
     calls = []
@@ -343,9 +348,12 @@ def test_fdtd_worker_takes_remote_branch_before_gpu(qapp, monkeypatch):
     import phidler.fdtd_subprocess as sub
     monkeypatch.setattr(sub, "run_in_subprocess",
                         lambda *a, **k: pytest.fail("took the local subprocess path, not remote"))
+    import phidler.panels.fdtd_window as fw
+    monkeypatch.setattr(fw, "build_simulation",
+                        lambda *a, **k: pytest.fail("took the local in-process path, not remote"))
 
-    cfg = _cfg(use_gpu=True)
-    worker = FdtdWorker(_doc(), FdtdParams(use_gpu=True), region_um=(1, 2, 3, 4), remote=True, remote_cfg=cfg)
+    cfg = _cfg(backend="jax")
+    worker = FdtdWorker(_doc(), FdtdParams(), region_um=(1, 2, 3, 4), remote=True, remote_cfg=cfg)
     got = []
     worker.finished.connect(lambda s, r, e: got.append((s, r, e)))
     worker.run()
@@ -386,15 +394,27 @@ def test_remote_dialog_has_a_backend_selector(qapp):
 
     dlg = RemoteConfigDialog()
     values = [dlg.backend_combo.itemData(i) for i in range(dlg.backend_combo.count())]
-    assert values == ["auto", "cpu", "jax", "cupy"]
+    assert values == ["auto", "cpu", "jax"]  # CuPy is gone with photonfdtd 0.13
 
     dlg.alias_edit.setText("gpubox")
     dlg.backend_combo.setCurrentIndex(values.index("jax"))
     cfg = dlg._current_config()
     assert cfg.backend == "jax"
-    assert cfg.use_gpu is False  # only "cupy" sets the legacy bool
-    dlg.backend_combo.setCurrentIndex(values.index("cupy"))
-    assert dlg._current_config().use_gpu is True
+    assert cfg.use_gpu is True  # legacy bool kept in sync for older readers
+    dlg.backend_combo.setCurrentIndex(values.index("cpu"))
+    cfg = dlg._current_config()
+    assert cfg.backend == "cpu" and cfg.use_gpu is False
+
+
+def test_remote_dialog_shows_a_legacy_cupy_config_as_gpu(qapp, monkeypatch):
+    """A config saved with backend="cupy" (removed) opens on the JAX GPU entry."""
+    import phidler.remote_config as rc
+    from phidler.panels.fdtd_window import RemoteConfigDialog
+
+    # The dialog imports load_remote_config from the module at construction.
+    monkeypatch.setattr(rc, "load_remote_config", lambda *a, **k: RemoteConfig(alias="h", backend="cupy"))
+    dlg = RemoteConfigDialog()
+    assert dlg.backend_combo.currentData() == "jax"
 
 
 def test_smart_setup_skips_install_when_already_ready(qapp, monkeypatch):

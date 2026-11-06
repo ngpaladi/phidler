@@ -9,6 +9,7 @@ site/
 *.phidler
 build/
 .flatpak-builder/
+packaging/flatpak/.*.gpu.yml
 *.AppImage
 *.flatpak
 squashfs-root/

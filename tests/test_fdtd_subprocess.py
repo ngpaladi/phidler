@@ -1,6 +1,6 @@
-"""The out-of-process FDTD runner (used for the GPU backend) rebuilds the
-document from the saved project and returns a result identical to running
-in-process — exercised here on the CPU engine so it needs no GPU."""
+"""The out-of-process FDTD runner (the job entry point the SSH remote and nereid
+paths execute) rebuilds the document from the saved project and returns a
+result identical to running in-process."""
 
 import json
 import shutil
@@ -23,7 +23,6 @@ from phidler.model.document import LayoutDocument
 def test_params_round_trip_through_json_dict():
     params = FdtdParams(
         cell_size_um=0.06,
-        use_numba=True,
         sources=(SourceSpec(x_um=-5.0, y_um=1.0, kind="cherenkov", velocity_beta=0.9),),
     )
     restored = _params_from_dict(_params_to_dict(params))
@@ -36,7 +35,6 @@ def test_subprocess_run_matches_in_process(qapp):
     doc.add_instance("mmi1x2", {}, x=-18.0, y=0.0)
     params = FdtdParams(
         cell_size_um=0.08,
-        use_numba=True,
         sources=(SourceSpec(x_um=-15.0, y_um=0.0, kind="cherenkov"),),
     )
 
@@ -60,7 +58,7 @@ def test_subprocess_applies_the_region(qapp):
     doc = LayoutDocument()
     doc.add_instance("straight", {"length": 20.0, "width": 0.5}, x=0.0, y=0.0)
     doc.add_instance("mmi1x2", {}, x=200.0, y=150.0)  # far away -> huge full grid
-    params = FdtdParams(cell_size_um=0.1, use_numba=True, sources=(SourceSpec(x_um=-8.0, y_um=0.0),))
+    params = FdtdParams(cell_size_um=0.1, sources=(SourceSpec(x_um=-8.0, y_um=0.0),))
     region = (-15.0, -6.0, 15.0, 6.0)
 
     sim_stub, _, _ = run_in_subprocess(doc, params, region_um=region)
@@ -74,7 +72,7 @@ def test_bundle_uses_basenames_not_absolute_paths(qapp, tmp_path):
     can be relocated (e.g. scp'd to a remote host) and still resolve."""
     doc = LayoutDocument()
     doc.add_instance("straight", {"length": 8.0, "width": 0.5})
-    params = FdtdParams(cell_size_um=0.1, use_numba=True, sources=(SourceSpec(x_um=-5.0, y_um=0.0),))
+    params = FdtdParams(cell_size_um=0.1, sources=(SourceSpec(x_um=-5.0, y_um=0.0),))
 
     job_path = write_bundle(tmp_path, doc, params)
     job = json.loads(job_path.read_text())
@@ -90,7 +88,7 @@ def test_relocated_bundle_still_runs(qapp, tmp_path):
     after the bundle is copied across machines."""
     doc = LayoutDocument()
     doc.add_instance("straight", {"length": 8.0, "width": 0.5})
-    params = FdtdParams(cell_size_um=0.1, use_numba=True, sources=(SourceSpec(x_um=-5.0, y_um=0.0),))
+    params = FdtdParams(cell_size_um=0.1, sources=(SourceSpec(x_um=-5.0, y_um=0.0),))
 
     build_dir = tmp_path / "built_here"
     build_dir.mkdir()
@@ -121,32 +119,54 @@ def test_progress_marker_round_trips():
 
 
 def test_subprocess_streams_progress_to_callback(qapp):
-    """run_in_subprocess forwards the child's streamed progress markers, ending
-    at 100% (step == n_steps)."""
+    """run_in_subprocess forwards the child's progress markers, ending at 100%
+    (step == n_steps). photonfdtd (>=0.13) steps the whole time loop as one
+    compiled lax.scan and only reports completion, so intermediate ticks are
+    no longer guaranteed — but the final 100% marker must arrive."""
     doc = LayoutDocument()
     doc.add_instance("straight", {"length": 8.0, "width": 0.5})
-    params = FdtdParams(cell_size_um=0.1, use_numba=True, sources=(SourceSpec(x_um=-5.0, y_um=0.0),))
+    params = FdtdParams(cell_size_um=0.1, sources=(SourceSpec(x_um=-5.0, y_um=0.0),))
 
     ticks = []
     run_in_subprocess(doc, params, progress_callback=lambda i, n: ticks.append((i, n)))
     assert ticks  # progress was reported
-    assert ticks[0][0] == 0  # started at the first step
+    assert all(0 <= i <= n and n > 0 for i, n in ticks)
     assert ticks[-1][0] == ticks[-1][1]  # finished at 100%
 
 
-def test_subprocess_reports_the_backend_actually_used(qapp):
-    """The child reports the backend it really ran on (not what was requested),
-    so a silent CPU fallback in the child is visible rather than just slow."""
-    from phidler.fdtd_sim import gpu_available, numba_available
+def test_subprocess_reports_the_device_actually_used(qapp):
+    """The child reports where JAX really ran ("GPU"/"CPU"), so a silent CPU
+    fallback on the executing host is visible rather than just slow. Child and
+    parent share this environment here, so they must agree."""
+    from phidler.fdtd_sim import jax_device_label
 
     doc = LayoutDocument()
     doc.add_instance("straight", {"length": 8.0, "width": 0.5})
     src = (SourceSpec(x_um=-5.0, y_um=0.0),)
 
-    if numba_available():
-        sim_stub, _, _ = run_in_subprocess(doc, FdtdParams(cell_size_um=0.1, use_numba=True, sources=src))
-        assert sim_stub.use_numba is True and sim_stub.use_gpu is False
+    sim_stub, _, _ = run_in_subprocess(doc, FdtdParams(cell_size_um=0.1, sources=src))
+    assert sim_stub.device in ("GPU", "CPU")
+    assert sim_stub.device == jax_device_label()
 
-    if gpu_available():
-        sim_stub, _, _ = run_in_subprocess(doc, FdtdParams(cell_size_um=0.1, use_gpu=True, sources=src))
-        assert sim_stub.use_gpu is True  # GPU actually engaged in the child, not a quiet fallback
+
+def test_params_from_dict_drops_removed_backend_keys():
+    """A job dict written by an older phidler carries the GPU/Numba/JAX/Rust
+    switches photonfdtd 0.13 removed; loading it must drop them, not raise."""
+    params = FdtdParams(cell_size_um=0.07, sources=(SourceSpec(x_um=-1.0, y_um=0.5),))
+    d = _params_to_dict(params)
+    d.update(use_gpu=True, use_numba=True, use_jax=False, use_rust=True, use_rust_cuda=False)
+    assert _params_from_dict(d) == params
+
+
+def test_load_result_npz_tolerates_a_file_without_device(tmp_path):
+    """Result files from an older phidler have no ``device`` entry."""
+    from phidler.fdtd_subprocess import load_result_npz
+
+    path = tmp_path / "old.npz"
+    np.savez(path, ez=np.zeros((2, 3, 4, 1), dtype=np.float32),
+             x=np.arange(3.0), y=np.arange(4.0), z=np.arange(1.0), shape=np.asarray([3, 4, 1]),
+             use_gpu=False, use_numba=True)
+    sim_stub, result_stub = load_result_npz(path)
+    assert sim_stub.device is None
+    assert sim_stub.grid.shape == (3, 4, 1)
+    assert result_stub.fields["field"]["Ez"].shape == (2, 3, 4, 1)

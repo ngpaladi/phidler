@@ -8,6 +8,7 @@ degrades to a plain Python console when the assistant is unavailable.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import threading
 import time
@@ -18,9 +19,7 @@ from phidler import ai
 from phidler.fdtd_sim import (
     FdtdParams,
     SimulationConfig,
-    resolve_accel_flags,
-    resolve_backend,
-    resolve_use_jax,
+    known_fields,
 )
 from phidler.panels.console_panel import ConsolePanel
 
@@ -329,55 +328,32 @@ def test_ai_sees_canvas_selection(qapp):
 
 def test_new_backend_params_default_off():
     p = FdtdParams()
-    assert p.use_jax is False
     assert p.subpixel is False
     assert p.subpixel_factor == 3
+    assert p.out_of_core is False
     # SimulationConfig too, so older projects (which never wrote these) load.
     c = SimulationConfig()
-    assert c.use_jax is False and c.subpixel is False
+    assert c.subpixel is False and c.eim is False
 
 
-def test_resolve_accel_flags_precedence():
-    # Plain: both accelerators pass through.
-    assert resolve_accel_flags(FdtdParams(use_gpu=True, use_numba=True)) == (True, True)
-    # JAX is exclusive of GPU and Numba.
-    assert resolve_accel_flags(FdtdParams(use_jax=True, use_gpu=True, use_numba=True)) == (False, False)
-    # Subpixel drops Numba (unsupported there) but not GPU.
-    assert resolve_accel_flags(FdtdParams(subpixel=True, use_gpu=True, use_numba=True)) == (True, False)
-    # Out-of-core is NumPy-only: drops both.
-    assert resolve_accel_flags(FdtdParams(out_of_core=True, use_gpu=True, use_numba=True)) == (False, False)
-    # A Rust core steps the whole loop natively: it drops both too.
-    assert resolve_accel_flags(FdtdParams(use_rust=True, use_gpu=True, use_numba=True)) == (False, False)
-    assert resolve_accel_flags(FdtdParams(use_rust_cuda=True, use_gpu=True, use_numba=True)) == (False, False)
-    # ...but only when it actually wins. Subpixel outranks Rust (the Rust cores
-    # raise on it), so with both set the GPU request survives after all.
-    assert resolve_accel_flags(
-        FdtdParams(use_rust=True, subpixel=True, use_gpu=True, use_numba=True)
-    ) == (True, False)
+def test_removed_backend_switches_are_gone():
+    """photonfdtd 0.13 is JAX-only: the per-run GPU/Numba/JAX/Rust switches no
+    longer exist on either params dataclass."""
+    for cls in (FdtdParams, SimulationConfig):
+        names = {f.name for f in dataclasses.fields(cls)}
+        for old in ("use_gpu", "use_numba", "use_jax", "use_rust", "use_rust_cuda"):
+            assert old not in names, (cls.__name__, old)
 
 
-def test_resolve_backend_precedence():
-    assert resolve_backend(FdtdParams()) == "auto"
-    assert resolve_backend(FdtdParams(use_rust=True)) == "rust"
-    assert resolve_backend(FdtdParams(use_rust_cuda=True)) == "rust-cuda"
-    # CUDA outranks the CPU core when both are somehow set.
-    assert resolve_backend(FdtdParams(use_rust=True, use_rust_cuda=True)) == "rust-cuda"
-    # Subpixel smoothing and out-of-core both outrank the Rust cores: photonfdtd
-    # raises on the first combination and never reaches a backend for the second.
-    assert resolve_backend(FdtdParams(use_rust=True, subpixel=True)) == "auto"
-    assert resolve_backend(FdtdParams(use_rust_cuda=True, out_of_core=True)) == "auto"
-
-
-def test_resolve_use_jax_loses_to_rust_and_out_of_core():
-    assert resolve_use_jax(FdtdParams(use_jax=True)) is True
-    # Rust is dispatched ahead of JAX inside photonfdtd, so asking for both
-    # would silently run Rust — resolve it here instead of building a Simulation
-    # whose use_jax flag is a lie about what will execute.
-    assert resolve_use_jax(FdtdParams(use_jax=True, use_rust=True)) is False
-    assert resolve_use_jax(FdtdParams(use_jax=True, use_rust_cuda=True)) is False
-    assert resolve_use_jax(FdtdParams(use_jax=True, out_of_core=True)) is False
-    # Subpixel bumps Rust out of the way, so JAX gets it back.
-    assert resolve_use_jax(FdtdParams(use_jax=True, use_rust=True, subpixel=True)) is True
+def test_known_fields_drops_keys_a_dataclass_lacks():
+    old = {"wavelength_um": 1.31, "subpixel": True, "use_numba": True, "use_gpu": True,
+           "use_jax": False, "use_rust": True, "use_rust_cuda": False}
+    kept = known_fields(SimulationConfig, old)
+    assert kept == {"wavelength_um": 1.31, "subpixel": True}
+    assert SimulationConfig(**kept).wavelength_um == 1.31
+    # Works for FdtdParams too, and leaves the input untouched.
+    assert known_fields(FdtdParams, {"cell_size_um": 0.1, "use_numba": True}) == {"cell_size_um": 0.1}
+    assert "use_numba" in old
 
 
 def test_simulation_config_survives_missing_new_fields(qapp):
@@ -385,5 +361,4 @@ def test_simulation_config_survives_missing_new_fields(qapp):
     would deserialize) still exposes them via the getattr-guarded defaults the
     FDTD window reads."""
     c = SimulationConfig(wavelength_um=1.55)
-    assert getattr(c, "use_jax", False) is False
     assert getattr(c, "subpixel", False) is False

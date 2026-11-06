@@ -34,7 +34,7 @@ pip install -e ".[dev]"
 ### Linux AppImage
 
 A portable, self-contained **AppImage** bundles Python, the app, and the full
-FDTD simulation stack (photonfdtd + numba + matplotlib) — nothing to install, and
+FDTD simulation stack (photonfdtd + JAX + matplotlib) — nothing to install, and
 **FDTD works out of the box**. Download the latest
 [**nightly release**](https://github.com/ngpaladi/phidler/releases/tag/nightly):
 
@@ -77,6 +77,14 @@ reach your home directory (for GDS / `.phidler` files), the network, and your SS
 agent (for remote FDTD runs). The optional `[ai]`, `[tidy3d]` and `[nereid]`
 extras aren't bundled; see the [docs](docs/index.md#linux-flatpak) for adding
 them.
+
+**GPU.** The bundle runs JAX on the CPU. For an NVIDIA GPU, add JAX's CUDA
+build inside the sandbox once, as described in the
+[docs](docs/index.md#linux-flatpak), then restart Phidler; the FDTD window's
+**Check JAX GPU…** confirms it.
+
+Or build a bundle with CUDA baked in: `GPU=1 packaging/flatpak/build.sh`
+(about 2.3 GB, too big for a GitHub release asset).
 
 ## Running it
 
@@ -323,6 +331,13 @@ so they can be regenerated after future UI changes.
     the mode against the solver's zero-amplitude boundary (29% edge/peak
     ratio at 0.05µm vs ~0% once thick enough), which is the direct answer
     to "is my cladding thickness enough."
+  - **Train (inverse design) tab**: fit a box of the layout to a task the
+    way a neural network is fitted to data — pick input/output ports, a task
+    (a built-in priority encoder, a CSV/NPZ dataset, or a target transfer
+    matrix) and train; the etch pattern is optimized by gradient descent
+    through photonfdtd's adjoint (one forward + one adjoint 2.5-D run per input
+    port per step) and placed back on the layout as a `trained_design`
+    instance. Walkthrough: [docs/training.md](docs/training.md).
   - **Propagation (FDTD) tab**: a true 3D solve (the original v1 of this
     feature forced `z_size=0`, collapsing the vertical dimension for
     speed — replaced, since that made cladding thickness inert) against
@@ -571,6 +586,9 @@ src/phidler/
     console_panel.py          # interactive Python REPL (code.InteractiveInterpreter) against the live session
     project_settings_dialog.py # material/thickness/wavelength picker shown on startup and File > New
     fdtd_window.py            # FDTD top-level window: mode-solve tab, propagation tab, source table, movie playback; FdtdWorker/ModeWorker (QThread wrappers around fdtd_sim.py)
+    train_tab.py              # FDTD window's Train tab: design box, port roles, task, live loss/design, placing the result; TrainWorker
+  chip_train.py              # train a design box like a neural network (photonfdtd.train): ports, tasks, ChipModel, train_chip, trained_design cell
+  jax_check.py               # diagnose whether JAX really runs on the GPU (fresh child process; python -m phidler.jax_check)
 tests/                       # all run under QT_QPA_PLATFORM=offscreen
 ```
 
