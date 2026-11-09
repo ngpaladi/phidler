@@ -78,6 +78,11 @@ Any other optical component stops the build with a message naming it.
   coupling is held fixed.
 - **Electrode bandwidth.** It is a number you enter, not computed from the
   electrode design.
+- **Heat between neighbours.** Each heater heats only its own waveguide;
+  thermal crosstalk between nearby heaters is not modelled.
+- **Electro-optic coefficients at one wavelength.** The lithium niobate
+  cross-sections are solved at 1.55 um whatever wavelength the tab is set
+  to, so a 1.31 um chip uses the 1.55 um electro-optic response.
 - **Electrode absorption and bend coupling.** Optical absorption by the
   electrodes and coupling in the fan-out bends are not modelled.
 
