@@ -38,6 +38,14 @@ def load_custom_components(path: str) -> CustomComponentsResult:
     always looks components up, never by holding a direct reference to the
     factory itself.
     """
+    from .component_files import is_component_file, load_component_file
+
+    if is_component_file(path):
+        # A component file (*.pcomp.json): data, not code; its generator
+        # source (if any) stays untrusted here. See phidler.component_files.
+        loaded = load_component_file(path)
+        return CustomComponentsResult(specs={loaded.spec.name: loaded.spec}, skipped=[])
+
     module_name = f"phidler_custom_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:

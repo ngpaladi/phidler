@@ -69,6 +69,7 @@ _CATEGORY_DISPLAY_NAMES = {
     "vias": "Vias",
     "other": "Other",
     CUSTOM_CATEGORY: "Custom",
+    "component_files": "Component Files",
 }
 
 _ACRONYMS = {
@@ -80,6 +81,8 @@ _ALPHA_DIGIT_RE = re.compile(r"^([a-zA-Z]*)(\d.*)?$")
 
 
 def category_display_name(category: str) -> str:
+    if category.startswith("library:"):
+        return f"Library — {category.split(':', 1)[1]}"
     return _CATEGORY_DISPLAY_NAMES.get(category, category.replace("_", " ").title())
 
 
