@@ -1159,6 +1159,10 @@ class FdtdWindow(QMainWindow):
 
         self.train_tab = TrainTab(document, view, self)
         tabs.addTab(self.train_tab, "Train (inverse design)")
+        from phidler.panels.circuit_tab import CircuitTab
+
+        self.circuit_tab = CircuitTab(document, self)
+        tabs.addTab(self.circuit_tab, "Circuit (whole chip)")
 
         self.view.source_placement_requested.connect(self._on_source_placement_requested)
         self.view.probe_placement_requested.connect(self._on_probe_placement_requested)
@@ -1193,6 +1197,7 @@ class FdtdWindow(QMainWindow):
         # so its widgets persist, but the document copy must stay current too).
         self.sync_config_to_document()
         self.train_tab.shutdown()
+        self.circuit_tab.shutdown()
         if self._jax_thread is not None and self._jax_thread.isRunning():
             try:
                 self._jax_worker.finished.disconnect()

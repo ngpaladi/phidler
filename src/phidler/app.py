@@ -51,6 +51,10 @@ def activate_pdk() -> None:
 
     register_trained_cell()
 
+    from phidler.chip_circuit import register_cells
+
+    register_cells()
+
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
