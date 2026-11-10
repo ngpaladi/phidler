@@ -1912,7 +1912,7 @@ class MainWindow(QMainWindow):
         from phidler import component_files as cf
 
         try:
-            if trust is None and cf.needs_trust(path):
+            if trust is None and cf.needs_trust(path) and not cf.is_trusted(cf.file_key(path)):
                 answer = QMessageBox.question(
                     self, "Run the component's generator?",
                     f"{path} carries Python code that rebuilds the part with other parameters. "
@@ -1921,6 +1921,8 @@ class MainWindow(QMainWindow):
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                 trust = answer == QMessageBox.Yes
             loaded = cf.load_component_file(path, trust=bool(trust))
+            if trust and cf.needs_trust(path):
+                cf.remember_trust(loaded.component_file.key)
         except Exception as exc:
             QMessageBox.critical(self, "Import failed", f"Could not load the component file {path}:\n{exc}")
             return

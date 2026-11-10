@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import inspect
 import re
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +39,38 @@ except Exception:  # pragma: no cover - older photonfdtd
 #: Palette category of imported component files.
 CATEGORY = "component_files"
 SETTINGS_KEY = "component_library_dirs"
+#: Content keys of component files whose generator code the user trusted.
+TRUST_KEY = "trusted_component_files"
+
+
+def _settings(settings=None):
+    from PySide6.QtCore import QSettings
+
+    return settings if settings is not None else QSettings("phidler", "phidler")
+
+
+def _trusted_keys(settings=None) -> list[str]:
+    stored = _settings(settings).value(TRUST_KEY, [])
+    if isinstance(stored, str):  # QSettings collapses a 1-element list to a bare string
+        stored = [stored]
+    return [str(k) for k in (stored or [])]
+
+
+def is_trusted(key: str, settings=None) -> bool:
+    """Whether the user trusted this exact file content before."""
+    return key in _trusted_keys(settings)
+
+
+def remember_trust(key: str, settings=None) -> None:
+    """Trust this file content from now on (a changed file asks again)."""
+    keys = _trusted_keys(settings)
+    if key not in keys:
+        _settings(settings).setValue(TRUST_KEY, keys + [key])
+
+
+def file_key(path: str) -> str:
+    """The content key of a component file (changes with any edit)."""
+    return pclib.load_component(path).key
 
 
 def is_component_file(path: str) -> bool:
@@ -72,16 +105,20 @@ class LoadedFile:
     component_file: object
 
 
-def load_component_file(path: str, trust: bool = False, category: str = CATEGORY) -> LoadedFile:
+def load_component_file(path: str, trust: bool = False, category: str = CATEGORY,
+                        settings=None) -> LoadedFile:
     """Load ``path`` and register it with the active PDK as a placeable cell
     named ``pcomp_<name>``. With a usable generator the cell takes the
     generator's parameters (left at their defaults it is the file's fixed
-    geometry); otherwise it takes none."""
+    geometry); otherwise it takes none. A file whose content the user
+    trusted before (:func:`remember_trust`) is trusted again."""
     if not AVAILABLE:
         raise RuntimeError("component files need photonfdtd with photonfdtd.circuit (0.16+)")
     import gdsfactory as gf
 
     cf = pclib.load_component(path, trust=trust)
+    if not cf.trust and is_trusted(cf.key, settings):
+        cf = pclib.load_component(path, trust=True)
     name = f"pcomp_{_safe(cf.name)}"
     pdk = gf.get_active_pdk()
     existing = pdk.cells.get(name)
@@ -91,6 +128,13 @@ def load_component_file(path: str, trust: bool = False, category: str = CATEGORY
 
     def factory(**kwargs):
         changed = {k: v for k, v in kwargs.items() if defaults.get(k) != v}
+        if changed and not generator_usable(cf):
+            # E.g. a project saved while the file was trusted: keep the
+            # instance, with the file's fixed geometry.
+            warnings.warn(f"component file {cf.name!r}: its generator is not trusted, so "
+                          f"{sorted(changed)} are ignored and the fixed geometry is used",
+                          stacklevel=2)
+            return cf.cell()
         if changed:
             return cf.regenerate(**{**defaults, **kwargs})
         return cf.cell()
@@ -145,26 +189,41 @@ def selection_component(document, inst_ids: list[int]):
     def pkey(p):
         return (round(p.center[0], 3), round(p.center[1], 3))
     # Routing pieces (segments, bends, the tapers routing adds at the ends)
-    # are plain instances of the top cell: take every one that chains, port
-    # to port, from the selection.
+    # are plain instances of the top cell. Group them into routes (pieces
+    # joined port to port) and take each route that reaches the selection
+    # and no unselected instance: a route to a part left out stays out, so
+    # the selected port behind it stays open.
     placed_names = {inst.ref.name for inst in document.instances.values()}
     pieces = [r for r in document.top.insts if r.name not in placed_names]
-    reached = {pkey(p) for _, p in all_ports}
-    taken: set = set()
-    grew = True
-    while grew:
-        grew = False
-        for r in pieces:
-            if r.name in taken:
-                continue
-            if any(pkey(p) in reached for p in r.ports):
-                taken.add(r.name)
-                grew = True
-                nr = c.add_ref(r.cell)
-                nr.dcplx_trans = r.dcplx_trans
-                for p in r.ports:
-                    reached.add(pkey(p))
-                all_ports += [(None, p) for p in nr.ports]
+    selected = {pkey(p) for _, p in all_ports}
+    others = {pkey(p) for i, inst in document.instances.items() if i not in ids
+              for p in inst.ref.ports}
+    parent = list(range(len(pieces)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    owner: dict = {}
+    for n, r in enumerate(pieces):
+        for p in r.ports:
+            k = pkey(p)
+            if k in owner:
+                parent[find(n)] = find(owner[k])
+            else:
+                owner[k] = n
+    routes: dict = {}
+    for n, r in enumerate(pieces):
+        routes.setdefault(find(n), []).append(r)
+    for route in routes.values():
+        keys = {pkey(p) for r in route for p in r.ports}
+        if keys & others or not keys & selected:
+            continue
+        for r in route:
+            nr = c.add_ref(r.cell)
+            nr.dcplx_trans = r.dcplx_trans
+            all_ports += [(None, p) for p in nr.ports]
 
     key = pkey
     count = {}
@@ -195,20 +254,12 @@ def export_selection(document, inst_ids: list[int], path: str, *, name: str,
         raise RuntimeError("component files need photonfdtd with photonfdtd.circuit (0.16+)")
     if not inst_ids:
         raise ValueError("nothing selected")
-    if len(inst_ids) == 1:
-        inst = document.instances[inst_ids[0]]
-        comp = inst.cell
-        info = dict(comp.info) if comp.info else {}
-        if "pcomp" in info:          # re-exporting an imported part: keep its file's model
-            data = pclib._registry_get(info["pcomp"]).data
-            model = data.get("model", {}).get("physics")
-        else:
-            model = "auto"
-    else:
-        comp = selection_component(document, inst_ids)
-        model = "auto"
+    # One instance keeps its own kind (an imported part keeps its file's
+    # model, pins and generator); several become a circuit.
+    comp = (document.instances[inst_ids[0]].cell if len(inst_ids) == 1
+            else selection_component(document, inst_ids))
     data = pclib.export_component(comp, None, name=name, description=description, author=author,
-                                  library=library, model=model, waveguide=waveguide)
+                                  library=library, waveguide=waveguide)
     if sparams_wavelengths is not None and data["model"].get("physics"):
         m = pclib._model_from_physics(data["model"]["physics"])
         data["model"]["sparams"] = pclib.sample_sparams(m, sparams_wavelengths)

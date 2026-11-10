@@ -139,3 +139,66 @@ def test_generator_source_asks_for_trust(qapp, tmp_path, monkeypatch):
     assert asked
     spec = win.catalog_by_name["pcomp_block"]
     assert not spec.signature.parameters           # untrusted: fixed geometry only
+
+
+def test_route_to_an_unselected_part_stays_out(qapp, fast_lnoi):
+    doc, sw, pad = _switch_on_pad()
+    c = cfm.selection_component(doc, [sw.id])
+    names = {p.name for p in c.ports}
+    # The switch's sig_w is routed to the pad, which is not selected: the
+    # route is left out and the port stays a pin of the part.
+    assert f"lnoi_mzi_switch{sw.id}_sig_w" in names
+    assert {"o1", "o2", "o3", "o4"} <= names
+    both = cfm.selection_component(doc, [sw.id, pad.id])
+    assert f"lnoi_mzi_switch{sw.id}_sig_w" not in {p.name for p in both.ports}
+
+
+def test_reexport_of_an_imported_part_keeps_its_file(qapp, fast_lnoi, tmp_path):
+    doc, sw, _ = _switch_on_pad()
+    first = cfm.export_selection(doc, [sw.id], str(tmp_path / "a"), name="orig",
+                                 sparams_wavelengths=np.linspace(1.5, 1.6, 3))
+    loaded = cfm.load_component_file(str(tmp_path / ("a" + cfm.SUFFIX)))
+    doc2 = LayoutDocument()
+    inst = doc2.add_instance(loaded.spec.name, {})
+    again = cfm.export_selection(doc2, [inst.id], str(tmp_path / "b"), name="copy")
+    assert again["model"] == first["model"] and again["generator"] == first["generator"]
+
+
+def test_trust_is_remembered_per_file_content(qapp, tmp_path, monkeypatch):
+    import gdsfactory as gf
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QMessageBox
+
+    from photonfdtd.circuit import library as pclib
+    from phidler.main_window import MainWindow
+
+    settings = QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat)
+    monkeypatch.setattr(cfm, "_settings", lambda s=None: settings)
+    c = gf.Component("blk2")
+    c.add_polygon([(0, 0), (2, 0), (2, 2), (0, 2)], layer=(1, 0))
+    src = ("import gdsfactory as gf\n"
+           "def block2(size=2.0):\n"
+           "    c = gf.Component()\n"
+           "    c.add_polygon([(0, 0), (size, 0), (size, size), (0, size)], layer=(1, 0))\n"
+           "    return c\n")
+    pclib.export_component(c, tmp_path / "blk2", name="block2", model=None,
+                           generator={"function": "block2", "kwargs": {"size": 2.0}},
+                           generator_source=src)
+    path = str(tmp_path / ("blk2" + cfm.SUFFIX))
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(1) or QMessageBox.Yes)
+    win = MainWindow()
+    win._apply_component_file(path)
+    assert asked == [1] and cfm.is_trusted(cfm.file_key(path), settings)
+    # A reload (as on project open) is trusted without asking again.
+    loaded = cfm.load_component_file(path)
+    assert "size" in loaded.spec.signature.parameters
+    win._apply_component_file(path)
+    assert asked == [1]
+    # Untrusted, saved parameters fall back to the fixed geometry.
+    settings.remove(cfm.TRUST_KEY)
+    pclib._REGISTRY.clear()
+    plain = cfm.load_component_file(path)
+    with pytest.warns(UserWarning, match="not trusted"):
+        cell = plain.spec.factory(size=3.0)
+    assert cell.dbbox().width() == pytest.approx(2.0)
