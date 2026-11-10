@@ -168,6 +168,7 @@ def build_circuit(document, config: CircuitConfig) -> ChipCircuit:
                            loss_db_cm=config.loss_db_cm),
             bandwidth=(config.bandwidth_ghz * 1e9) or None,
             cell_size=config.cell_size,
+            wavelength=config.wavelength,  # LN cross-sections solved here too
         )
     # Label instances by the layout's own ids where we can match them.
     by_ref = {inst.ref.name: inst for inst in document.instances.values()}

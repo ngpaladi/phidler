@@ -111,3 +111,33 @@ def test_circuit_tab_builds_and_runs(qapp, fast_lnoi):
     assert len(tab.current_plot.series) == 2
     assert not tab.current_plot.grab().isNull()
     tab.shutdown()
+
+
+def test_ln_cells_are_solved_at_the_tab_wavelength(qapp, fast_lnoi, monkeypatch):
+    from photonfdtd import lnoi
+
+    seen = []
+    fake = lnoi.model
+    monkeypatch.setattr(lnoi, "model", lambda cell, **kw: seen.append(kw.get("wavelength")) or fake(cell))
+    doc, _ = _chip_document()
+    cc.build_circuit(doc, cc.CircuitConfig(wavelength=1.31))
+    assert seen and set(seen) == {1.31}
+
+
+def test_closing_during_a_build_drops_its_result(qapp):
+    import time
+
+    from phidler.panels import circuit_tab as ct
+
+    tab = ct.CircuitTab(LayoutDocument())
+    got = []
+    tab._start(lambda: time.sleep(3) or "late", (), got.append)
+    tab.shutdown()                        # returns without waiting 3 s
+    assert not tab.is_busy() and len(ct._ORPHANS) == 1
+    tab.deleteLater()
+    deadline = time.time() + 10
+    while ct._ORPHANS and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.05)
+    qapp.processEvents()
+    assert not ct._ORPHANS and got == []

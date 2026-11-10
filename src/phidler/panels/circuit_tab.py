@@ -11,7 +11,7 @@ and output powers are plotted and tabulated.
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QThread, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QPointF, QRectF, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QComboBox,
@@ -97,6 +97,10 @@ class SeriesPlot(QWidget):
                 p.drawLine(a, b)
             p.drawText(QRectF(r.left() + 8, r.top() + 4 + 15 * k, r.width() - 16, 14),
                        Qt.AlignLeft, name)
+
+
+#: Worker threads still finishing after their tab closed, kept referenced.
+_ORPHANS: set = set()
 
 
 class CircuitWorker(QObject):
@@ -436,6 +440,25 @@ class CircuitTab(QWidget):
             self.results_table.setItem(i, 1, QTableWidgetItem(b))
 
     def shutdown(self) -> None:
-        if self._thread is not None:
-            self._thread.quit()
-            self._thread.wait(5000)
+        """Called when the FDTD window closes. A build or run cannot be
+        interrupted (an LN solve can take a minute): its results are
+        dropped, and its thread is kept alive, unparented, until it ends."""
+        thread, worker = self._thread, self._worker
+        if thread is None:
+            return
+        for sig in (worker.finished, worker.failed, thread.finished):
+            try:
+                sig.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        self._thread = self._worker = None
+        thread.quit()  # ends the thread's event loop once the current job returns
+        if thread.wait(2000):
+            return
+        thread.setParent(None)
+        _ORPHANS.add((thread, worker))
+        thread.finished.connect(lambda: _ORPHANS.discard((thread, worker)))
+        app = QCoreApplication.instance()
+        if app is not None and not getattr(app, "_phidler_orphan_wait", False):
+            app._phidler_orphan_wait = True
+            app.aboutToQuit.connect(lambda: [t.wait() for t, _ in list(_ORPHANS)])

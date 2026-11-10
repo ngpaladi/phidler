@@ -73,16 +73,15 @@ Any other optical component stops the build with a message naming it.
   drives at that moment, so the drives must change slowly compared with the
   time light takes to cross the chip, about 10 ps per mm. A GHz drive on a
   centimetre chip is at the limit.
-- **Lithium niobate models at other wavelengths.** These are solved at one
-  wavelength. Elsewhere their phases scale with wavelength, but their
-  coupling is held fixed.
+- **Lithium niobate models away from the build wavelength.** The cross-sections
+  are solved at the tab's *Wavelength* when you click *Build* (its indices
+  from the lithium niobate dispersion; the Pockels coefficients are the
+  1.55 um ones). In a wavelength sweep their phases scale with wavelength,
+  but their coupling is held at its build-wavelength value.
 - **Electrode bandwidth.** It is a number you enter, not computed from the
   electrode design.
 - **Heat between neighbours.** Each heater heats only its own waveguide;
   thermal crosstalk between nearby heaters is not modelled.
-- **Electro-optic coefficients at one wavelength.** The lithium niobate
-  cross-sections are solved at 1.55 um whatever wavelength the tab is set
-  to, so a 1.31 um chip uses the 1.55 um electro-optic response.
 - **Electrode absorption and bend coupling.** Optical absorption by the
   electrodes and coupling in the fan-out bends are not modelled.
 
