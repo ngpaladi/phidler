@@ -1,6 +1,6 @@
 [project]
 name = "phidler"
-version = "0.3.0"
+version = "0.3.1"
 description = "Graphical CAD application for photonic integrated circuit layout, built on gdsfactory"
 # gdsfactory (>=9.44) requires Python 3.11–3.13, so phidler does too — declaring
 # >=3.10 let an install start on 3.10 only to fail later resolving gdsfactory.
@@ -34,7 +34,7 @@ docs = [
 # File > Import Component use. matplotlib is for field colour maps;
 # photonfdtd's GDS contouring uses contourpy, which matplotlib depends on.
 fdtd = [
-    "photonfdtd>=0.16.0",
+    "photonfdtd>=0.16.1",
     "matplotlib>=3.7",
 ]
 # Optional AI assistant: an in-process MCP server exposes phidler's live

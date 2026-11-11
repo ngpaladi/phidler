@@ -26,7 +26,7 @@ if [ "${GPU:-0}" = 1 ]; then
     # Same manifest with JAX's CUDA build added to the FDTD pip line, written
     # next to the original so its relative source path still resolves.
     GPU_MANIFEST="$REPO_ROOT/packaging/flatpak/.$APP_ID.gpu.yml"
-    sed 's|"photonfdtd>=0.16.0" "matplotlib>=3.7"|"photonfdtd>=0.16.0" "matplotlib>=3.7" "jax[cuda12]"|' \
+    sed 's|"photonfdtd>=0.16.1" "matplotlib>=3.7"|"photonfdtd>=0.16.1" "matplotlib>=3.7" "jax[cuda12]"|' \
         "$MANIFEST" > "$GPU_MANIFEST"
     grep -q 'jax\[cuda12\]' "$GPU_MANIFEST" || { echo "error: couldn't add jax[cuda12] to the manifest" >&2; exit 1; }
     trap 'rm -f "$GPU_MANIFEST"' EXIT
