@@ -334,6 +334,9 @@ class CircuitTab(QWidget):
         self._thread.start()
 
     def _on_thread_done(self) -> None:
+        for obj in (self._worker, self._thread):
+            if obj is not None:
+                obj.deleteLater()
         self._thread = None
         self._worker = None
         self.build_button.setEnabled(cc.AVAILABLE)
@@ -491,12 +494,21 @@ class CircuitTab(QWidget):
             except (RuntimeError, TypeError):
                 pass
         self._thread = self._worker = None
-        # The window is reused when it reopens, so leave the tab usable.
-        self.build_button.setEnabled(cc.AVAILABLE)
-        self.run_button.setEnabled(self.circuit is not None)
-        self.status_label.setText("Stopped: the window was closed.")
         thread.quit()  # ends the thread's event loop once the current job returns
         if thread.wait(2000):
+            self._usable_again()
             return
+        # Still working: the window is reused when it reopens, so the tab
+        # comes back to life when that job ends, and not before (two builds
+        # must not read the layout at once).
+        self.status_label.setText("Stopped: the window was closed. The interrupted "
+                                  "job is still finishing…")
+        thread.finished.connect(self._usable_again)
         thread.setParent(None)
         _reaper().adopt(thread, worker)
+
+    def _usable_again(self) -> None:
+        if self._thread is None:
+            self.build_button.setEnabled(cc.AVAILABLE)
+            self.run_button.setEnabled(self.circuit is not None)
+            self.status_label.setText("Stopped: the window was closed.")

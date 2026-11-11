@@ -1912,7 +1912,9 @@ class MainWindow(QMainWindow):
         from phidler import component_files as cf
 
         try:
+            asked_key = None
             if trust is None and cf.needs_trust(path) and not cf.is_trusted(cf.file_key(path)):
+                asked_key = cf.file_key(path)
                 answer = QMessageBox.question(
                     self, "Run the component's generator?",
                     f"{path} carries Python code that rebuilds the part with other parameters. "
@@ -1921,6 +1923,10 @@ class MainWindow(QMainWindow):
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                 trust = answer == QMessageBox.Yes
             loaded = cf.load_component_file(path, trust=bool(trust))
+            if trust and asked_key not in (None, loaded.component_file.key):
+                # Not the content the question was about.
+                loaded.component_file.trust = False
+                raise ValueError("the file changed while the question was open; import it again")
             if trust and cf.needs_trust(path):
                 cf.remember_trust(loaded.component_file.key)
         except Exception as exc:

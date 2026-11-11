@@ -275,3 +275,58 @@ def test_closing_mid_run_leaves_the_tab_usable(qapp):
     assert not tab.build_button.isEnabled()
     tab.shutdown()
     assert tab.build_button.isEnabled() and not tab.is_busy()
+
+
+def test_tab_waits_for_an_orphaned_job_before_building_again(qapp, monkeypatch):
+    import time
+
+    from PySide6.QtCore import QThread
+
+    from phidler.panels import circuit_tab as ct
+
+    tab = ct.CircuitTab(LayoutDocument())
+    tab._start(time.sleep, (0.6,), lambda *_: None)
+    monkeypatch.setattr(QThread, "wait", lambda self, *a: False)   # "still running after 2 s"
+    tab.shutdown()
+    monkeypatch.undo()
+    assert not tab.build_button.isEnabled()      # no second build next to the first
+    deadline = time.time() + 5
+    while not tab.build_button.isEnabled() and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    assert tab.build_button.isEnabled()
+    ct._reaper().wait_all()
+
+
+def test_file_swapped_during_the_trust_question_is_not_trusted(qapp, tmp_path, monkeypatch):
+    import gdsfactory as gf
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QMessageBox
+
+    from photonfdtd.circuit import library as pclib
+    from phidler.main_window import MainWindow
+
+    settings = QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat)
+    monkeypatch.setattr(cfm, "_settings", lambda s=None: settings)
+    c = gf.Component("blk3")
+    c.add_polygon([(0, 0), (2, 0), (2, 2), (0, 2)], layer=(1, 0))
+    src = "import gdsfactory as gf\ndef block3(size=2.0):\n    return gf.Component()\n"
+    path = str(tmp_path / ("blk3" + cfm.SUFFIX))
+
+    def write(source):
+        pclib.export_component(c, path, name="block3", model=None,
+                               generator={"function": "block3", "kwargs": {"size": 2.0}},
+                               generator_source=source)
+
+    write(src)
+
+    def swap_then_yes(*a, **k):
+        write(src + "# changed\n")
+        return QMessageBox.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", swap_then_yes)
+    errors = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *a, **k: errors.append(a[2]))
+    MainWindow()._apply_component_file(path)
+    assert errors and "changed while" in errors[0]
+    assert not cfm.is_trusted(cfm.file_key(path), settings)

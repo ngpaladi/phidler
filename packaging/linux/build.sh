@@ -63,7 +63,8 @@ uv pip install --python "$PY" --no-cache "${REQS[@]}" "$REPO_ROOT"
 #    path in their shebangs. Drop byte-code compiled at the staging path; Python
 #    can't rewrite it under a root-owned /opt, so recompile it below with the
 #    final path baked in.
-grep -rlI "^#!$STAGE$PREFIX/bin/" "$STAGE$PREFIX/bin" 2>/dev/null \
+# (No match is fine: grep's exit status must not end the build under pipefail.)
+{ grep -rlI "^#!$STAGE$PREFIX/bin/" "$STAGE$PREFIX/bin" 2>/dev/null || true; } \
     | xargs -r sed -i "1s|^#!$STAGE$PREFIX/bin/|#!$PREFIX/bin/|"
 find "$STAGE$PREFIX" -name __pycache__ -type d -prune -exec rm -rf {} +
 # (compileall exits non-zero over a few deliberately invalid test files in
