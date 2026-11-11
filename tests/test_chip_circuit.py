@@ -141,3 +141,12 @@ def test_closing_during_a_build_drops_its_result(qapp):
         time.sleep(0.05)
     qapp.processEvents()
     assert not ct._ORPHANS and got == []
+
+
+def test_analyses_report_photonfdtd_notes(qapp, fast_lnoi):
+    doc, _ = _chip_document()
+    circ = cc.build_circuit(doc, cc.CircuitConfig())
+    first = circ.optical_ports[0]
+    st = cc.operating_point(circ, {}, {first: 1.0}, 1.55)   # every net left floating
+    assert all(st.detector_current[d][0] == 0.0 for d in circ.detectors)
+    assert any("no circuit between" in n for n in circ.notes)

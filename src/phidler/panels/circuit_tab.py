@@ -11,7 +11,7 @@ and output powers are plotted and tabulated.
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QCoreApplication, QObject, QPointF, QRectF, Qt, QThread, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QPointF, QRectF, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QComboBox,
@@ -99,8 +99,44 @@ class SeriesPlot(QWidget):
                        Qt.AlignLeft, name)
 
 
-#: Worker threads still finishing after their tab closed, kept referenced.
+#: Worker threads still finishing after their tab closed, kept referenced
+#: until they have stopped.
 _ORPHANS: set = set()
+
+
+class _Reaper(QObject):
+    """Lives in the GUI thread. A closed tab's worker thread signals it when
+    it ends; the slot runs here (a queued call), after the thread has left
+    its run loop, and only then drops the last reference."""
+
+    @Slot()
+    def reap(self) -> None:
+        for pair in [p for p in _ORPHANS if p[0].isFinished()]:
+            pair[0].wait()
+            _ORPHANS.discard(pair)
+
+    def adopt(self, thread: QThread, worker: QObject) -> None:
+        _ORPHANS.add((thread, worker))
+        thread.finished.connect(self.reap, Qt.QueuedConnection)
+
+    def wait_all(self) -> None:
+        for t, _ in list(_ORPHANS):
+            t.wait()
+        _ORPHANS.clear()
+
+
+_REAPER: _Reaper | None = None
+
+
+def _reaper() -> _Reaper:
+    global _REAPER
+    if _REAPER is None:
+        _REAPER = _Reaper()
+        app = QCoreApplication.instance()
+        if app is not None:
+            _REAPER.moveToThread(app.thread())
+            app.aboutToQuit.connect(_REAPER.wait_all)
+    return _REAPER
 
 
 class CircuitWorker(QObject):
@@ -434,6 +470,9 @@ class CircuitTab(QWidget):
             for n, v in res.heater_power.items():
                 rows.append((f"{circ.label(n)} heater power (mW)", f"{v[0] * 1e3:.4g}"))
             self.status_label.setText("Done: operating point.")
+        notes = getattr(self.circuit, "notes", [])
+        if notes:
+            self.status_label.setText(self.status_label.text() + "\nNote: " + "\nNote: ".join(notes))
         self.results_table.setRowCount(len(rows))
         for i, (a, b) in enumerate(rows):
             self.results_table.setItem(i, 0, QTableWidgetItem(a))
@@ -456,9 +495,4 @@ class CircuitTab(QWidget):
         if thread.wait(2000):
             return
         thread.setParent(None)
-        _ORPHANS.add((thread, worker))
-        thread.finished.connect(lambda: _ORPHANS.discard((thread, worker)))
-        app = QCoreApplication.instance()
-        if app is not None and not getattr(app, "_phidler_orphan_wait", False):
-            app._phidler_orphan_wait = True
-            app.aboutToQuit.connect(lambda: [t.wait() for t, _ in list(_ORPHANS)])
+        _reaper().adopt(thread, worker)

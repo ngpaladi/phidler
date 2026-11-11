@@ -14,6 +14,7 @@ analyses (operating point, voltage sweep, wavelength sweep, time domain).
 """
 from __future__ import annotations
 
+import contextlib
 import warnings
 from dataclasses import dataclass, field
 from typing import Callable
@@ -136,6 +137,9 @@ class ChipCircuit:
     chip: object
     labels: dict[str, str]                 # netlist name -> "#id spec" for display
     net_members: dict[str, list[str]] = field(default_factory=dict)
+    #: photonfdtd's notes from the last analysis (floating electrodes,
+    #: detectors with no circuit, non-convergence), for the tab to show.
+    notes: list[str] = field(default_factory=list)
 
     @property
     def nets(self) -> list[str]:
@@ -208,10 +212,27 @@ class Curves:
     drives: dict[str, np.ndarray] = field(default_factory=dict)
 
 
+#: Warnings from photonfdtd.circuit that change what the results mean.
+_NOTE_PATTERNS = ("no circuit between", "but no drive", "did not converge")
+
+
+@contextlib.contextmanager
+def _noted(circ: ChipCircuit):
+    """Hide warnings during an analysis, but keep photonfdtd's notes about
+    the circuit on ``circ.notes``."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            yield
+        finally:
+            notes = [str(w.message) for w in caught
+                     if any(pat in str(w.message) for pat in _NOTE_PATTERNS)]
+            circ.notes = list(dict.fromkeys(notes))
+
+
 def operating_point(circ: ChipCircuit, specs, inputs_mw, wavelength: float):
     """The steady state at the drives' t = 0 values: a ChipState."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
+    with _noted(circ):
         return circ.chip.solve(wavelength, drives=_drives(circ, specs, False),
                                inputs=_inputs(inputs_mw))
 
@@ -228,8 +249,7 @@ def voltage_sweep(circ: ChipCircuit, specs, inputs_mw, wavelength: float, net: s
     """Sweep one net's DC voltage, the others at their t = 0 values."""
     base = _drives(circ, specs, False)
     states = []
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
+    with _noted(circ):
         for v in values:
             states.append(circ.chip.solve(wavelength, drives={**base, net: float(v)},
                                           inputs=_inputs(inputs_mw)))
@@ -238,8 +258,7 @@ def voltage_sweep(circ: ChipCircuit, specs, inputs_mw, wavelength: float, net: s
 
 def wavelength_sweep(circ: ChipCircuit, specs, inputs_mw, wavelengths) -> Curves:
     wl = np.asarray(wavelengths, float)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
+    with _noted(circ):
         st = circ.chip.solve(wl, drives=_drives(circ, specs, False), inputs=_inputs(inputs_mw))
     cur = {circ.label(d): st.detector_current[d] * 1e3 for d in circ.detectors}
     pw = {p: st.power[p] * 1e3 for p in circ.optical_ports}
@@ -248,8 +267,7 @@ def wavelength_sweep(circ: ChipCircuit, specs, inputs_mw, wavelengths) -> Curves
 
 def time_domain(circ: ChipCircuit, specs, inputs_mw, wavelength: float, t) -> Curves:
     t = np.asarray(t, float)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
+    with _noted(circ):
         tr = circ.chip.transient(t, _drives(circ, specs, True), inputs=_inputs(inputs_mw),
                                  wavelength=wavelength)
     cur = {circ.label(d): tr.detector_current[d] * 1e3 for d in circ.detectors}

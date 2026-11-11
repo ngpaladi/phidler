@@ -53,6 +53,8 @@ Any other optical component stops the build with a message naming it.
    undriven. *Square*, *Sine*, *Pulse* and *PRBS* use *Low*, *High* and
    *Freq / rate*. Set the switch's grounds and the detectors' anodes to DC
    0 V, and the cathodes to DC 2 V for reverse bias.
+   A detector needs a circuit between its contacts: left floating, it reads
+   0 mA, and the status line under the results says so.
 
 ## Running it
 
