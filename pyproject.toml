@@ -1,6 +1,6 @@
 [project]
 name = "phidler"
-version = "0.2.0"
+version = "0.3.0"
 description = "Graphical CAD application for photonic integrated circuit layout, built on gdsfactory"
 # gdsfactory (>=9.44) requires Python 3.11–3.13, so phidler does too — declaring
 # >=3.10 let an install start on 3.10 only to fail later resolving gdsfactory.
@@ -28,10 +28,13 @@ docs = [
 # installed (pip install "jax[cuda12]" for an NVIDIA GPU) and on the CPU
 # otherwise. The FDTD window's "Check JAX GPU" button reports which, and why.
 # 0.15 adds design regions and chip training (photonfdtd.train), which the
-# Train tab uses (see phidler.chip_train). matplotlib is for field colour maps;
+# Train tab uses (see phidler.chip_train). 0.16 adds whole-chip circuit
+# simulation, the LNOI switch cells and component files (photonfdtd.circuit,
+# photonfdtd.lnoi), which the Circuit tab, the Lithium Niobate palette and
+# File > Import Component use. matplotlib is for field colour maps;
 # photonfdtd's GDS contouring uses contourpy, which matplotlib depends on.
 fdtd = [
-    "photonfdtd>=0.15.0",
+    "photonfdtd>=0.16.0",
     "matplotlib>=3.7",
 ]
 # Optional AI assistant: an in-process MCP server exposes phidler's live

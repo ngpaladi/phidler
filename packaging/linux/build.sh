@@ -54,7 +54,7 @@ rm -f "$STAGE$PREFIX"/lib/python3*/EXTERNALLY-MANAGED
 
 # 2. The app and the FDTD stack (keep in sync with the [fdtd] group in
 #    pyproject.toml and the Flatpak manifest).
-REQS=("photonfdtd>=0.15.0" "matplotlib>=3.7")
+REQS=("photonfdtd>=0.16.0" "matplotlib>=3.7")
 [ "${GPU:-0}" = 1 ] && REQS+=("jax[cuda12]")
 export PIP_NO_CACHE_DIR=1
 uv pip install --python "$PY" --no-cache "${REQS[@]}" "$REPO_ROOT"

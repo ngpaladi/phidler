@@ -54,7 +54,7 @@ modules:
       # photonfdtd first (it pulls in jax), plus the FDTD extras; keep in sync with
       # the [fdtd] group in pyproject.toml. build.sh GPU=1 appends "jax[cuda12]".
       - pip3 install --prefix=${FLATPAK_DEST} --no-warn-script-location
-        "photonfdtd>=0.15.0" "matplotlib>=3.7"
+        "photonfdtd>=0.16.0" "matplotlib>=3.7"
       # Then this checkout. Its `phidler` console script gets a /usr/bin/python3
       # shebang, which is exactly the runtime's interpreter.
       - pip3 install --prefix=${FLATPAK_DEST} --no-warn-script-location .

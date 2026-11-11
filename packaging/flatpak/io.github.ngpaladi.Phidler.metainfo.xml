@@ -23,6 +23,16 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.0" date="2026-11-11">
+      <description>
+        <p>Adds a Circuit tab that simulates the whole chip as a circuit of
+        physics-based models (operating point, voltage and wavelength sweeps,
+        time domain), a lithium niobate palette of voltage-controlled switches,
+        and component files: parts with layout, pins and model in one file,
+        imported, kept in library folders and exported from a selection. Needs
+        photonfdtd 0.16.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-11-06">
       <description>
         <p>Runs FDTD on photonfdtd 0.15's JAX engine, on the GPU when JAX sees one,

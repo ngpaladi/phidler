@@ -79,6 +79,7 @@ jobs:
           squashfs-root/usr/bin/python3.12 - <<'PY'
           import phidler, gdsfactory, PySide6.QtCore
           import photonfdtd, jax, matplotlib  # the bundled FDTD simulation stack
+          import photonfdtd.circuit, photonfdtd.lnoi  # the Circuit tab and LN palette (0.16+)
           print("AppImage import OK — phidler", phidler.__version__,
                 "| photonfdtd", photonfdtd.__version__, "| jax", jax.__version__)
           PY
@@ -117,6 +118,7 @@ jobs:
             --env=PYTHONNOUSERSITE=1 --command=python3 "$APP_ID" - <<'PY'
           import phidler, gdsfactory, PySide6.QtCore
           import photonfdtd, jax, matplotlib  # the bundled FDTD simulation stack
+          import photonfdtd.circuit, photonfdtd.lnoi  # the Circuit tab and LN palette (0.16+)
           print("Flatpak import OK — phidler", phidler.__version__,
                 "| photonfdtd", photonfdtd.__version__, "| jax", jax.__version__)
           PY
@@ -150,6 +152,7 @@ jobs:
           /opt/phidler/bin/python3 -s - <<'PY'
           import phidler, gdsfactory, PySide6.QtCore
           import photonfdtd, jax, matplotlib  # the bundled FDTD simulation stack
+          import photonfdtd.circuit, photonfdtd.lnoi  # the Circuit tab and LN palette (0.16+)
           from PySide6.QtWidgets import QApplication
           QApplication([])
           print(".deb import OK — phidler", phidler.__version__,
@@ -162,7 +165,7 @@ jobs:
       - name: Smoke-test the .rpm (install on Fedora, import)
         run: |
           cat > smoke_rpm.py <<'PY'
-          import phidler, gdsfactory, photonfdtd, jax, matplotlib
+          import phidler, gdsfactory, photonfdtd, jax, matplotlib, photonfdtd.circuit, photonfdtd.lnoi
           from PySide6.QtWidgets import QApplication
           QApplication([])
           print(".rpm import OK — phidler", phidler.__version__, "| photonfdtd", photonfdtd.__version__)
