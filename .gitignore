@@ -13,3 +13,5 @@ packaging/flatpak/.*.gpu.yml
 *.AppImage
 *.flatpak
 squashfs-root/
+*.deb
+*.rpm

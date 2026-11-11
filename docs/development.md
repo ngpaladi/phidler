@@ -177,21 +177,21 @@ this checklist exists to surface.
 
 ## Packaging
 
-Two Linux packages are built from `main` by the
-[Build AppImage + Flatpak](https://github.com/ngpaladi/phidler/actions/workflows/appimage.yml)
-workflow. Every push to the packaging inputs uploads both as workflow artifacts.
-The nightly schedule (or a manual run) also replaces the rolling `nightly`
-pre-release with both files. That release job only runs if both builds and
-both smoke tests pass.
+Four Linux packages are built from `main` by the
+[Build Linux packages](https://github.com/ngpaladi/phidler/actions/workflows/appimage.yml)
+workflow: the AppImage, the Flatpak, a `.deb` and an `.rpm`. Every push to the
+packaging inputs uploads them as workflow artifacts. The nightly schedule (or a
+manual run) also replaces the rolling `nightly` pre-release with all four. That
+release job only runs if every build and smoke test passes.
 
-Both packages install the same stack: photonfdtd (the AppImage from GitHub
-`main`'s current HEAD, so each nightly gets the newest solver; the Flatpak from
+All of them install the same stack: photonfdtd (the AppImage from GitHub
+`main`'s current HEAD, so each nightly gets the newest solver; the others from
 PyPI), which pulls in JAX's CPU build, the FDTD extras (matplotlib), then the
 checkout being built. `GPU=1 packaging/flatpak/build.sh` adds JAX's CUDA build
 to the Flatpak; at ~2.3 GB that bundle is over GitHub's 2 GB release-asset
 limit, so CI ships the CPU one. Keep the extras in
-`packaging/appimage/phidler/requirements.txt` and in the Flatpak manifest in
-sync with the `[fdtd]` group in `pyproject.toml`.
+`packaging/appimage/phidler/requirements.txt`, the Flatpak manifest and
+`packaging/linux/build.sh` in sync with the `[fdtd]` group in `pyproject.toml`.
 
 ### AppImage
 
@@ -240,6 +240,41 @@ Things to know before changing the manifest:
   recipe and renamed to the app ID during the build. The AppStream metadata is
   `packaging/flatpak/io.github.ngpaladi.Phidler.metainfo.xml`. Check it with
   `appstreamcli validate --no-net`.
+
+### .deb and .rpm
+
+`packaging/linux/build.sh` builds both from one staged tree:
+
+```
+packaging/linux/build.sh                 # -> ./phidler_<ver>-1_amd64.deb, ./phidler-<ver>-1.x86_64.rpm
+FORMATS=deb packaging/linux/build.sh     # just one
+GPU=1 packaging/linux/build.sh           # bundle JAX's CUDA build too (~2 GB more)
+```
+
+It needs `uv`, and downloads `nfpm` into the build directory unless one is on
+`PATH`. Set `BUILD_DIR` to stage somewhere other than `build/linux` (the staged
+tree is about 2 GB).
+
+- **Bundled Python.** `uv python install` fetches a python-build-standalone
+  CPython, which runs from any prefix. The script copies it to
+  `stage/opt/phidler`, pip-installs the stack into it, rewrites the console
+  scripts' shebangs from the staging path to `/opt/phidler`, and recompiles the
+  byte code with the final paths (a root-owned `/opt` can't be written at run
+  time). `/usr/bin/phidler` runs `/opt/phidler/bin/python3 -s -m phidler`, so a
+  user's `~/.local` packages can't shadow the bundle.
+- **Dependencies.** Only the system libraries that PySide6's Qt loads for
+  QtCore, QtGui, QtWidgets and the xcb and Wayland platform plugins, plus
+  `ca-certificates` (pygit2 reads the CA bundle when gdsfactory imports it). The
+  `.rpm` names them by soname (`libEGL.so.1()(64bit)`), so one package resolves
+  on Fedora, RHEL and openSUSE. PySide6 ships many more Qt modules (WebEngine,
+  Multimedia, the SQL drivers and so on) whose libraries aren't declared, since
+  phidler never loads them. If phidler starts using another Qt module, run
+  `ldd` on its library inside a clean container and add what's missing.
+- **Removal.** The post-remove script deletes `/opt/phidler` on uninstall (not on
+  upgrade), including anything added later with `pip`, such as the CUDA build.
+- The config is `packaging/linux/nfpm.yaml`. nfpm expands environment variables
+  only in a few fields, so `build.sh` fills in its `${...}` paths and writes the
+  result to the build directory.
 
 CI runners are pinned to `ubuntu-24.04`. The Flatpak job installs
 `flatpak-builder` with apt and lifts Ubuntu's AppArmor restriction on
