@@ -36,13 +36,14 @@ def _pump_until(predicate, max_iters: int = 1000, sleep_s: float = 0.02) -> bool
 # -- construction ---------------------------------------------------------- #
 
 
-def test_window_has_three_tabs(qapp):
+def test_window_has_four_tabs(qapp):
     win = MainWindow()
     fdtd_win = FdtdWindow(win.document, win.view)
-    assert fdtd_win.centralWidget().count() == 3
+    assert fdtd_win.centralWidget().count() == 4
     assert fdtd_win.centralWidget().tabText(0) == "Vertical Mode Profile"
     assert fdtd_win.centralWidget().tabText(1) == "Propagation (FDTD)"
     assert fdtd_win.centralWidget().tabText(2) == "Train (inverse design)"
+    assert fdtd_win.centralWidget().tabText(3) == "Circuit (whole chip)"
 
 
 def test_default_params_and_device_label(qapp):

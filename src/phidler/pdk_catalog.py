@@ -26,6 +26,7 @@ CORE_CATEGORIES = [
     "filters",
     "spirals",
     "detectors",
+    "lithium_niobate",
 ]
 
 CUSTOM_CATEGORY = "custom"
@@ -53,6 +54,7 @@ _CATEGORY_DISPLAY_NAMES = {
     "filters": "Filters",
     "spirals": "Spirals",
     "detectors": "Detectors",
+    "lithium_niobate": "Lithium Niobate (photonfdtd)",
     "analog": "Analog",
     "containers": "Containers",
     "dies": "Dies",
@@ -164,6 +166,17 @@ def build_catalog() -> dict[str, list[ComponentSpec]]:
         category = _category_for(factory)
         catalog.setdefault(category, []).append(
             ComponentSpec(name=name, category=category, factory=factory, signature=sig)
+        )
+    # photonfdtd's lithium niobate switches and waveguide photodetector, with
+    # their circuit models (see phidler.chip_circuit). Registered at start-up.
+    from phidler.chip_circuit import CATEGORY, extra_cells
+
+    for name, factory in extra_cells().items():
+        if name not in registered_names:
+            continue
+        sig = inspect.signature(factory)
+        catalog.setdefault(CATEGORY, []).append(
+            ComponentSpec(name=name, category=CATEGORY, factory=factory, signature=sig)
         )
     for items in catalog.values():
         items.sort(key=lambda c: c.name)

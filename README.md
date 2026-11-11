@@ -358,6 +358,16 @@ so they can be regenerated after future UI changes.
     through photonfdtd's adjoint (one forward + one adjoint 2.5-D run per input
     port per step) and placed back on the layout as a `trained_design`
     instance. Walkthrough: [docs/training.md](docs/training.md).
+  - **Circuit (whole chip) tab**: simulate the full layout as a circuit with
+    photonfdtd.circuit — every component gets a physics model (photonfdtd's
+    lithium niobate switches from their electrode cross-sections, waveguides
+    and routes from their length, waveguide photodetectors), the metal is
+    traced from each pad to the electrodes, heaters and detectors it reaches,
+    and the tab runs operating points, voltage and wavelength sweeps, and
+    time-domain runs with square-wave, sine, pulse or PRBS pad drives through
+    the modulators' and detectors' bandwidths. The lithium niobate cells sit
+    in the palette under "Lithium Niobate (photonfdtd)". Walkthrough:
+    [docs/chip_simulation.md](docs/chip_simulation.md).
   - **Propagation (FDTD) tab**: a true 3D solve (the original v1 of this
     feature forced `z_size=0`, collapsing the vertical dimension for
     speed — replaced, since that made cladding thickness inert) against
@@ -607,7 +617,9 @@ src/phidler/
     project_settings_dialog.py # material/thickness/wavelength picker shown on startup and File > New
     fdtd_window.py            # FDTD top-level window: mode-solve tab, propagation tab, source table, movie playback; FdtdWorker/ModeWorker (QThread wrappers around fdtd_sim.py)
     train_tab.py              # FDTD window's Train tab: design box, port roles, task, live loss/design, placing the result; TrainWorker
+    circuit_tab.py            # FDTD window's Circuit tab: build the whole-chip circuit, drives per net, sweeps/time domain, plots; CircuitWorker
   chip_train.py              # train a design box like a neural network (photonfdtd.train): ports, tasks, ChipModel, train_chip, trained_design cell
+  chip_circuit.py            # whole-chip circuit simulation on photonfdtd.circuit: LN cell registration, build_circuit, drives, analyses
   jax_check.py               # diagnose whether JAX really runs on the GPU (fresh child process; python -m phidler.jax_check)
 tests/                       # all run under QT_QPA_PLATFORM=offscreen
 ```

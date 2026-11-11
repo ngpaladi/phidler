@@ -223,6 +223,11 @@ def _run_job(job_path: str) -> None:
     from gdsfactory.gpdk import get_generic_pdk
 
     get_generic_pdk().activate()
+    # A project may hold photonfdtd's lithium niobate cells; they resolve by
+    # name only once registered with the PDK.
+    from .chip_circuit import register_cells
+
+    register_cells()
 
     from .fdtd_sim import build_simulation, jax_device_label, limit_solver_threads, run_simulation
     from .model.document import LayoutDocument
