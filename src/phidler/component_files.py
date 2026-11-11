@@ -147,7 +147,10 @@ def load_component_file(path: str, trust: bool = False, category: str = CATEGORY
         for k, v in defaults.items() if isinstance(v, (bool, int, float, str))
     ])
     factory._pcomp_key = cf.key
-    pdk.register_cells(**{name: factory})
+    # Also under its content-keyed name, the one a second file of the same
+    # name gets: a project saved with that name then reopens in any session.
+    keyed = f"pcomp_{_safe(cf.name)}_{cf.key[:6]}"
+    pdk.register_cells(**{name: factory, keyed: factory})
     spec = ComponentSpec(name=name, category=category, factory=factory,
                          signature=factory.__signature__)
     return LoadedFile(spec, cf)

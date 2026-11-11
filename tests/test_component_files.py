@@ -241,3 +241,37 @@ def test_export_dialog_starts_from_the_imported_file(qapp, fast_lnoi, tmp_path):
     dlg = ExportComponentDialog(None, doc2, [inst.id])
     assert dlg.name_edit.text() == "nice name" and dlg.desc_edit.text() == "from the lab"
     assert dlg.author_edit.text() == "someone"
+
+
+def test_project_reopens_after_a_file_changed_under_the_same_name(qapp, fast_lnoi, tmp_path):
+    import gdsfactory as gf
+
+    doc, sw, _ = _switch_on_pad()
+    path = str(tmp_path / ("part" + cfm.SUFFIX))
+    cfm.export_selection(doc, [sw.id], path, name="part")
+    first = cfm.load_component_file(path)
+    cfm.export_selection(doc, [sw.id], path, name="part", description="edited")
+    second = cfm.load_component_file(path)
+    assert second.spec.name != first.spec.name       # the session-dependent name
+    # A fresh session knows only the edited file, under its plain name; the
+    # name the project saved must still resolve.
+    pdk = gf.get_active_pdk()
+    for n in [n for n in pdk.cells if n.startswith("pcomp_part")]:
+        del pdk.cells[n]
+    fresh = cfm.load_component_file(path)
+    assert fresh.spec.name == "pcomp_part"
+    doc2 = LayoutDocument()
+    inst = doc2.add_instance(second.spec.name, {})
+    assert {p.name for p in inst.cell.ports} >= {"o1", "sig_w"}
+
+
+def test_closing_mid_run_leaves_the_tab_usable(qapp):
+    import time
+
+    from phidler.panels.circuit_tab import CircuitTab
+
+    tab = CircuitTab(LayoutDocument())
+    tab._start(time.sleep, (0.2,), lambda *_: None)
+    assert not tab.build_button.isEnabled()
+    tab.shutdown()
+    assert tab.build_button.isEnabled() and not tab.is_busy()
