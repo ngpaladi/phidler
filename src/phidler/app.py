@@ -47,6 +47,15 @@ def activate_pdk() -> None:
 
     get_generic_pdk().activate()
 
+    # gdsfactory 9.5x checks every new route for collisions and, by default,
+    # draws an error marker instead of a route that touches itself or its
+    # endpoints. Phidler has its own obstacle handling and expects a route
+    # back, as older gdsfactory gave, so turn that check off.
+    import gdsfactory as gf
+
+    if hasattr(gf.CONF, "on_collision"):
+        gf.CONF.on_collision = None
+
     from phidler.chip_train import register_trained_cell
 
     register_trained_cell()

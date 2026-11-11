@@ -368,6 +368,12 @@ so they can be regenerated after future UI changes.
     the modulators' and detectors' bandwidths. The lithium niobate cells sit
     in the palette under "Lithium Niobate (photonfdtd)". Walkthrough:
     [docs/chip_simulation.md](docs/chip_simulation.md).
+  - **Component files** (`*.pcomp.json`): a part's layout, ports, pins and
+    circuit model (solved physics, S-parameter table, recipe, optional
+    generator) in one JSON file, like a KiCad library part. File > Import
+    Component…, File > Component Libraries… (folders scanned into the
+    palette) and File > Export Selection as Component… (several instances
+    export as one sub-circuit part).
   - **Propagation (FDTD) tab**: a true 3D solve (the original v1 of this
     feature forced `z_size=0`, collapsing the vertical dimension for
     speed — replaced, since that made cladding thickness inert) against
@@ -619,6 +625,8 @@ src/phidler/
     train_tab.py              # FDTD window's Train tab: design box, port roles, task, live loss/design, placing the result; TrainWorker
     circuit_tab.py            # FDTD window's Circuit tab: build the whole-chip circuit, drives per net, sweeps/time domain, plots; CircuitWorker
   chip_train.py              # train a design box like a neural network (photonfdtd.train): ports, tasks, ChipModel, train_chip, trained_design cell
+  component_files.py         # *.pcomp.json component files: import/register, library scan, export of a selection
+  component_libraries.py     # library-folder settings + dialog, export dialog
   chip_circuit.py            # whole-chip circuit simulation on photonfdtd.circuit: LN cell registration, build_circuit, drives, analyses
   jax_check.py               # diagnose whether JAX really runs on the GPU (fresh child process; python -m phidler.jax_check)
 tests/                       # all run under QT_QPA_PLATFORM=offscreen

@@ -491,6 +491,10 @@ class CircuitTab(QWidget):
             except (RuntimeError, TypeError):
                 pass
         self._thread = self._worker = None
+        # The window is reused when it reopens, so leave the tab usable.
+        self.build_button.setEnabled(cc.AVAILABLE)
+        self.run_button.setEnabled(self.circuit is not None)
+        self.status_label.setText("Stopped: the window was closed.")
         thread.quit()  # ends the thread's event loop once the current job returns
         if thread.wait(2000):
             return

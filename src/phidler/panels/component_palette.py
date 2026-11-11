@@ -113,6 +113,14 @@ class ComponentPalette(QWidget):
             self._catalog.setdefault(category, []).extend(specs)
         self._populate(self.search_box.text())
 
+    def remove_component(self, category: str, name: str) -> None:
+        """Drop one component from the palette (a re-imported part replacing
+        its old entry)."""
+        self._catalog[category] = [s for s in self._catalog.get(category, []) if s.name != name]
+        if not self._catalog[category]:
+            del self._catalog[category]
+        self._populate(self.search_box.text())
+
     def _populate(self, filter_text: str) -> None:
         self._preview_popup.hide()  # about-to-be-cleared items can't stay previewed
         # tree.clear() deletes the items any queued thumbnails point at, so
@@ -123,10 +131,13 @@ class ComponentPalette(QWidget):
         self.tree.clear()
         needle = filter_text.lower().strip()
 
-        other_categories = sorted(c for c in self._catalog if c not in CORE_CATEGORIES and c != CUSTOM_CATEGORY)
-        ordered_top_level = [c for c in CORE_CATEGORIES if c in self._catalog]
-        if CUSTOM_CATEGORY in self._catalog:
-            ordered_top_level.append(CUSTOM_CATEGORY)
+        # The user's own parts sit at the top level after the core ones:
+        # custom Python components, imported component files, then one node
+        # per component library folder.
+        own = [c for c in (CUSTOM_CATEGORY, "component_files") if c in self._catalog]
+        own += sorted(c for c in self._catalog if c.startswith("library:"))
+        other_categories = sorted(c for c in self._catalog if c not in CORE_CATEGORIES and c not in own)
+        ordered_top_level = [c for c in CORE_CATEGORIES if c in self._catalog] + own
 
         for category in ordered_top_level:
             self._add_category_item(self.tree, category, needle, expand=not needle)

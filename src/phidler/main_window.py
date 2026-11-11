@@ -172,6 +172,7 @@ class MainWindow(QMainWindow):
         self._build_transform_overlay()
         self._build_toolbar()
         self._build_menus()
+        self._load_component_libraries()
         self.undo_stack.indexChanged.connect(self._on_undo_index_changed)
 
     # -- panels -------------------------------------------------------------
@@ -920,6 +921,22 @@ class MainWindow(QMainWindow):
             "appear in the palette and can be placed like built-ins."
         )
         import_custom_action.triggered.connect(self._import_custom_components)
+
+        import_component_action = file_menu.addAction("Import Component…")
+        import_component_action.setToolTip(
+            "Load a component file (*.pcomp.json): a part's layout, ports, pins and circuit "
+            "model in one file, like a KiCad library part.")
+        import_component_action.triggered.connect(self._import_component_file)
+
+        export_component_action = file_menu.addAction("Export Selection as Component…")
+        export_component_action.setToolTip(
+            "Write the selected instance(s) as a component file, with their circuit model; "
+            "several instances become one part whose pins are their open ports and pads.")
+        export_component_action.triggered.connect(self._export_selection_as_component)
+
+        libraries_action = file_menu.addAction("Component Libraries…")
+        libraries_action.setToolTip("Folders of component files to show in the palette at start-up.")
+        libraries_action.triggered.connect(self._edit_component_libraries)
 
         file_menu.addSeparator()
 
@@ -1803,10 +1820,7 @@ class MainWindow(QMainWindow):
             # re-registers this project's custom parts in the palette too —
             # they only existed in the active PDK's registry because the
             # import above just re-ran it for this fresh document
-            for spec in custom_specs.values():
-                self.catalog_by_name[spec.name] = spec
-            self.catalog.setdefault("custom", []).extend(custom_specs.values())
-            self.palette.add_components({"custom": list(custom_specs.values())})
+            self._add_specs_to_palette(list(custom_specs.values()))
         self.undo_stack.clear()
         # Deliberately NOT tracking project_path for a .py open: Save (Ctrl+S)
         # calls save_project(), which writes .phidler JSON — if project_path
@@ -1867,6 +1881,90 @@ class MainWindow(QMainWindow):
         self.scene.clear_reference_item()
         self._mark_dirty()
 
+    def _add_specs_to_palette(self, specs: list) -> None:
+        """Add components to the catalog and the palette, each under its own
+        category (custom Python parts, component files, library folders).
+        A spec already listed under the same name replaces the old entry."""
+        by_cat: dict[str, list] = {}
+        for spec in specs:
+            old = self.catalog_by_name.get(spec.name)
+            if old is not None and old.category == spec.category:
+                self.catalog[spec.category] = [s for s in self.catalog.get(spec.category, [])
+                                               if s.name != spec.name]
+                self.palette.remove_component(spec.category, spec.name)
+            self.catalog_by_name[spec.name] = spec
+            self.catalog.setdefault(spec.category, []).append(spec)
+            by_cat.setdefault(spec.category, []).append(spec)
+        self.palette.add_components(by_cat)
+
+    # -- component files ---------------------------------------------------
+
+    def _import_component_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Component", "", "Component files (*.pcomp.json);;All files (*)")
+        if path:
+            self._apply_component_file(path)
+
+    def _apply_component_file(self, path: str, trust: bool | None = None) -> None:
+        """Load a component file into the palette (testable without the
+        dialog). A file carrying generator source asks whether to trust it
+        unless ``trust`` is given."""
+        from phidler import component_files as cf
+
+        try:
+            if trust is None and cf.needs_trust(path) and not cf.is_trusted(cf.file_key(path)):
+                answer = QMessageBox.question(
+                    self, "Run the component's generator?",
+                    f"{path} carries Python code that rebuilds the part with other parameters. "
+                    "Only allow it if you trust where the file came from.\n\nWithout it the "
+                    "part still places and simulates with its fixed geometry and model.",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                trust = answer == QMessageBox.Yes
+            loaded = cf.load_component_file(path, trust=bool(trust))
+            if trust and cf.needs_trust(path):
+                cf.remember_trust(loaded.component_file.key)
+        except Exception as exc:
+            QMessageBox.critical(self, "Import failed", f"Could not load the component file {path}:\n{exc}")
+            return
+        self._add_specs_to_palette([loaded.spec])
+        self.document.record_custom_component_path(path)
+        self._mark_dirty()
+        self.statusBar().showMessage(f"Imported component {loaded.component_file.name} from {path}", 8000)
+
+    def _load_component_libraries(self) -> None:
+        """Scan the configured library folders into the palette."""
+        from phidler import component_files as cf
+        from phidler.component_libraries import library_dirs
+
+        if not cf.AVAILABLE:
+            return
+        specs, failed = [], []
+        for folder in library_dirs():
+            loaded, bad = cf.scan_library(folder)
+            specs += [x.spec for x in loaded]
+            failed += bad
+        if specs:
+            self._add_specs_to_palette(specs)
+        if failed:
+            self.statusBar().showMessage("Some library components failed to load: " + "; ".join(failed), 10000)
+
+    def _edit_component_libraries(self) -> None:
+        from phidler.component_libraries import LibrariesDialog
+
+        dlg = LibrariesDialog(self)
+        if dlg.exec():
+            self._load_component_libraries()
+
+    def _export_selection_as_component(self) -> None:
+        from phidler.component_libraries import ExportComponentDialog
+
+        ids = self._selected_instance_ids()
+        if not ids:
+            QMessageBox.information(self, "Export as Component", "Select the instance(s) to export first.")
+            return
+        dlg = ExportComponentDialog(self, self.document, ids)
+        dlg.exec()
+
     def _import_custom_components(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import Custom Components", "", "Python files (*.py)")
         if not path:
@@ -1890,11 +1988,7 @@ class MainWindow(QMainWindow):
                 "(a callable with no required arguments that returns a gf.Component).",
             )
             return
-        custom_specs = list(result.specs.values())
-        for spec in custom_specs:
-            self.catalog_by_name[spec.name] = spec
-        self.catalog.setdefault("custom", []).extend(custom_specs)
-        self.palette.add_components({"custom": custom_specs})
+        self._add_specs_to_palette(list(result.specs.values()))
         self.document.record_custom_component_path(path)
         self._mark_dirty()  # the custom-component path is recorded in the project
         message = f"Imported {len(result.specs)} custom component(s) from {path}"
