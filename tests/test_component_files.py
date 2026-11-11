@@ -141,16 +141,19 @@ def test_generator_source_asks_for_trust(qapp, tmp_path, monkeypatch):
     assert not spec.signature.parameters           # untrusted: fixed geometry only
 
 
-def test_route_to_an_unselected_part_stays_out(qapp, fast_lnoi):
+def test_route_to_an_unselected_part_ends_in_a_pin(qapp, fast_lnoi):
     doc, sw, pad = _switch_on_pad()
     c = cfm.selection_component(doc, [sw.id])
-    names = {p.name for p in c.ports}
-    # The switch's sig_w is routed to the pad, which is not selected: the
-    # route is left out and the port stays a pin of the part.
-    assert f"lnoi_mzi_switch{sw.id}_sig_w" in names
-    assert {"o1", "o2", "o3", "o4"} <= names
+    ports = {p.name: p for p in c.ports}
+    # The route from sig_w to the unselected pad comes along, and its end at
+    # the pad is the pin.
+    assert f"lnoi_mzi_switch{sw.id}_sig_w" not in ports
+    pin = ports[f"to_pad{pad.id}_e4"]
+    assert tuple(round(x, 3) for x in pin.center) == tuple(
+        round(x, 3) for x in pad.ref.ports["e4"].center)
+    assert {"o1", "o2", "o3", "o4"} <= set(ports)
     both = cfm.selection_component(doc, [sw.id, pad.id])
-    assert f"lnoi_mzi_switch{sw.id}_sig_w" not in {p.name for p in both.ports}
+    assert not any(n.startswith("to_") for n in (p.name for p in both.ports))
 
 
 def test_reexport_of_an_imported_part_keeps_its_file(qapp, fast_lnoi, tmp_path):
@@ -202,3 +205,39 @@ def test_trust_is_remembered_per_file_content(qapp, tmp_path, monkeypatch):
     with pytest.warns(UserWarning, match="not trusted"):
         cell = plain.spec.factory(size=3.0)
     assert cell.dbbox().width() == pytest.approx(2.0)
+
+
+def test_fan_out_route_to_a_selected_part_is_kept(qapp, fast_lnoi):
+    doc, sw, pad = _switch_on_pad()
+    other = doc.add_instance("pad", {}, x=-300.0, y=700.0)
+    doc.add_route(pad.id, "e4", other.id, "e4", cross_section="metal_routing")
+    c = cfm.selection_component(doc, [sw.id, pad.id])
+    names = {p.name for p in c.ports}
+    # The route to the selected switch stays (sig_w is not a pin), and the
+    # branch to the unselected pad ends in a pin.
+    assert f"lnoi_mzi_switch{sw.id}_sig_w" not in names
+    assert f"to_pad{other.id}_e4" in names
+
+
+def test_unmodelled_selection_exports_layout_only(qapp, tmp_path):
+    doc = LayoutDocument()
+    ring = doc.add_instance("ring_single", {})
+    with pytest.warns(UserWarning, match="without a circuit model"):
+        data = cfm.export_selection(doc, [ring.id], str(tmp_path / "r"), name="ring")
+    assert "physics" not in data["model"] and data["generator"]["function"] == "ring_single"
+    loaded = cfm.load_component_file(str(tmp_path / ("r" + cfm.SUFFIX)))
+    assert "gap" in loaded.spec.signature.parameters   # a gdsfactory cell: editable untrusted
+
+
+def test_export_dialog_starts_from_the_imported_file(qapp, fast_lnoi, tmp_path):
+    from phidler.component_libraries import ExportComponentDialog
+
+    doc, sw, _ = _switch_on_pad()
+    cfm.export_selection(doc, [sw.id], str(tmp_path / "a"), name="nice name",
+                         description="from the lab", author="someone")
+    loaded = cfm.load_component_file(str(tmp_path / ("a" + cfm.SUFFIX)))
+    doc2 = LayoutDocument()
+    inst = doc2.add_instance(loaded.spec.name, {})
+    dlg = ExportComponentDialog(None, doc2, [inst.id])
+    assert dlg.name_edit.text() == "nice name" and dlg.desc_edit.text() == "from the lab"
+    assert dlg.author_edit.text() == "someone"

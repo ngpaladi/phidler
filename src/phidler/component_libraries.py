@@ -7,6 +7,7 @@ at start-up.
 from __future__ import annotations
 
 import os
+import warnings
 
 import numpy as np
 from PySide6.QtCore import QSettings
@@ -98,11 +99,16 @@ class ExportComponentDialog(QDialog):
         self.document, self.inst_ids = document, list(inst_ids)
         form = QFormLayout(self)
         first = document.instances[self.inst_ids[0]]
-        default = first.component_spec if len(self.inst_ids) == 1 else "subcircuit"
-        self.name_edit = QLineEdit(default)
-        self.desc_edit = QLineEdit("")
-        self.author_edit = QLineEdit(os.environ.get("USER", ""))
-        self.library_edit = QLineEdit("")
+        meta = dict(name=first.component_spec if len(self.inst_ids) == 1 else "subcircuit",
+                    description="", author=os.environ.get("USER", ""), library="")
+        info = dict(first.cell.info) if len(self.inst_ids) == 1 and first.cell.info else {}
+        if "pcomp" in info:   # an imported part: start from its file's name and metadata
+            src = cf.pclib._registry_get(info["pcomp"]).data
+            meta.update({k: src[k] for k in meta if src.get(k)})
+        self.name_edit = QLineEdit(meta["name"])
+        self.desc_edit = QLineEdit(meta["description"])
+        self.author_edit = QLineEdit(meta["author"])
+        self.library_edit = QLineEdit(meta["library"])
         form.addRow("Name", self.name_edit)
         form.addRow("Description", self.desc_edit)
         form.addRow("Author", self.author_edit)
@@ -140,8 +146,15 @@ class ExportComponentDialog(QDialog):
         if not path:
             return
         try:
-            self.export_to(path)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                self.export_to(path)
         except Exception as exc:
             QMessageBox.critical(self, "Export failed", f"{type(exc).__name__}: {exc}")
             return
+        notes = [str(w.message) for w in caught if "without a circuit model" in str(w.message)]
+        if notes:
+            QMessageBox.information(self, "Exported layout only", notes[0] + "\n\nThe part places "
+                                    "and keeps its layout and pins, but the Circuit tab cannot "
+                                    "simulate it.")
         self.accept()

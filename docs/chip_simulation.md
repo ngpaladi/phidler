@@ -96,6 +96,11 @@ Like a KiCad library part, one file holds:
       selected parts and the routes between them, its optical ports are the
       open ones (`o1`, `o2`, … from left to right), and its pins are the open
       pad and electrode ports.
+    - A route from the selection to a part left out comes along, and its
+      end at that part becomes a port or pin of the export.
+    - A part photonfdtd has no model for (a ring, a grating coupler, …)
+      is exported with its layout, pins and generator but no model, and
+      Phidler says so.
 
   Tick *Add an S-parameter table* to also tabulate the part over a
   wavelength range.
@@ -118,8 +123,10 @@ Projects remember the component files they use and re-import them on open.
 - **Heat between neighbours.** Each heater heats only its own waveguide;
   thermal crosstalk between nearby heaters is not modelled.
 - **Sub-circuit currents.** A part exported from several instances drives
-  its electrodes through its pins, but the current drawn by heaters or
-  detectors inside it is not passed back to the outer circuit.
+  its electrodes through its pins, but its heaters, resistors and detectors
+  are not part of the outer circuit: the current they draw does not show in
+  the drives, and a path through one of its resistors does not count as a
+  detector's return path.
 - **Electrode absorption and bend coupling.** Optical absorption by the
   electrodes and coupling in the fan-out bends are not modelled.
 

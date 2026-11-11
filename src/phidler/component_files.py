@@ -87,7 +87,7 @@ def generator_usable(cf) -> bool:
         return False
     if "source" in g:
         return cf.trust
-    return (g.get("module", "") + ".").startswith(pclib.TRUSTED_MODULES) or cf.trust
+    return cf.trust or pclib.generator_allowed(g)
 
 
 def needs_trust(path: str) -> bool:
@@ -172,8 +172,10 @@ def scan_library(folder: str) -> tuple[list[LoadedFile], list[str]]:
 # --------------------------------------------------------------------------- #
 def selection_component(document, inst_ids: list[int]):
     """A gdsfactory component of the selected instances and the routes
-    between them, with every open port exposed: optical ports as ``o1``,
-    ``o2``, … (left to right), electrical ports as ``<pad>_<port>``."""
+    from them, with every open port exposed: optical ports as ``o1``,
+    ``o2``, … (left to right), electrical ports as ``<spec><id>_<port>``,
+    and the ends of routes to unselected parts (``to_<spec><id>_<port>``
+    when electrical)."""
     import gdsfactory as gf
 
     ids = set(inst_ids)
@@ -190,13 +192,13 @@ def selection_component(document, inst_ids: list[int]):
         return (round(p.center[0], 3), round(p.center[1], 3))
     # Routing pieces (segments, bends, the tapers routing adds at the ends)
     # are plain instances of the top cell. Group them into routes (pieces
-    # joined port to port) and take each route that reaches the selection
-    # and no unselected instance: a route to a part left out stays out, so
-    # the selected port behind it stays open.
+    # joined port to port, but not through an instance's port) and take
+    # every route that reaches the selection. Where one ends on a part left
+    # out, its end becomes a pin of the export.
     placed_names = {inst.ref.name for inst in document.instances.values()}
     pieces = [r for r in document.top.insts if r.name not in placed_names]
     selected = {pkey(p) for _, p in all_ports}
-    others = {pkey(p) for i, inst in document.instances.items() if i not in ids
+    others = {pkey(p): (i, p.name) for i, inst in document.instances.items() if i not in ids
               for p in inst.ref.ports}
     parent = list(range(len(pieces)))
 
@@ -209,6 +211,8 @@ def selection_component(document, inst_ids: list[int]):
     for n, r in enumerate(pieces):
         for p in r.ports:
             k = pkey(p)
+            if k in selected or k in others:
+                continue
             if k in owner:
                 parent[find(n)] = find(owner[k])
             else:
@@ -217,29 +221,36 @@ def selection_component(document, inst_ids: list[int]):
     for n, r in enumerate(pieces):
         routes.setdefault(find(n), []).append(r)
     for route in routes.values():
-        keys = {pkey(p) for r in route for p in r.ports}
-        if keys & others or not keys & selected:
+        if not {pkey(p) for r in route for p in r.ports} & selected:
             continue
         for r in route:
             nr = c.add_ref(r.cell)
             nr.dcplx_trans = r.dcplx_trans
             all_ports += [(None, p) for p in nr.ports]
 
-    key = pkey
-    count = {}
+    count: dict = {}
     for _, p in all_ports:
-        count[key(p)] = count.get(key(p), 0) + 1
-    open_optical, open_elec = [], []
+        count[pkey(p)] = count.get(pkey(p), 0) + 1
+    open_optical, open_elec, seen = [], [], set()
     for i, p in all_ports:
-        if i is None or count[key(p)] > 1:
+        k = pkey(p)
+        if count[k] > 1 and not (i is None and k in others):
             continue
+        if i is None:
+            if k not in others or k in seen:
+                continue      # a route's inner joint, or an end already taken
+            seen.add(k)
         (open_optical if p.port_type == "optical" else open_elec).append((i, p))
     open_optical.sort(key=lambda ip: (round(ip[1].center[0], 1), ip[1].center[1]))
     for n, (i, p) in enumerate(open_optical, 1):
         c.add_port(f"o{n}", port=p)
     for i, p in open_elec:
-        spec = _safe(document.instances[i].component_spec)
-        c.add_port(f"{spec}{i}_{p.name}", port=p)
+        if i is None:     # a route's end on a part left out
+            j, name = others[pkey(p)]
+            c.add_port(f"to_{_safe(document.instances[j].component_spec)}{j}_{name}", port=p)
+        else:
+            spec = _safe(document.instances[i].component_spec)
+            c.add_port(f"{spec}{i}_{p.name}", port=p)
     return c
 
 
@@ -247,7 +258,9 @@ def export_selection(document, inst_ids: list[int], path: str, *, name: str,
                      description: str = "", author: str = "", library: str = "",
                      sparams_wavelengths=None, waveguide=None) -> dict:
     """Write the selected instances as a component file. One instance keeps
-    its own kind, physics and generator; several become a ``circuit``.
+    its own kind, physics and generator; several become a ``circuit``. A
+    selection photonfdtd has no model for is written without one, with a
+    warning.
     ``sparams_wavelengths`` (um) adds an S-parameter table sampled from the
     model at 0 V."""
     if not AVAILABLE:
@@ -258,8 +271,14 @@ def export_selection(document, inst_ids: list[int], path: str, *, name: str,
     # model, pins and generator); several become a circuit.
     comp = (document.instances[inst_ids[0]].cell if len(inst_ids) == 1
             else selection_component(document, inst_ids))
-    data = pclib.export_component(comp, None, name=name, description=description, author=author,
-                                  library=library, waveguide=waveguide)
+    meta = dict(name=name, description=description, author=author, library=library)
+    try:
+        data = pclib.export_component(comp, None, waveguide=waveguide, **meta)
+    except ValueError as exc:
+        # Nothing photonfdtd can model (a ring, a grating coupler, ...):
+        # export the layout, ports and generator, with no model.
+        warnings.warn(f"exported without a circuit model: {exc}", stacklevel=2)
+        data = pclib.export_component(comp, None, model=None, **meta)
     if sparams_wavelengths is not None and data["model"].get("physics"):
         m = pclib._model_from_physics(data["model"]["physics"])
         data["model"]["sparams"] = pclib.sample_sparams(m, sparams_wavelengths)
