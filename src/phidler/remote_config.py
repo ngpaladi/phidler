@@ -90,11 +90,9 @@ def _settings(settings: QSettings | None) -> QSettings:
 # Stored under flat keys ("remote/alias", …) rather than one structured value:
 # QSettings has its own per-type coercion (and collapses 1-element lists to a
 # bare string), so primitive scalars round-trip most reliably.
-def load_remote_config(settings: QSettings | None = None) -> RemoteConfig:
-    store = _settings(settings)
-    cfg = RemoteConfig()
+def _read(store: QSettings, prefix: str, cfg: RemoteConfig) -> RemoteConfig:
     for f in fields(RemoteConfig):
-        raw = store.value(f"{_PREFIX}/{f.name}", None)
+        raw = store.value(f"{prefix}/{f.name}", None)
         if raw is None:
             continue
         if f.type == "bool" or isinstance(getattr(cfg, f.name), bool):
@@ -107,7 +105,48 @@ def load_remote_config(settings: QSettings | None = None) -> RemoteConfig:
     return cfg
 
 
+def _host_prefix(alias: str) -> str:
+    # "/" separates QSettings groups; an alias never needs one, so fold it away.
+    return f"{_PREFIX}/hosts/{alias.replace('/', '_')}"
+
+
+def load_remote_config(settings: QSettings | None = None) -> RemoteConfig:
+    """The server runs currently go to."""
+    return _read(_settings(settings), _PREFIX, RemoteConfig())
+
+
 def save_remote_config(cfg: RemoteConfig, settings: QSettings | None = None) -> None:
+    """Make `cfg` the current server, and remember its settings under its host
+    name so switching away and back (see select_remote_host) restores them."""
     store = _settings(settings)
-    for f in fields(RemoteConfig):
-        store.setValue(f"{_PREFIX}/{f.name}", getattr(cfg, f.name))
+    prefixes = [_PREFIX] + ([_host_prefix(cfg.alias)] if cfg.alias else [])
+    for prefix in prefixes:
+        for f in fields(RemoteConfig):
+            store.setValue(f"{prefix}/{f.name}", getattr(cfg, f.name))
+
+
+def load_host_config(alias: str, settings: QSettings | None = None) -> RemoteConfig:
+    """The settings last saved for `alias` (install location, backend), or the
+    defaults for a host that has never been configured."""
+    store = _settings(settings)
+    if store.value(f"{_host_prefix(alias)}/alias", None) is None:
+        # Nothing saved under this host. If it is the current server, its
+        # settings are the current ones (a config saved before per-host
+        # settings existed has only those).
+        current = load_remote_config(store)
+        return current if alias and current.alias == alias else RemoteConfig(alias=alias)
+    cfg = _read(store, _host_prefix(alias), RemoteConfig())
+    cfg.alias = alias
+    return cfg
+
+
+def select_remote_host(alias: str, settings: QSettings | None = None) -> RemoteConfig:
+    """Switch the current server to `alias`, with whatever was saved for it."""
+    # Keep the outgoing server's settings under its own name first (also covers
+    # a config saved before per-host settings existed).
+    current = load_remote_config(settings)
+    if current.alias and current.alias != alias:
+        save_remote_config(current, settings)
+    cfg = load_host_config(alias, settings)
+    save_remote_config(cfg, settings)
+    return cfg

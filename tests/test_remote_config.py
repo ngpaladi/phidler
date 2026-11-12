@@ -93,3 +93,27 @@ def test_derived_python_follows_a_custom_dir():
     cfg = RemoteConfig(alias="h", remote_dir="~/custom")
     assert cfg.resolved_remote_python() == "~/custom/.venv/bin/python"
     assert cfg.uses_managed_venv() is True
+
+
+def test_each_host_keeps_its_own_settings(tmp_path):
+    from phidler.remote_config import load_host_config, select_remote_host
+
+    settings = _throwaway_settings(tmp_path)
+    save_remote_config(RemoteConfig(alias="gpubox", backend="jax", remote_dir="/data/ph"), settings)
+    save_remote_config(RemoteConfig(alias="cluster.edu", backend="cpu"), settings)
+    assert load_remote_config(settings).alias == "cluster.edu"
+
+    # Switching back restores what was saved for that host and makes it current.
+    chosen = select_remote_host("gpubox", settings)
+    assert chosen == RemoteConfig(alias="gpubox", backend="jax", remote_dir="/data/ph")
+    assert load_remote_config(settings) == chosen
+    assert load_host_config("cluster.edu", settings).backend == "cpu"
+
+
+def test_selecting_a_new_host_starts_from_defaults(tmp_path):
+    from phidler.remote_config import select_remote_host
+
+    settings = _throwaway_settings(tmp_path)
+    save_remote_config(RemoteConfig(alias="gpubox", backend="jax", remote_python="/x/py"), settings)
+    assert select_remote_host("fresh", settings) == RemoteConfig(alias="fresh")
+    assert load_remote_config(settings) == RemoteConfig(alias="fresh")

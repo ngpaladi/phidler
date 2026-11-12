@@ -36,6 +36,14 @@ from phidler.model.document import Transform
 from phidler.model.layers import layer_info_for
 from phidler.panels.project_settings_dialog import ProjectSettingsDialog
 
+# Remote-server controls list the hosts in ~/.ssh/config and show the saved
+# server. Screenshots are published, so show placeholders, never the real ones.
+from phidler import remote_config as _remote_config
+from phidler import ssh_hosts as _ssh_hosts
+
+_ssh_hosts.list_ssh_hosts = lambda *args: ["gpubox", "workstation"]
+_remote_config.load_remote_config = lambda settings=None: _remote_config.RemoteConfig()
+
 OUT = Path(__file__).parent / "screenshots"
 OUT.mkdir(exist_ok=True)
 

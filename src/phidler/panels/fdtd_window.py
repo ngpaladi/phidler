@@ -900,15 +900,27 @@ class RemoteConfigDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.alias_edit = QLineEdit(cfg.alias)
-        self.alias_edit.setPlaceholderText("host alias from ~/.ssh/config, e.g. gpubox")
-        self.alias_edit.setToolTip(
-            "A Host entry from your ~/.ssh/config. This is all you need — phidler "
-            "installs under a default directory and creates its own venv there on "
-            "setup. It runs `ssh <host> …` and lets your SSH config and agent/keys "
-            "handle authentication (no passwords stored; key-based auth required)."
+        # The hosts named in ~/.ssh/config, to pick from; still editable, so a
+        # host ssh can resolve some other way can be typed.
+        from phidler import ssh_hosts
+
+        self.host_combo = QComboBox()
+        self.host_combo.setEditable(True)
+        self.host_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.host_combo.addItems(ssh_hosts.list_ssh_hosts())
+        self.host_combo.setCurrentIndex(-1)
+        self.host_combo.setEditText(cfg.alias)
+        self.alias_edit = self.host_combo.lineEdit()
+        self.alias_edit.setPlaceholderText("pick a host from ~/.ssh/config, or type one")
+        self.host_combo.setToolTip(
+            "The Host entries in your ~/.ssh/config. Picking one is all you need — "
+            "phidler installs under a default directory and creates its own venv "
+            "there on setup. It runs `ssh <host> …` and lets your SSH config and "
+            "agent/keys handle authentication (no passwords stored; key-based auth "
+            "required)."
         )
-        form.addRow("SSH host", self.alias_edit)
+        self.host_combo.activated.connect(self._on_host_chosen)
+        form.addRow("SSH host", self.host_combo)
 
         # Which accelerator the remote solve uses — set here rather than from the
         # local backend checkboxes, since it's the *remote's* hardware that
@@ -1001,6 +1013,22 @@ class RemoteConfigDialog(QDialog):
         self._buttons.rejected.connect(self.reject)
         layout.addWidget(self._buttons)
 
+    def _on_host_chosen(self, _index: int = 0) -> None:
+        """A host picked from the list: show what was last saved for it (or the
+        defaults, for one never set up), so each server keeps its own settings."""
+        from phidler.remote_config import load_host_config
+
+        cfg = load_host_config(self.alias_edit.text().strip())
+        stored = cfg.backend if cfg.backend in ("auto", "cpu", "jax") else cfg.resolved_backend()
+        idx = self.backend_combo.findData(stored)
+        self.backend_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.remote_dir_edit.setText(cfg.remote_dir)
+        self.remote_python_edit.setText(cfg.remote_python)
+        self.local_pf_edit.setText(cfg.local_photonfdtd_dir)
+        self.advanced_group.setChecked(
+            bool(cfg.remote_dir or cfg.remote_python or cfg.local_photonfdtd_dir)
+        )
+
     def _current_config(self):
         from phidler.remote_config import RemoteConfig
 
@@ -1027,7 +1055,7 @@ class RemoteConfigDialog(QDialog):
     def _on_setup(self) -> None:
         cfg = self._current_config()
         if not cfg.alias:
-            self._append("Enter an SSH host first (a Host alias from your ~/.ssh/config).")
+            self._append("Pick an SSH host first (a Host entry from your ~/.ssh/config).")
             return
         self.log.clear()
         self._start_op("setup", force=self.force_reinstall_check.isChecked())
@@ -1559,6 +1587,16 @@ class FdtdWindow(QMainWindow):
             "host and do the one-time setup with the button on the right."
         )
         remote_layout.addWidget(self.run_remote_check)
+        self.remote_host_combo = QComboBox()
+        self.remote_host_combo.setMinimumContentsLength(14)
+        self.remote_host_combo.setToolTip(
+            "The server remote runs go to: the Host entries in your ~/.ssh/config. "
+            "A host needs the one-time setup (Configure…) before its first run; "
+            "each host keeps its own settings."
+        )
+        self.remote_host_combo.activated.connect(self._on_remote_host_chosen)
+        remote_layout.addWidget(self.remote_host_combo)
+        self._refresh_remote_hosts()
         self.remote_config_button = QPushButton("Configure…")
         self.remote_config_button.clicked.connect(self._on_configure_remote)
         remote_layout.addWidget(self.remote_config_button)
@@ -2315,6 +2353,33 @@ class FdtdWindow(QMainWindow):
         """Open the remote-server setup dialog (host, paths, test/deploy)."""
         dialog = RemoteConfigDialog(self)
         dialog.exec()
+        self._refresh_remote_hosts()
+
+    def _refresh_remote_hosts(self) -> None:
+        """Fill the server list from ~/.ssh/config and show the current server.
+        A saved host that is no longer in the config stays selectable."""
+        from phidler import ssh_hosts
+        from phidler.remote_config import load_remote_config
+
+        current = load_remote_config().alias
+        hosts = ssh_hosts.list_ssh_hosts()
+        if current and current not in hosts:
+            hosts.insert(0, current)
+        combo = self.remote_host_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(hosts)
+        combo.setCurrentIndex(hosts.index(current) if current else -1)
+        combo.setPlaceholderText("no hosts in ~/.ssh/config" if not hosts else "choose a server…")
+        combo.blockSignals(False)
+
+    def _on_remote_host_chosen(self, _index: int = 0) -> None:
+        """Send remote runs to the picked host, with the settings saved for it."""
+        from phidler.remote_config import select_remote_host
+
+        alias = self.remote_host_combo.currentText().strip()
+        if alias:
+            select_remote_host(alias)
 
     def _offer_feasible_region(self, params, region_um, cell_count):
         """If a run this size can't fit (RAM in-core, scratch disk out-of-core),
@@ -2429,8 +2494,8 @@ class FdtdWindow(QMainWindow):
             if not remote_cfg.is_configured():
                 QMessageBox.warning(
                     self, "Remote not configured",
-                    "No remote server is set up. Click 'Configure…' next to "
-                    "'Run on remote server' to set a host and run the one-time setup, "
+                    "No remote server is chosen. Pick one from the list next to "
+                    "'Run on remote server' and click 'Configure…' for the one-time setup, "
                     "or untick it to run locally.",
                 )
                 return
