@@ -23,6 +23,12 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.2" date="2026-11-12">
+      <description>
+        <p>Remote runs: pick the server from the hosts in your ssh config. Each
+        host keeps its own acceleration and install settings.</p>
+      </description>
+    </release>
     <release version="0.3.1" date="2026-11-11">
       <description>
         <p>The Circuit tab waits for an interrupted build before starting another,
