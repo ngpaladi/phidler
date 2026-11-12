@@ -151,7 +151,7 @@ Runs too big for your laptop? Offload to a **GPU** (NVIDIA CUDA or AMD ROCm) or
 to a **remote server** over SSH. The progress bar and results come back the same
 either way.
 
-<img src="screenshots/remote_config_dialog.png" width="460" alt="The remote-server configuration dialog with host alias, remote directory, Python path, and a GPU toggle">
+<img src="screenshots/remote_config_dialog.png" width="460" alt="The remote-server setup dialog: an SSH host list, a remote Acceleration dropdown, and a Connect and set up button">
 
 ## Script it when you want to
 

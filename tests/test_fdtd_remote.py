@@ -703,3 +703,62 @@ def test_sourced_loads_bashrc_and_suppresses_its_output():
     assert ". ~/.bashrc" in wrapped           # loads the user's env first
     assert ">/dev/null 2>&1" in wrapped        # but hides its output (parse-safe)
     assert wrapped.endswith("; command -v python3.12")
+
+
+# -- Picking the server from ~/.ssh/config
+
+@pytest.fixture
+def ssh_hosts_env(tmp_path, monkeypatch):
+    """Three hosts in a fake ssh config, and a throwaway per-user settings store."""
+    from PySide6.QtCore import QSettings
+
+    from phidler import ssh_hosts
+
+    QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path))
+    monkeypatch.setattr(ssh_hosts, "list_ssh_hosts", lambda *a: ["gpubox", "cluster.edu", "lab"])
+
+
+def test_remote_dialog_offers_ssh_config_hosts_with_their_settings(qapp, ssh_hosts_env):
+    from phidler.panels.fdtd_window import RemoteConfigDialog
+    from phidler.remote_config import RemoteConfig, save_remote_config
+
+    save_remote_config(RemoteConfig(alias="lab", backend="jax", remote_dir="/data/ph"))
+    save_remote_config(RemoteConfig(alias="gpubox", backend="cpu"))
+
+    dlg = RemoteConfigDialog()
+    combo = dlg.host_combo
+    assert [combo.itemText(i) for i in range(combo.count())] == ["gpubox", "cluster.edu", "lab"]
+    assert dlg.alias_edit.text() == "gpubox"
+
+    combo.setCurrentIndex(2)
+    combo.activated.emit(2)  # what a pick from the list does
+    cfg = dlg._current_config()
+    assert (cfg.alias, cfg.backend, cfg.remote_dir) == ("lab", "jax", "/data/ph")
+
+    combo.setCurrentIndex(1)
+    combo.activated.emit(1)  # never configured: defaults, not the last host's
+    assert dlg._current_config() == RemoteConfig(alias="cluster.edu", backend="auto")
+
+    dlg.alias_edit.setText("typed-host")  # a host not in the config still works
+    assert dlg._current_config().alias == "typed-host"
+
+
+def test_run_row_selects_the_remote_server(qapp, ssh_hosts_env):
+    from phidler.main_window import MainWindow
+    from phidler.panels.fdtd_window import FdtdWindow
+    from phidler.remote_config import RemoteConfig, load_remote_config, save_remote_config
+
+    save_remote_config(RemoteConfig(alias="oldbox", backend="jax"))  # not in the config
+    win = MainWindow()
+    fw = FdtdWindow(win.document, win.view)
+    combo = fw.remote_host_combo
+    assert [combo.itemText(i) for i in range(combo.count())] == ["oldbox", "gpubox", "cluster.edu", "lab"]
+    assert combo.currentText() == "oldbox"
+
+    combo.setCurrentIndex(3)
+    combo.activated.emit(3)
+    assert load_remote_config() == RemoteConfig(alias="lab")
+
+    combo.setCurrentIndex(0)
+    combo.activated.emit(0)
+    assert load_remote_config().backend == "jax"  # its saved settings came back

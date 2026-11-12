@@ -839,10 +839,13 @@ another machine over SSH (a workstation or a GPU box) and get the field movie
 back, while the UI here stays responsive. Tick **Run on remote server** and click
 **Configure…**. Setup is a single step:
 
-1. Enter your **SSH host**: a `Host` entry from your `~/.ssh/config`. That's the
-   only required field. Phidler shells out to `ssh`/`scp`/`rsync` and lets your
-   SSH config and agent/keys handle authentication; it stores no passwords
-   (key-based, non-interactive auth is required).
+1. Choose your **SSH host**. The list holds the `Host` entries from your
+   `~/.ssh/config` (files it pulls in with `Include` are read too; wildcard
+   patterns such as `Host *` are left out). You can also type a host that isn't
+   listed. That's the only required field. Phidler shells out to
+   `ssh`/`scp`/`rsync` and lets your SSH config and agent/keys handle
+   authentication; it stores no passwords (key-based, non-interactive auth is
+   required).
 2. Pick the remote **Acceleration**, or leave it on **Auto**. Auto inspects the
    remote's GPU during setup: on an NVIDIA box whose driver supports CUDA 12 it
    installs JAX's CUDA build so runs go to the GPU, and otherwise runs stay on
@@ -863,7 +866,12 @@ run to that host and brings the result back automatically. The progress bar fill
 from the remote solve just as it does locally, and the result reports the device
 (GPU or CPU) the remote actually ran on, so a request the remote couldn't honour is visible.
 
-<img src="screenshots/remote_config_dialog.png" width="560" alt="Remote server setup dialog: an SSH host field, a remote Acceleration dropdown, and a single Connect and set up button over a log pane">
+To use more than one machine, pick the server from the list beside **Run on
+remote server**: it shows the same `~/.ssh/config` hosts. Each host keeps its own
+acceleration and install settings, so switching back to one restores them. A host
+needs **Connect && set up** once before its first run.
+
+<img src="screenshots/remote_config_dialog.png" width="560" alt="Remote server setup dialog: an SSH host list, a remote Acceleration dropdown, and a single Connect and set up button over a log pane">
 
 The remote must be a POSIX host (Linux/macOS) reachable by key-based SSH.
 Projects that place **custom components** (local `.py` files) can't be offloaded
