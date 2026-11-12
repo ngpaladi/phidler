@@ -712,10 +712,12 @@ def ssh_hosts_env(tmp_path, monkeypatch):
     """Three hosts in a fake ssh config, and a throwaway per-user settings store."""
     from PySide6.QtCore import QSettings
 
-    from phidler import ssh_hosts
+    from phidler import remote_config, ssh_hosts
 
-    QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path))
+    store = QSettings(str(tmp_path / "remote.ini"), QSettings.IniFormat)
+    monkeypatch.setattr(remote_config, "_settings", lambda settings=None: store if settings is None else settings)
     monkeypatch.setattr(ssh_hosts, "list_ssh_hosts", lambda *a: ["gpubox", "cluster.edu", "lab"])
+    return store
 
 
 def test_remote_dialog_offers_ssh_config_hosts_with_their_settings(qapp, ssh_hosts_env):
@@ -762,3 +764,44 @@ def test_run_row_selects_the_remote_server(qapp, ssh_hosts_env):
     combo.setCurrentIndex(0)
     combo.activated.emit(0)
     assert load_remote_config().backend == "jax"  # its saved settings came back
+
+
+def test_settings_saved_before_per_host_storage_survive_a_switch(qapp, ssh_hosts_env):
+    """A config written by an older version has only the flat keys. Switching to
+    another host and back, or re-picking the host in the dialog, must keep it."""
+    from phidler.main_window import MainWindow
+    from phidler.panels.fdtd_window import FdtdWindow, RemoteConfigDialog
+    from phidler.remote_config import load_remote_config
+
+    for key, value in (("alias", "gpubox"), ("backend", "jax"), ("remote_dir", "/data/ph")):
+        ssh_hosts_env.setValue(f"remote/{key}", value)
+
+    dlg = RemoteConfigDialog()
+    dlg.host_combo.setCurrentIndex(0)
+    dlg.host_combo.activated.emit(0)  # re-pick the current host
+    cfg = dlg._current_config()
+    assert (cfg.alias, cfg.backend, cfg.remote_dir) == ("gpubox", "jax", "/data/ph")
+
+    win = MainWindow()
+    combo = FdtdWindow(win.document, win.view).remote_host_combo
+    for index in (2, 0):  # away to "lab", then back
+        combo.setCurrentIndex(index)
+        combo.activated.emit(index)
+    back = load_remote_config()
+    assert (back.alias, back.backend, back.remote_dir) == ("gpubox", "jax", "/data/ph")
+
+
+def test_run_on_a_host_that_is_not_set_up_says_so(monkeypatch):
+    def fake_ssh(alias, cmd, timeout=None):
+        return subprocess.CompletedProcess([], 0, stdout="/tmp/phidler_fdtd.x\n", stderr="")
+
+    def fake_stream(alias, cmd, on_line):
+        on_line("bash: line 1: /home/me/phidler-remote/.venv/bin/python: No such file or directory")
+        return 127
+
+    monkeypatch.setattr(fr, "_ssh", fake_ssh)
+    monkeypatch.setattr(fr, "_ssh_stream", fake_stream)
+    monkeypatch.setattr(fr, "_push_bundle", lambda *a: None)
+    monkeypatch.setattr(fr, "write_bundle", lambda *a: None)
+    with pytest.raises(RuntimeError, match="doesn't look set up.*Connect && set up"):
+        fr.run_on_remote(object(), object(), cfg=RemoteConfig(alias="lab"))

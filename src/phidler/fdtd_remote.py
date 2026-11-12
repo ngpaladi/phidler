@@ -367,6 +367,13 @@ def run_on_remote(
             elapsed = time.time() - t0
             if rc != 0:
                 detail = (tail[-1] if tail else "") or f"exited with code {rc}"
+                # 126/127: the remote interpreter is missing or not runnable;
+                # "No module named": it is there but phidler isn't installed.
+                if rc in (126, 127) or "No module named" in detail:
+                    detail += (
+                        f". '{cfg.alias}' doesn't look set up for phidler yet: open "
+                        "Configure… and click 'Connect && set up'."
+                    )
                 raise RuntimeError(f"Remote simulation failed: {detail}")
 
             local_out = tmp / "result.npz"

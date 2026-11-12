@@ -128,13 +128,25 @@ def save_remote_config(cfg: RemoteConfig, settings: QSettings | None = None) -> 
 def load_host_config(alias: str, settings: QSettings | None = None) -> RemoteConfig:
     """The settings last saved for `alias` (install location, backend), or the
     defaults for a host that has never been configured."""
-    cfg = _read(_settings(settings), _host_prefix(alias), RemoteConfig())
+    store = _settings(settings)
+    if store.value(f"{_host_prefix(alias)}/alias", None) is None:
+        # Nothing saved under this host. If it is the current server, its
+        # settings are the current ones (a config saved before per-host
+        # settings existed has only those).
+        current = load_remote_config(store)
+        return current if alias and current.alias == alias else RemoteConfig(alias=alias)
+    cfg = _read(store, _host_prefix(alias), RemoteConfig())
     cfg.alias = alias
     return cfg
 
 
 def select_remote_host(alias: str, settings: QSettings | None = None) -> RemoteConfig:
     """Switch the current server to `alias`, with whatever was saved for it."""
+    # Keep the outgoing server's settings under its own name first (also covers
+    # a config saved before per-host settings existed).
+    current = load_remote_config(settings)
+    if current.alias and current.alias != alias:
+        save_remote_config(current, settings)
     cfg = load_host_config(alias, settings)
     save_remote_config(cfg, settings)
     return cfg
