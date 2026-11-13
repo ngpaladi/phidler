@@ -23,6 +23,12 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.3" date="2026-11-13">
+      <description>
+        <p>Drag a corner to resize a shape, and edit a rectangle's size or an
+        ellipse's radii in the Properties panel.</p>
+      </description>
+    </release>
     <release version="0.3.2" date="2026-11-12">
       <description>
         <p>Remote runs: pick the server from the hosts in your ssh config. Each

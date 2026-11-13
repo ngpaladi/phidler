@@ -1,6 +1,6 @@
 [project]
 name = "phidler"
-version = "0.3.2"
+version = "0.3.3"
 description = "Graphical CAD application for photonic integrated circuit layout, built on gdsfactory"
 # gdsfactory (>=9.44) requires Python 3.11–3.13, so phidler does too — declaring
 # >=3.10 let an install start on 3.10 only to fail later resolving gdsfactory.
