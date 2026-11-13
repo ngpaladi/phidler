@@ -171,7 +171,7 @@ so they can be regenerated after future UI changes.
   circle its `radius`; other shapes scale through the instance's
   magnification. Photonic components have no corner handles, so a stray drag
   can't distort a device; their scale is a number in the Properties panel.
-  Mirror and quick 90° rotation stay on `R`/`M` and the right-click context
+  Quick 90° rotation and flips stay on `R`/`H`/`V` and the right-click context
   menu (which also has Reset Transform). Each gesture commits as a single
   undoable change on release.
 

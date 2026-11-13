@@ -391,3 +391,113 @@ def test_drag_resize_updates_the_properties_panel(qapp):
     spins = win.properties_panel._fields["size"].property("sequence_spins")
     assert [s.value() for s in spins] == [7.0, 3.0]
     assert win.scene.items_by_inst[inst.id].isSelected()
+
+
+def test_dragging_onto_or_past_the_fixed_corner_cannot_collapse_the_shape(qapp):
+    doc, scene, undo_stack, handles, inst_id, _ = _shape_setup(qapp, "rectangle", {"size": (4.0, 2.0)})
+    left, top, right, bottom = _scene_corners(scene, inst_id)
+    view = scene.views()[0]
+
+    grab = _handle(handles, (1, 1))
+    _drag(grab, grab.scenePos(), QPointF(left - 5.0, top - 5.0))  # past the fixed corner, no grid
+    size = doc.instances[inst_id].kwargs["size"]
+    assert size[0] >= 0.01 and size[1] >= 0.01
+
+    undo_stack.undo()
+    view.snap_enabled, view.grid_pitch = True, 1.0
+    grab = _handle(handles, (1, 1))
+    _drag(grab, grab.scenePos(), QPointF(left + 0.2, top - 3.0))  # within half a pitch, and past
+    assert doc.instances[inst_id].kwargs["size"] == (1.0, 1.0)  # one grid pitch, not a sliver
+
+    # A circle dragged to nothing keeps a real radius too.
+    doc, scene, undo_stack, handles, inst_id, _ = _shape_setup(qapp, "circle", {"radius": 10.0})
+    left, top, _, _ = _scene_corners(scene, inst_id)
+    grab = _handle(handles, (1, 1))
+    _drag(grab, grab.scenePos(), QPointF(left - 1.0, top - 1.0))
+    assert doc.instances[inst_id].kwargs["radius"] >= 0.01
+    assert scene.items_by_inst[inst_id].boundingRect().width() > 0
+
+
+def test_real_mouse_resize_through_the_view_is_one_undo_step(qapp):
+    """Through the view's own press/move/release (which track canvas drags):
+    a resize that also shifts the shape must stay one undo step, and the fixed
+    corner must not be re-snapped to the grid afterwards."""
+    from phidler.main_window import MainWindow
+
+    for kwargs, corner in (({"size": (40.0, 20.0)}, (0, 0)), ({"size": (40.0, 20.0), "centered": True}, (1, 1))):
+        win = MainWindow()
+        win.resize(1000, 800)
+        win.show()
+        inst = win.document.add_instance("rectangle", kwargs)
+        win.scene.add_instance_item(inst.id)
+        # Off-grid on purpose, so a second snap-and-commit would be visible.
+        start = Transform(x=0.3, y=0.4, rotation=0.0, mirror=False, mag=1.0)
+        win.document.set_transform(inst.id, start)
+        win.scene.items_by_inst[inst.id].apply_transform(0.3, 0.4, 0.0, False, 1.0)
+        win.scene.commit_dirty_transforms()  # placed, not mid-drag
+        win.view.zoom_to_fit()
+        win.view.scale(0.5, 0.5)
+        qapp.processEvents()
+        win.scene.items_by_inst[inst.id].setSelected(True)
+        win._update_transform_overlay()
+        qapp.processEvents()
+        win.undo_stack.clear()
+
+        grab = _handle(win.transform_handles, corner)
+        anchor_corner = (1 - corner[0], 1 - corner[1])
+        item = win.scene.items_by_inst[inst.id]
+        fixed = item.mapToScene(grab.corner_point(item.boundingRect(), anchor_corner))
+        viewport = win.view.viewport()
+        p0 = win.view.mapFromScene(grab.scenePos())
+        direction = 1 if corner == (1, 1) else -1
+        p1 = win.view.mapFromScene(grab.scenePos() + QPointF(10.0 * direction, 6.0 * direction))
+        QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, p0)
+        QTest.mouseMove(viewport, p1)
+        QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, p1)
+        qapp.processEvents()
+
+        size = win.document.instances[inst.id].kwargs["size"]
+        assert size[0] > 40.0 and size[1] > 20.0
+        assert win.undo_stack.count() == 1
+        item = win.scene.items_by_inst[inst.id]
+        after = item.mapToScene(grab.corner_point(item.boundingRect(), anchor_corner))
+        assert math.isclose(after.x(), fixed.x(), abs_tol=1e-6) and math.isclose(after.y(), fixed.y(), abs_tol=1e-6)
+        t = win.document.get_transform(inst.id)
+        assert math.isclose(item.pos().x(), t.x, abs_tol=1e-6) and math.isclose(item.pos().y(), t.y, abs_tol=1e-6)
+
+        win.undo_stack.undo()
+        assert win.document.instances[inst.id].kwargs["size"] == kwargs["size"]
+        back = win.document.get_transform(inst.id)
+        assert (back.x, back.y) == (0.3, 0.4)
+
+
+def test_every_parameter_resized_shape_lands_on_the_dragged_extent(qapp):
+    """The drag assumes a shape's bounding box follows its size/radii/radius.
+    Check that for every shape resized that way; any that don't follow belong
+    in magnification mode instead."""
+    import gdsfactory as gf
+
+    from phidler.canvas.transform_handles import resize_mode
+
+    checked = []
+    for name, factory in sorted(gf.get_active_pdk().cells.items()):
+        if not (getattr(factory, "__module__", "") or "").startswith("gdsfactory.components.shapes"):
+            continue
+        try:
+            doc, scene, undo_stack, handles, inst_id, _ = _shape_setup(qapp, name, {})
+        except Exception:
+            continue  # needs arguments the palette can't place with defaults either
+        mode = resize_mode(doc, inst_id)
+        if mode is None or mode[0] == "mag":
+            continue
+        left, top, right, bottom = _scene_corners(scene, inst_id)
+        w, h = right - left, bottom - top
+        grab = _handle(handles, (1, 1))
+        _drag(grab, grab.scenePos(), QPointF(left + 2 * w, top + 2 * h))
+        assert undo_stack.canUndo(), f"{name}: the resize failed to rebuild"
+        new = _scene_corners(scene, inst_id)
+        assert math.isclose(new[2] - new[0], 2 * w, rel_tol=1e-6), name
+        assert math.isclose(new[3] - new[1], 2 * h, rel_tol=1e-6), name
+        assert math.isclose(new[0], left, abs_tol=1e-6) and math.isclose(new[1], top, abs_tol=1e-6), name
+        checked.append(name)
+    assert set(checked) == {"rectangle", "rectangles", "compass", "L", "C", "ellipse", "circle", "pie_arc"}

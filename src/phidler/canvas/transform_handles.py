@@ -128,6 +128,22 @@ class RotateHandleItem(_BaseHandle):
         event.accept()
 
 
+# The shapes whose outline follows one parameter exactly (checked for each in
+# the tests). Anything else in the shapes group is resized by magnification:
+# its "size" may mean something else (fiducial_squares) or its outline may
+# include more than the radius (circle_wave).
+_SIZE_PARAMETER = {
+    "rectangle": "size",
+    "rectangles": "size",
+    "compass": "size",
+    "L": "size",
+    "C": "size",
+    "ellipse": "radii",
+    "circle": "radius",
+    "pie_arc": "radius",
+}
+
+
 def _is_pair(value) -> bool:
     return (
         isinstance(value, (tuple, list))
@@ -171,12 +187,12 @@ def resize_mode(document: LayoutDocument, inst_id: int) -> tuple[str, object] | 
         p = params.get(name)
         return None if p is None or p.default is inspect.Parameter.empty else p.default
 
-    for name in ("size", "radii"):
-        if name in params and _is_pair(current(name)):
-            return name, tuple(float(v) for v in current(name))
-    value = current("radius")
-    if "radius" in params and isinstance(value, (int, float)) and not isinstance(value, bool):
-        return "radius", float(value)
+    name = _SIZE_PARAMETER.get(inst.component_spec)
+    value = current(name) if name in params else None
+    if name in ("size", "radii") and _is_pair(value):
+        return name, tuple(float(v) for v in value)
+    if name == "radius" and isinstance(value, (int, float)) and not isinstance(value, bool):
+        return name, float(value)
     return "mag", float(document.get_transform(inst_id).mag)
 
 
@@ -189,13 +205,15 @@ class ResizeHandleItem(_BaseHandle):
     rebuilt once, on release, as a single undo step. That keeps the drag smooth
     and doesn't leave a trail of throwaway cells behind."""
 
-    _MIN_EXTENT_UM = 0.001
+    _MIN_EXTENT_UM = 0.01
 
     def __init__(self, document, layout_scene, undo_stack, on_drag_update, corner, on_resized=None) -> None:
         super().__init__(document, layout_scene, undo_stack, on_drag_update)
         self.corner = corner  # (0|1, 0|1): which end of the local bounds in x and in y
         self._on_resized = on_resized
-        self.setCursor(Qt.SizeFDiagCursor if corner[0] == corner[1] else Qt.SizeBDiagCursor)
+        # The canvas is y-up: corners (0,0) and (1,1) are bottom-left and top-right
+        # on screen for an unrotated shape, the "/" diagonal.
+        self.setCursor(Qt.SizeBDiagCursor if corner[0] == corner[1] else Qt.SizeFDiagCursor)
         self.preview = QGraphicsPolygonItem()
         pen = QPen(QColor("#ffd400"), 0, Qt.DashLine)
         self.preview.setPen(pen)
@@ -211,10 +229,16 @@ class ResizeHandleItem(_BaseHandle):
     def corner_point(rect: QRectF, corner: tuple[int, int]) -> QPointF:
         return QPointF(rect.right() if corner[0] else rect.left(), rect.bottom() if corner[1] else rect.top())
 
-    def _snap(self, value: float) -> float:
+    def _snap(self, value: float, start: float) -> float:
+        """`value` on the view's grid. Never below one grid pitch (or the size
+        the shape started with, if that was smaller), so dragging onto or past
+        the fixed corner can't collapse the shape to nothing."""
         views = self.layout_scene.views()
-        snapped = views[0].snap(value) if views and hasattr(views[0], "snap") else value
-        return max(snapped, self._MIN_EXTENT_UM)
+        view = views[0] if views else None
+        pitch = getattr(view, "grid_pitch", 0.0) if getattr(view, "snap_enabled", False) else 0.0
+        if pitch > 0:
+            return max(view.snap(value), min(start, pitch))
+        return max(value, min(start, self._MIN_EXTENT_UM))
 
     def mousePressEvent(self, event) -> None:
         item = self._target_item()
@@ -254,12 +278,22 @@ class ResizeHandleItem(_BaseHandle):
             fx = fy = mag / start
             self._pending = mag
         elif kind == "radius":
-            radius = self._snap(start * fx)
+            radius = self._snap(start * fx, start)
             fx = fy = radius / start
             self._pending = radius
-        else:
-            new = (self._snap(start[0] * fx), self._snap(start[1] * fy))
+        elif kind == "radii":
+            new = (self._snap(start[0] * fx, start[0]), self._snap(start[1] * fy, start[1]))
             fx, fy = new[0] / start[0], new[1] / start[1]
+            self._pending = new
+        else:
+            # "size": the outline is the size plus a fixed margin (none for a
+            # rectangle, half the line width for an L), so add the change in
+            # extent to the size rather than scaling it.
+            new = (
+                self._snap(start[0] + w0 * (fx - 1), start[0]),
+                self._snap(start[1] + h0 * (fy - 1), start[1]),
+            )
+            fx, fy = 1 + (new[0] - start[0]) / w0, 1 + (new[1] - start[1]) / h0
             self._pending = new
 
         sx = w0 * fx * (1 if self.corner[0] else -1)
@@ -313,6 +347,9 @@ class ResizeHandleItem(_BaseHandle):
                 )
                 stack.push(MoveInstanceCommand(self.document, self.layout_scene, inst_id, t, moved))
         stack.endMacro()
+        # The position was set through the document; it isn't a canvas drag for
+        # the view to snap and record again when this mouse release reaches it.
+        self.layout_scene.clear_dirty(inst_id)
         if failed:
             stack.undo()
         elif self._on_resized is not None:

@@ -150,6 +150,12 @@ class LayoutScene(QGraphicsScene):
     def mark_dirty(self, inst_id: int) -> None:
         self._dirty_inst_ids.add(inst_id)
 
+    def clear_dirty(self, inst_id: int) -> None:
+        """Forget a pending move for an instance whose new position is already
+        in the document (and on the undo stack), so the view's drag-release
+        doesn't snap and commit it a second time."""
+        self._dirty_inst_ids.discard(inst_id)
+
     def dirty_instance_ids(self) -> list[int]:
         return list(self._dirty_inst_ids)
 
