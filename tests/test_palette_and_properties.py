@@ -302,3 +302,61 @@ def test_periodic_sync_updates_fields_when_not_editing(qapp):
 
     assert math.isclose(win.properties_panel.x_spin.value(), 7.0)
     assert math.isclose(win.properties_panel.y_spin.value(), 8.0)
+
+
+def test_rectangle_size_is_editable_and_survives_reopening(qapp, tmp_path):
+    """A rectangle's size is a tuple; it gets one spin box per element, and the
+    resized shape is what a saved project reopens with."""
+    from phidler.project_io import load_project, save_project
+
+    win = MainWindow()
+    win.palette.place_requested.emit("rectangle")
+    win.view.resize(400, 400)
+    win.view.show()
+    QTest.mouseClick(win.view.viewport(), Qt.LeftButton, Qt.NoModifier, win.view.mapFromScene(0.0, 0.0))
+    inst_id = next(iter(win.document.instances))
+    win.scene.items_by_inst[inst_id].setSelected(True)
+
+    panel = win.properties_panel
+    spins = panel._fields["size"].property("sequence_spins")
+    assert [s.value() for s in spins] == [4.0, 2.0]
+    spins[0].setValue(12.5)
+    spins[1].setValue(3.0)
+    panel._on_apply()
+
+    assert win.document.instances[inst_id].kwargs["size"] == (12.5, 3.0)
+    rect = win.scene.items_by_inst[inst_id].childrenBoundingRect()
+    assert math.isclose(rect.width(), 12.5, abs_tol=0.01) and math.isclose(rect.height(), 3.0, abs_tol=0.01)
+
+    path = tmp_path / "rect.phidler"
+    save_project(win.document, path)
+    other = MainWindow()
+    load_project(path, other.document, other.scene)
+    again_id = next(iter(other.document.instances))
+    assert tuple(other.document.instances[again_id].kwargs["size"]) == (12.5, 3.0)
+    rect = other.scene.items_by_inst[again_id].childrenBoundingRect()
+    assert math.isclose(rect.width(), 12.5, abs_tol=0.01) and math.isclose(rect.height(), 3.0, abs_tol=0.01)
+    # Selecting the reopened shape (its size is now a list) still offers the spin boxes.
+    other.scene.items_by_inst[again_id].setSelected(True)
+    assert len(other.properties_panel._fields["size"].property("sequence_spins")) == 2
+
+
+def test_float_parameters_with_whole_number_defaults_take_decimals(qapp):
+    """gdsfactory declares e.g. triangle(x: float = 10): the field must accept
+    2.5, not only whole numbers. Real counts stay integers."""
+    import inspect
+
+    import gdsfactory as gf
+    from PySide6.QtWidgets import QDoubleSpinBox, QSpinBox
+
+    win = MainWindow()
+    panel = win.properties_panel
+    panel.show_instance(1, "triangle", inspect.signature(gf.components.triangle), {})
+    assert isinstance(panel._fields["x"], QDoubleSpinBox)
+    panel.show_instance(1, "L", inspect.signature(gf.components.L), {})
+    assert isinstance(panel._fields["width"], QDoubleSpinBox)  # declared int | float
+    panel.show_instance(1, "regular_polygon", inspect.signature(gf.components.regular_polygon), {})
+    assert isinstance(panel._fields["sides"], QSpinBox)
+    assert isinstance(panel._fields["side_length"], QDoubleSpinBox)
+    panel.show_instance(1, "rectangle", inspect.signature(gf.components.rectangle), {})
+    assert all(isinstance(s, QSpinBox) for s in panel._fields["port_orientations"].property("sequence_spins"))

@@ -63,6 +63,30 @@ def _unit_for_param(name: str, value: object) -> str:
     return ""
 
 
+def _as_declared(value: object, annotation: object) -> object:
+    """Whole-number defaults for parameters declared as floats (a triangle's
+    ``x: float = 10``, an L's ``size: Size = (10, 20)``) become floats, so the
+    panel offers a decimal field rather than an integer-only one."""
+    declared = annotation if isinstance(annotation, str) else getattr(annotation, "__name__", str(annotation))
+    lowered = declared.lower()
+    if "int" in lowered and "float" not in lowered:
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return float(value) if "float" in lowered else value
+    if _is_number_sequence(value) and ("float" in lowered or "size" in lowered):
+        return type(value)(float(v) for v in value)
+    return value
+
+
+def _is_number_sequence(value: object) -> bool:
+    """A short tuple/list of plain numbers, such as a size or a pair of radii."""
+    return (
+        isinstance(value, (tuple, list))
+        and 1 <= len(value) <= 4
+        and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value)
+    )
+
+
 class PropertiesPanel(QWidget):
     """Dynamic parameter form for the selected instance, built from the
     component factory's signature. Non-scalar parameters (ComponentSpec,
@@ -289,7 +313,7 @@ class PropertiesPanel(QWidget):
         for p in signature.parameters.values():
             if p.default is inspect.Parameter.empty:
                 continue
-            value = current_kwargs.get(p.name, p.default)
+            value = _as_declared(current_kwargs.get(p.name, p.default), p.annotation)
             widget = self._make_field(p.name, value)
             unit = _unit_for_param(p.name, value)
             label = f"{p.name} ({unit})" if unit else p.name
@@ -453,6 +477,18 @@ class PropertiesPanel(QWidget):
                     w.setCurrentText(value)
                 return w
             return QLineEdit(value)
+        if _is_number_sequence(value):
+            # e.g. a rectangle's size=(4.0, 2.0): one spin box per element.
+            w = QWidget()
+            row = QHBoxLayout(w)
+            row.setContentsMargins(0, 0, 0, 0)
+            spins = []
+            for element in value:
+                spin = PropertiesPanel._make_field(name, element)
+                row.addWidget(spin)
+                spins.append(spin)
+            w.setProperty("sequence_spins", spins)
+            return w
         w = QLineEdit(repr(value))
         w.setEnabled(False)
         w.setToolTip("This parameter type isn't editable from the panel yet.")
@@ -471,4 +507,6 @@ class PropertiesPanel(QWidget):
                 kwargs[name] = w.currentText()
             elif isinstance(w, QLineEdit) and w.isEnabled():
                 kwargs[name] = w.text()
+            elif w.property("sequence_spins"):
+                kwargs[name] = tuple(spin.value() for spin in w.property("sequence_spins"))
         self.params_applied.emit(self._inst_id, kwargs)
