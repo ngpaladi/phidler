@@ -129,9 +129,11 @@ def transform_overlay() -> None:
     win = MainWindow()
     win.resize(900, 700)
     win.show()
-    inst = win.document.add_instance("bend_euler", {})
+    # A shape, so both kinds of handle show: corner resize handles and rotate.
+    inst = win.document.add_instance("rectangle", {"size": (30.0, 12.0)})
     win.scene.add_instance_item(inst.id)
     win.view.zoom_to_fit()
+    win.view.scale(0.6, 0.6)
     win.scene.items_by_inst[inst.id].setSelected(True)
     win._update_transform_overlay()
     save(win, "transform_overlay")

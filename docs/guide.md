@@ -217,17 +217,30 @@ Each is a single undo step, even when it moves several instances.
 
 ### Transform handles
 
-Selecting a single instance shows a **rotate handle** above it on the canvas:
+Selecting a single instance shows a **rotate handle** on the canvas, and a
+shape also gets **corner handles** for resizing:
 
-<img src="screenshots/transform_overlay.png" width="520" alt="On-canvas rotate handle above the selected shape">
+<img src="screenshots/transform_overlay.png" width="520" alt="A selected rectangle with a square resize handle on each corner and a round rotate handle">
 
 - **Drag the handle above the shape** to rotate freely around the instance's
   position. It previews live and commits to the undo stack on release.
 - For a quick 90° rotation, a flip, or resetting rotation/mirror/scale back to
   defaults, use `R` / `H` / `V` or the right-click context menu.
-- **Scale is not a drag gesture**. Set it numerically in the Properties
-  panel's **Scale** field (below), so a stray drag can't accidentally resize a
-  component. Scale is a real geometric magnification of the shape and ports,
+- **Drag a corner of a shape to resize it.** Rectangles, ellipses, circles and
+  the other entries in the palette's **Shapes** group also show a square handle
+  on each corner. Dragging one resizes the shape while the opposite corner stays
+  where it is; a dashed outline shows the new extent, and the shape is rebuilt
+  when you release, as one undo step. Hold **Shift** to keep the proportions.
+  New sizes snap to the grid when **Snap** is on.
+    - A rectangle or ellipse stretches in each direction on its own, by changing
+      its `size` / `radii` parameter, so the result is a real shape of that size
+      and the Properties panel shows the new numbers.
+    - A circle changes its `radius`, so it scales evenly.
+    - Shapes with no such parameter (a triangle, a star) scale evenly through the
+      instance's **Scale**.
+- **Photonic components have no corner handles**, so a stray drag can't distort
+  a device. Set their scale numerically in the Properties panel's **Scale**
+  field (below). Scale is a real geometric magnification of the shape and ports,
   not a component parameter like length.
 
 ## Editing parameters
