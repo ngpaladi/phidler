@@ -1011,6 +1011,14 @@ class MainWindow(QMainWindow):
         self.paste_action.setShortcut(QKeySequence.Paste)
         self.paste_action.triggered.connect(self._paste_clipboard)
 
+        self.duplicate_action = edit_menu.addAction("Duplicate")
+        self.duplicate_action.setShortcut("Ctrl+D")
+        self.duplicate_action.setToolTip(
+            "Place a copy of each selected component next to it, with the same "
+            "parameters, rotation, flip, scale and array. The copies become the selection."
+        )
+        self.duplicate_action.triggered.connect(self._duplicate_selected)
+
         edit_menu.addSeparator()
 
         self.select_all_action = edit_menu.addAction("Select All")
@@ -1622,6 +1630,51 @@ class MainWindow(QMainWindow):
         if failures:
             self.statusBar().showMessage(f"Could not paste: {', '.join(failures)}", 6000)
 
+    def _duplicate_selected(self) -> None:
+        """Copy each selected instance in place, nudged two grid steps so it
+        doesn't hide the original, keeping its parameters and its whole
+        transform (rotation, flip, scale) and array. The copies become the
+        selection, so Ctrl+D again steps out a row. One undo step. Routes aren't
+        duplicated: a copy starts unconnected."""
+        from phidler.model.commands import MoveInstanceCommand, SetArrayCommand
+        from phidler.model.document import ArraySpec
+
+        ids = self._selected_instance_ids()
+        if not ids:
+            return
+        offset = self.view.grid_pitch * 2
+        new_ids, failures = [], []
+        self.undo_stack.beginMacro("Duplicate")
+        for inst_id in ids:
+            inst = self.document.instances[inst_id]
+            t = self.document.get_transform(inst_id)
+            command = AddInstanceCommand(
+                self.document, self.scene, inst.component_spec, dict(inst.kwargs),
+                x=t.x + offset, y=t.y - offset, rotation=t.rotation, mirror=t.mirror,
+                text=f"Duplicate {inst.component_spec}",
+            )
+            self.undo_stack.push(command)
+            if command.error is not None:  # see _paste_clipboard: left inert in the macro
+                failures.append(inst.component_spec)
+                continue
+            new_id = command.inst_id
+            if t.mag != 1.0:
+                placed = self.document.get_transform(new_id)
+                scaled = Transform(x=placed.x, y=placed.y, rotation=placed.rotation, mirror=placed.mirror, mag=t.mag)
+                self.undo_stack.push(MoveInstanceCommand(self.document, self.scene, new_id, placed, scaled))
+            if inst.array != ArraySpec():
+                self.undo_stack.push(SetArrayCommand(self.document, self.scene, new_id, ArraySpec(), inst.array))
+            new_ids.append(new_id)
+        self.undo_stack.endMacro()
+
+        self.scene.clearSelection()
+        for new_id in new_ids:
+            self.scene.items_by_inst[new_id].setSelected(True)
+        if failures:
+            self.statusBar().showMessage(f"Could not duplicate: {', '.join(failures)}", 6000)
+        else:
+            self.statusBar().showMessage(f"Duplicated {len(new_ids)} instance(s)", 2000)
+
     def _select_all(self) -> None:
         for item in self.scene.items_by_inst.values():
             item.setSelected(True)
@@ -1659,6 +1712,7 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction(self.copy_action)
         menu.addAction(self.paste_action)
+        menu.addAction(self.duplicate_action)
         menu.addSeparator()
         menu.addAction(self.select_all_action)
         menu.addAction(self.zoom_fit_action)

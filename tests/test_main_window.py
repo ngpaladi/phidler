@@ -229,3 +229,43 @@ def test_toolbar_controls_never_hide_in_the_overflow_popup(qapp):
     assert win.cross_section_combo is not None
     assert win.route_goal_spin is not None
     assert win.units_combo is not None
+
+
+def test_duplicate_keeps_parameters_transform_and_array_and_selects_the_copy(qapp):
+    from phidler.model.commands import SetArrayCommand
+    from phidler.model.document import ArraySpec, Transform
+
+    win = MainWindow()
+    assert win.duplicate_action.shortcut().toString() == "Ctrl+D"
+    win.view.grid_pitch = 1.0
+    a = win.document.add_instance("rectangle", {"size": (6.0, 3.0)})
+    win.scene.add_instance_item(a.id)
+    t = Transform(x=5.0, y=7.0, rotation=90.0, mirror=True, mag=2.0)
+    win.document.set_transform(a.id, t)
+    win.undo_stack.push(SetArrayCommand(win.document, win.scene, a.id, ArraySpec(), ArraySpec(columns=2, rows=1, column_pitch=10.0)))
+    b = win.document.add_instance("straight", {"length": 4.0})
+    win.scene.add_instance_item(b.id)
+    win.undo_stack.clear()
+    for inst_id in (a.id, b.id):
+        win.scene.items_by_inst[inst_id].setSelected(True)
+
+    win.duplicate_action.trigger()
+
+    assert len(win.document.instances) == 4
+    copies = win._selected_instance_ids()
+    assert len(copies) == 2 and not {a.id, b.id} & set(copies)  # the copies are the selection
+    copy_a = next(i for i in copies if win.document.instances[i].component_spec == "rectangle")
+    assert tuple(win.document.instances[copy_a].kwargs["size"]) == (6.0, 3.0)
+    assert win.document.instances[copy_a].array == ArraySpec(columns=2, rows=1, column_pitch=10.0)
+    ct = win.document.get_transform(copy_a)
+    assert (ct.x, ct.y, ct.rotation, ct.mirror, ct.mag) == (7.0, 5.0, 90.0, True, 2.0)
+    item = win.scene.items_by_inst[copy_a]
+    assert (item.pos().x(), item.pos().y(), item.mag) == (7.0, 5.0, 2.0)  # the canvas agrees
+
+    win.undo_stack.undo()  # one step removes every copy
+    assert set(win.document.instances) == {a.id, b.id}
+    assert not win.undo_stack.canUndo()
+
+    win.scene.clearSelection()
+    win.duplicate_action.trigger()  # nothing selected: nothing happens
+    assert len(win.document.instances) == 2 and not win.undo_stack.canUndo()
