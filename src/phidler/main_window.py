@@ -666,7 +666,11 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _build_transform_overlay(self) -> None:
-        self.transform_handles = TransformHandleSet(self.scene, self.document, self.undo_stack)
+        self.transform_handles = TransformHandleSet(
+            self.scene, self.document, self.undo_stack,
+            # A drag-resize changes a parameter: show the new value in the panel.
+            on_resized=lambda _inst_id: self._on_selection_changed(),
+        )
 
         # A periodic refresh, not signal-driven hooks into every possible
         # view-mutating interaction (pan/zoom/resize/drag-in-progress):

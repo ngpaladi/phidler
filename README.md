@@ -163,23 +163,19 @@ so they can be regenerated after future UI changes.
   worth calling out since it would be an easy, silent mistake to align
   everything to the wrong edge. Each align/distribute action is a single
   undoable operation, even when it moves several instances at once.
-- **On-canvas transform handles**: selecting a single instance shows the
-  standard drag-handle interface — 4 corner handles for resizing and 1
-  handle above the shape for rotating, the same convention used by
-  PowerPoint/Keynote/Figma/Illustrator and basically every 2D editor.
-  Dragging a corner scales the instance uniformly (klayout `DCplxTrans`'s
-  `mag`, the same mechanism GDS itself uses for scaled structure
-  references — it resizes the actual shape and its ports, not a component
-  parameter like `length`) while keeping the **diagonally opposite
-  corner fixed**, exactly like a standard resize handle; dragging the top
-  handle rotates around the instance's placed position. Mirror and quick
-  90° rotation stay on `R`/`M` and the right-click context menu (which
-  also has Reset Transform) rather than living on the handles themselves,
-  since mirroring isn't a drag gesture in any editor. Both gestures
-  preview live and commit as a single undoable change on release, same
-  pattern as dragging an instance on the canvas.
+- **On-canvas transform handles**: selecting a single instance shows a
+  handle for rotating it around its placed position. Shapes (rectangle,
+  ellipse, circle, …) also get a handle on each corner: drag one to resize the
+  shape with the **diagonally opposite corner fixed**, Shift to keep the
+  proportions. A rectangle or ellipse changes its real `size` / `radii`, a
+  circle its `radius`; other shapes scale through the instance's
+  magnification. Photonic components have no corner handles, so a stray drag
+  can't distort a device; their scale is a number in the Properties panel.
+  Quick 90° rotation and flips stay on `R`/`H`/`V` and the right-click context
+  menu (which also has Reset Transform). Each gesture commits as a single
+  undoable change on release.
 
-  ![On-canvas transform handles shown over a selected bend_euler instance: a dashed selection box with 4 corner resize handles and 1 rotate handle above it](docs/screenshots/transform_overlay.png)
+  ![On-canvas transform handles over a selected rectangle: a square resize handle on each corner and a round rotate handle](docs/screenshots/transform_overlay.png)
 - **Component palette** (left dock): photonics-core categories (waveguides,
   bends, tapers, couplers, edge couplers, MMIs, rings, MZIs, grating
   couplers, filters, spirals, detectors) shown expanded at the top; the
