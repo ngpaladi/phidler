@@ -106,6 +106,28 @@ class ProjectSettingsDialog(QDialog):
         self.cross_section_combo.setCurrentText(initial.cross_section)
         form.addRow("Default cross-section", self.cross_section_combo)
 
+        width_row = QHBoxLayout()
+        self.waveguide_width_spin = QDoubleSpinBox()
+        self.waveguide_width_spin.setRange(0.0, 100.0)
+        self.waveguide_width_spin.setDecimals(3)
+        self.waveguide_width_spin.setSingleStep(0.05)
+        self.waveguide_width_spin.setSuffix(" µm")
+        self.waveguide_width_spin.setSpecialValueText("PDK default")  # shown at 0
+        self.waveguide_width_spin.setValue(initial.waveguide_width_um or 0.0)
+        self.waveguide_width_spin.setToolTip(
+            "One waveguide width for the whole project. Every route in the default "
+            "cross-section, and every component built in it, is redrawn at this width — "
+            "including ones already placed. Components with their own explicit width, "
+            "other cross-sections, and a few composite parts that only build at the PDK "
+            "width keep theirs. 0 uses the PDK's width."
+        )
+        width_row.addWidget(self.waveguide_width_spin, 1)
+        self.use_suggested_button = QPushButton("Use suggested")
+        self.use_suggested_button.setToolTip("Set the waveguide width to the suggested single-mode width below.")
+        self.use_suggested_button.clicked.connect(self._use_suggested_width)
+        width_row.addWidget(self.use_suggested_button)
+        form.addRow("Waveguide width", width_row)
+
         # Partial-etch (rib/slab) layers. Each row is a drawing layer whose
         # geometry is core material only `slab thickness` tall (the rest of the
         # full core thickness above it is cladding) — so FDTD and the mode solver
@@ -166,7 +188,13 @@ class ProjectSettingsDialog(QDialog):
         self.thickness_spin.setValue(preset.thickness_um)
         self.cross_section_combo.setCurrentText(preset.cross_section)
 
+    def _use_suggested_width(self) -> None:
+        if self._suggested_width_um is not None:
+            self.waveguide_width_spin.setValue(round(self._suggested_width_um, 3))
+
     def _update_suggestion(self) -> None:
+        self._suggested_width_um = None
+        self.use_suggested_button.setEnabled(False)
         try:
             suggested, cutoff = suggested_waveguide_width(
                 thickness_um=self.thickness_spin.value(),
@@ -177,6 +205,8 @@ class ProjectSettingsDialog(QDialog):
         except ValueError as exc:
             self.suggestion_label.setText(f"Cannot estimate: {exc}")
             return
+        self._suggested_width_um = suggested
+        self.use_suggested_button.setEnabled(True)
         self.suggestion_label.setText(
             f"~{suggested * 1000:.0f} nm (single-mode cutoff ~{cutoff * 1000:.0f} nm) — see note below"
         )
@@ -228,5 +258,6 @@ class ProjectSettingsDialog(QDialog):
             clad_infinite=self.clad_infinite_check.isChecked(),
             wavelength_um=self.wavelength_spin.value(),
             cross_section=self.cross_section_combo.currentText(),
+            waveguide_width_um=self.waveguide_width_spin.value() or None,
             etch_layers=self._etch_layers(),
         )

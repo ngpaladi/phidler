@@ -79,6 +79,19 @@ On startup (and via File > New), Phidler shows a Project Settings dialog:
   matters there.
 - **Default cross-section**: which gdsfactory cross-section new routes use
   by default.
+- **Waveguide width**: one width for the whole project. Every route in the
+  default cross-section, and every component built in it, is drawn at this
+  width, and changing it redraws what is already placed. Leave it at
+  **PDK default** to use the PDK's own width (0.5 µm for strip). **Use
+  suggested** copies the suggested width below into it. The same control is on
+  the routing toolbar as **Width**. What it does not change:
+    - components in another cross-section (nitride, metal, …);
+    - a component whose own `width` you set to something else;
+    - a few composite parts (several `mzi` and heater variants) that gdsfactory
+      can only build at the PDK width. They stay as the PDK draws them and the
+      status bar names them.
+
+  The change is not on the undo stack; set the width back to reverse it.
 - **Etch / slab layers**: for rib waveguides, list the partial-etch layers
   (e.g. SLAB150 on layer 2) and the **slab thickness** each leaves behind: the
   core height *remaining* after the etch, less than the full core thickness
@@ -722,7 +735,7 @@ A probe placed outside the simulated grid reads **off grid** rather than
 zero — most often a probe left over from a whole-layout run when you've since
 switched on *Simulate selected components only*.
 
-#### Live intensity graphs
+#### Live probe graphs
 
 Each probe row has a **Graph** tick (on by default). While it's ticked, that
 probe's intensity-vs-time trace is drawn in the top-right of the field view in
@@ -737,6 +750,25 @@ The graphs can be exported two ways:
 - **Separately**: **Export Graphs…** writes either a PNG of the graphs on their
   own (no field behind them) or a CSV of time in femtoseconds plus one
   intensity column per probe, for plotting elsewhere.
+
+The **Graphs** row under the probe table sets what is drawn. Every control
+redraws from the recorded run, so nothing needs re-running:
+
+- **Quantity**: **Intensity |Ez|²** or **Field Ez** against time; **Energy
+  passed**, the running total of intensity, whose final values compare two
+  probes (the arms of a splitter, say) directly; or **Spectrum**, the field's
+  power against wavelength from 0.6 to 1.6 times the run wavelength. A long
+  run keeps fewer movie frames, and if they are too far apart to resolve the
+  light's oscillation the spectrum reads "no data" rather than show an alias.
+- **Log (dB)**: plot in dB below the peak, down to −40 dB, so a weak signal
+  next to a strong one stays visible. It does not apply to Field Ez.
+- **Same scale**: give every probe the same vertical range so heights compare.
+- **Overlaid**: draw all probes in one plot instead of one each.
+- **Size**: small, medium or large.
+
+The exports follow these settings: the PNG is drawn the same way, and the CSV
+holds the chosen quantity (with wavelength in µm as its first column for a
+spectrum). The settings are saved with the project.
 
 If the window is too short to stack every graph, the overlay says how many it
 had to hide; **Export Graphs…** always includes all of them.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 from contextlib import contextmanager
 
@@ -794,6 +795,23 @@ class MainWindow(QMainWindow):
         self.cross_section_combo.currentTextChanged.connect(self._on_route_cross_section_changed)
         toolbar.addWidget(self.cross_section_combo)
 
+        toolbar.addWidget(QLabel(" Width: "))
+        self.waveguide_width_spin = QDoubleSpinBox()
+        self.waveguide_width_spin.setDecimals(3)
+        self.waveguide_width_spin.setRange(0.0, 100.0)
+        self.waveguide_width_spin.setSingleStep(0.05)
+        self.waveguide_width_spin.setSuffix(" µm")
+        self.waveguide_width_spin.setSpecialValueText("PDK")  # shown at 0
+        self.waveguide_width_spin.setKeyboardTracking(False)
+        self.waveguide_width_spin.setValue(self.document.project_settings.waveguide_width_um or 0.0)
+        self.waveguide_width_spin.setToolTip(
+            "The project waveguide width (also in File > Project Settings). Changing it "
+            "redraws every route in the project cross-section and every component built "
+            "in it, placed or new, at this width. 0 uses the PDK's width."
+        )
+        self.waveguide_width_spin.editingFinished.connect(self._on_waveguide_width_edited)
+        toolbar.addWidget(self.waveguide_width_spin)
+
         toolbar.addWidget(QLabel(" Goal: "))
         self.route_goal_spin = QDoubleSpinBox()
         self.route_goal_spin.setDecimals(3)
@@ -1100,7 +1118,7 @@ class MainWindow(QMainWindow):
 
     def _place_straight_waveguide(self) -> None:
         x, y = self._placement_point_um()
-        command = AddInstanceCommand(self.document, self.scene, "straight", {"length": 10.0, "width": 0.5}, x=x, y=y)
+        command = AddInstanceCommand(self.document, self.scene, "straight", {"length": 10.0, "width": self.document.waveguide_width_um()}, x=x, y=y)
         self._push_add_instance(command, "straight")
 
     def _on_placement_armed_changed(self, armed: bool) -> None:
@@ -1834,9 +1852,57 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("New project", 2000)
 
     def _apply_project_settings(self, settings) -> None:
-        self.document.project_settings = settings
+        old = self.document.project_settings
+        width_changed = (old.waveguide_width_um or None, old.cross_section) != (
+            settings.waveguide_width_um or None, settings.cross_section
+        )
+        if width_changed and (old.waveguide_width_um or settings.waveguide_width_um):
+            # Everything else first, then the width: set_waveguide_width needs
+            # the outgoing width still in place to know what to rebuild from.
+            self.document.project_settings = dataclasses.replace(
+                settings, waveguide_width_um=old.waveguide_width_um, cross_section=old.cross_section
+            )
+            self._rebuild_for_waveguide_width(settings.waveguide_width_um, settings.cross_section)
+        else:
+            self.document.project_settings = settings
         self.route_cross_section = settings.cross_section
         self.cross_section_combo.setCurrentText(settings.cross_section)
+        self.waveguide_width_spin.blockSignals(True)
+        self.waveguide_width_spin.setValue(settings.waveguide_width_um or 0.0)
+        self.waveguide_width_spin.blockSignals(False)
+
+    def _rebuild_for_waveguide_width(self, width_um, cross_section: str) -> None:
+        """Redraw the layout at a new project waveguide width and say what
+        changed — including anything that could not follow."""
+        routes_before = list(self.document.routes)
+        inst_ids, route_ids = self.document.set_waveguide_width(width_um, cross_section)
+        for inst_id in inst_ids:
+            self.scene.resync_geometry(inst_id)
+        for route_id in routes_before:
+            self.scene.remove_route_item(route_id)
+            if route_id in self.document.routes:
+                self.scene.add_route_item(route_id)
+        self._on_selection_changed()
+        message = (
+            f"Waveguide width {self.document.waveguide_width_um():g} µm: "
+            f"redrew {len(inst_ids)} component(s) and {len(route_ids)} route(s)."
+        )
+        dropped = len(routes_before) - len(self.document.routes)
+        if dropped:
+            message += f" {dropped} route(s) could not be redrawn and were removed."
+        kept = sorted(self.document.width_fallback_specs)
+        if kept:
+            message += " Kept at the PDK width (only build there): " + ", ".join(kept) + "."
+        self.statusBar().showMessage(message, 12000)
+
+    def _on_waveguide_width_edited(self) -> None:
+        value = self.waveguide_width_spin.value() or None
+        if value == (self.document.project_settings.waveguide_width_um or None):
+            return
+        self._apply_project_settings(
+            dataclasses.replace(self.document.project_settings, waveguide_width_um=value)
+        )
+        self._mark_dirty()  # settings aren't on the undo stack, so flag it here
 
     def _edit_project_settings(self) -> None:
         dialog = ProjectSettingsDialog(self.document.project_settings, parent=self)
@@ -1879,6 +1945,9 @@ class MainWindow(QMainWindow):
             # they only existed in the active PDK's registry because the
             # import above just re-ran it for this fresh document
             self._add_specs_to_palette(list(custom_specs.values()))
+        self.waveguide_width_spin.blockSignals(True)
+        self.waveguide_width_spin.setValue(self.document.project_settings.waveguide_width_um or 0.0)
+        self.waveguide_width_spin.blockSignals(False)
         self.undo_stack.clear()
         # Deliberately NOT tracking project_path for a .py open: Save (Ctrl+S)
         # calls save_project(), which writes .phidler JSON — if project_path

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import inspect
 import itertools
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+import math
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any
 
 import gdsfactory as gf
 import klayout.db as kdb
@@ -158,6 +160,12 @@ class ProjectSettings:
     clad_infinite: bool = False
     wavelength_um: float = DEFAULT_WAVELENGTH_UM
     cross_section: str = "strip"
+    # One waveguide width for the whole project: every route drawn in
+    # `cross_section`, and every component built in it, uses this width instead
+    # of the PDK's (see LayoutDocument.effective_cross_section). None keeps the
+    # PDK width — the behaviour before this setting existed, and what older
+    # projects load as.
+    waveguide_width_um: float | None = None
     # Partial-etch (rib/slab) layers, drawn on top of the full-height core
     # (layer (1, 0)). Empty -> a plain strip waveguide, the original behaviour.
     etch_layers: tuple[EtchLayer, ...] = ()
@@ -201,6 +209,9 @@ class LayoutDocument:
         # in a fresh process, since gf.get_component(name) would no
         # longer resolve it. project_io replays these before instances.
         self.custom_component_paths: list[str] = []
+        # Components that could not be built at the project waveguide width and
+        # were drawn at the PDK's instead (see _component_with_project_width).
+        self.width_fallback_specs: set[str] = set()
         self.project_settings: ProjectSettings = ProjectSettings()
         # The FDTD simulation set-up (sources, run parameters) last configured
         # for this project, persisted in the .phidler file. None until the
@@ -225,6 +236,123 @@ class LayoutDocument:
 
     # -- instances ---------------------------------------------------------
 
+    # -- project waveguide width -------------------------------------------
+
+    def pdk_waveguide_width_um(self) -> float:
+        """The PDK's own width for the project cross-section (0.5 µm for strip)."""
+        return float(gf.get_cross_section(self.project_settings.cross_section).width)
+
+    def waveguide_width_um(self) -> float:
+        """The width waveguides are drawn at: the project override, else the PDK's."""
+        override = self.project_settings.waveguide_width_um
+        return float(override) if override else self.pdk_waveguide_width_um()
+
+    def effective_cross_section(self, name: Any) -> Any:
+        """What to hand gdsfactory for cross-section ``name``: the name itself,
+        or — for the project cross-section when a project width is set — that
+        cross-section at the project width. Other cross-sections (nitride,
+        metal, …) have their own natural widths and are never changed."""
+        settings = self.project_settings
+        if not settings.waveguide_width_um or name != settings.cross_section:
+            return name
+        return gf.get_cross_section(name, width=float(settings.waveguide_width_um))
+
+    def _component_with_project_width(self, component_spec: str, kwargs: dict) -> gf.Component:
+        """Build a component, in the project width where it can take it.
+
+        A component follows the project width when it has a ``cross_section``
+        parameter set to the project cross-section. One with its own explicit
+        ``width`` keeps that (gdsfactory lets it win). Composite cells that
+        hardcode the PDK width inside (several mzi and heater variants) fail to
+        build at any other width; those are built as the PDK draws them and
+        remembered in ``width_fallback_specs`` so the UI can say so."""
+        if self.project_settings.waveguide_width_um:
+            factory = gf.get_active_pdk().cells.get(component_spec)
+            parameter = None
+            if factory is not None:
+                try:
+                    parameter = inspect.signature(factory).parameters.get("cross_section")
+                except (TypeError, ValueError):
+                    parameter = None
+            if parameter is not None:
+                name = kwargs.get("cross_section", parameter.default)
+                effective = self.effective_cross_section(name) if isinstance(name, str) else name
+                if effective is not name:
+                    try:
+                        cell = gf.get_component(component_spec, **{**kwargs, "cross_section": effective})
+                    except Exception:
+                        self.width_fallback_specs.add(component_spec)
+                    else:
+                        self.width_fallback_specs.discard(component_spec)
+                        return cell
+        return gf.get_component(component_spec, **kwargs)
+
+    def set_waveguide_width(self, width_um: float | None, cross_section: str | None = None
+                            ) -> tuple[list[int], list[int]]:
+        """Change the project waveguide width (None: back to the PDK's) and
+        rebuild everything drawn in it. Returns (instance ids, route ids) whose
+        geometry was rebuilt, for the caller to refresh on the canvas.
+
+        Instances carrying an explicit ``width`` equal to the old waveguide
+        width (the default straight is placed that way) move to the new width
+        too; a width the user set to something else is left alone."""
+        old_width = self.waveguide_width_um()
+        self.project_settings = replace(
+            self.project_settings,
+            waveguide_width_um=width_um or None,
+            cross_section=cross_section or self.project_settings.cross_section,
+        )
+        new_width = self.waveguide_width_um()
+        self.width_fallback_specs.clear()
+        rebuilt_instances = []
+        for inst_id, inst in list(self.instances.items()):
+            kwargs = dict(inst.kwargs)
+            explicit = kwargs.get("width")
+            if (
+                isinstance(explicit, (int, float)) and not isinstance(explicit, bool)
+                and math.isclose(explicit, old_width, abs_tol=1e-9)
+                and self._takes_project_cross_section(inst.component_spec, kwargs)
+            ):
+                kwargs["width"] = new_width
+            try:
+                self.update_instance_params(inst_id, kwargs)
+            except Exception:
+                continue  # keeps its current geometry rather than vanishing
+            rebuilt_instances.append(inst_id)
+        rebuilt_routes = []
+        for route_id in list(self.routes):
+            try:
+                if self.rebuild_route(route_id) is not None:
+                    rebuilt_routes.append(route_id)
+            except Exception:
+                # rebuild_route had already deleted the old geometry; drop the
+                # record too rather than keep a route with nothing drawn. The
+                # caller sees it is gone from self.routes.
+                self.routes.pop(route_id, None)
+        return rebuilt_instances, rebuilt_routes
+
+    def follows_project_width(self, component_spec: str, kwargs: dict) -> bool:
+        """Whether this component is drawn in the project-width cross-section:
+        a project width is set, the component is in the project cross-section,
+        and it built at that width."""
+        return bool(
+            self.project_settings.waveguide_width_um
+            and component_spec not in self.width_fallback_specs
+            and self._takes_project_cross_section(component_spec, kwargs)
+        )
+
+    def _takes_project_cross_section(self, component_spec: str, kwargs: dict) -> bool:
+        factory = gf.get_active_pdk().cells.get(component_spec)
+        if factory is None:
+            return False
+        try:
+            parameter = inspect.signature(factory).parameters.get("cross_section")
+        except (TypeError, ValueError):
+            return False
+        if parameter is None:
+            return False
+        return kwargs.get("cross_section", parameter.default) == self.project_settings.cross_section
+
     def _build_cell(self, component_spec: str, kwargs: dict, array: ArraySpec) -> gf.Component:
         """The effective cell for an instance: the bare component, or — when
         arrayed — a wrapper cell holding the columns×rows tiling.
@@ -235,7 +363,7 @@ class LayoutDocument:
         polygons) is identical to the exported GDS (which references the same
         wrapper). The anchor element's ports are copied up so routing can still
         attach to an arrayed instance."""
-        base = gf.get_component(component_spec, **kwargs)
+        base = self._component_with_project_width(component_spec, kwargs)
         if not array.is_array:
             return base
         wrapper = gf.Component(f"array_{next(_array_wrapper_counter)}")
@@ -288,6 +416,13 @@ class LayoutDocument:
         """Re-insert a previously-removed instance (used by undo). inst.cell is
         already the effective (possibly arrayed) cell, so this is a plain
         single reference."""
+        try:
+            # Rebuilt (a cache hit unless something changed) so an instance
+            # deleted before the project waveguide width changed comes back at
+            # the current width rather than the one it was deleted at.
+            inst.cell = self._build_cell(inst.component_spec, inst.kwargs, inst.array)
+        except Exception:
+            pass
         ref = self.top.add_ref(inst.cell)
         ref.dcplx_trans = kdb.DCplxTrans(transform.mag, transform.rotation, transform.mirror, transform.x, transform.y)
         inst.ref = ref
@@ -424,6 +559,11 @@ class LayoutDocument:
                 raise ValueError(f"Cannot route: instance #{inst_id} no longer exists")
         p1 = self.instances[inst_a_id].ref.ports[port_a]
         p2 = self.instances[inst_b_id].ref.ports[port_b]
+        # The route is recorded by cross-section *name* (what is saved and
+        # shown); the geometry is drawn in that cross-section at the project
+        # waveguide width.
+        cross_section_name = cross_section
+        cross_section = self.effective_cross_section(cross_section)
 
         solved_amplitude: float | None = None
         # Components the route should not cross (everything except its own two
@@ -471,7 +611,7 @@ class LayoutDocument:
             port_name_a=port_a,
             instance_id_b=inst_b_id,
             port_name_b=port_b,
-            cross_section=cross_section,
+            cross_section=cross_section_name,
             refs=refs,
             length=length_dbu,
             goal_length_um=goal_length_um,
@@ -882,6 +1022,7 @@ class LayoutDocument:
         self.annotations.clear()
         self.clear_reference()
         self.custom_component_paths = []
+        self.width_fallback_specs.clear()
         self.simulation_config = None
         return removed_instance_ids, removed_route_ids
 
