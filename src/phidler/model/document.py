@@ -264,8 +264,9 @@ class LayoutDocument:
         parameter set to the project cross-section. One with its own explicit
         ``width`` keeps that (gdsfactory lets it win). Composite cells that
         hardcode the PDK width inside (several mzi and heater variants) fail to
-        build at any other width; those are built as the PDK draws them and
-        remembered in ``width_fallback_specs`` so the UI can say so."""
+        build at any other width, and some parts build but keep their own
+        widths; both are built as the PDK draws them and remembered in
+        ``width_fallback_specs`` so the UI can say so."""
         if self.project_settings.waveguide_width_um:
             factory = gf.get_active_pdk().cells.get(component_spec)
             parameter = None
@@ -278,29 +279,57 @@ class LayoutDocument:
                 name = kwargs.get("cross_section", parameter.default)
                 effective = self.effective_cross_section(name) if isinstance(name, str) else name
                 if effective is not name:
+                    width = float(self.project_settings.waveguide_width_um)
                     try:
                         cell = gf.get_component(component_spec, **{**kwargs, "cross_section": effective})
                     except Exception:
-                        self.width_fallback_specs.add(component_spec)
-                    else:
+                        cell = None
+                    # Judged by the result: a part that builds but pins its own
+                    # widths inside (taper, crossing45, …) has not followed either.
+                    if cell is not None and any(
+                        math.isclose(port.width, width, abs_tol=1e-6) for port in cell.ports
+                    ):
                         self.width_fallback_specs.discard(component_spec)
                         return cell
+                    if "width" not in kwargs:
+                        self.width_fallback_specs.add(component_spec)
         return gf.get_component(component_spec, **kwargs)
 
-    def set_waveguide_width(self, width_um: float | None, cross_section: str | None = None
-                            ) -> tuple[list[int], list[int]]:
+    def validated_waveguide_width(self, width_um: float | None, cross_section: str) -> float | None:
+        """``width_um`` as it can actually be drawn: None for "use the PDK's",
+        otherwise snapped to the 2 nm steps a centred waveguide needs on the
+        1 nm layout grid (an odd width such as 0.287 µm cannot be built).
+        Raises ValueError for a width gdsfactory still refuses."""
+        if not width_um:
+            return None
+        step = 2.0 * self.top.kcl.dbu
+        snapped = round(round(float(width_um) / step) * step, 6)
+        if snapped <= 0:
+            raise ValueError(f"A waveguide width of {width_um:g} µm is too small to draw.")
+        try:
+            gf.get_component("straight", length=1.0, cross_section=gf.get_cross_section(cross_section, width=snapped))
+        except Exception as exc:
+            raise ValueError(f"Cannot draw a {snapped:g} µm wide {cross_section!r} waveguide: {exc}") from exc
+        return snapped
+
+    def set_waveguide_width(self, width_um: float | None, cross_section: str | None = None,
+                            _rolling_back: bool = False) -> tuple[list[int], list[int]]:
         """Change the project waveguide width (None: back to the PDK's) and
         rebuild everything drawn in it. Returns (instance ids, route ids) whose
-        geometry was rebuilt, for the caller to refresh on the canvas.
+        geometry was rebuilt, for the caller to refresh on the canvas. The width
+        is snapped to what can be drawn (see validated_waveguide_width); a
+        width that cannot be drawn, or that some route cannot be drawn at,
+        raises ValueError and leaves the layout at the old width.
 
         Instances carrying an explicit ``width`` equal to the old waveguide
         width (the default straight is placed that way) move to the new width
         too; a width the user set to something else is left alone."""
+        old_settings = self.project_settings
         old_width = self.waveguide_width_um()
+        cross_section = cross_section or old_settings.cross_section
+        width_um = self.validated_waveguide_width(width_um, cross_section)
         self.project_settings = replace(
-            self.project_settings,
-            waveguide_width_um=width_um or None,
-            cross_section=cross_section or self.project_settings.cross_section,
+            old_settings, waveguide_width_um=width_um, cross_section=cross_section
         )
         new_width = self.waveguide_width_um()
         self.width_fallback_specs.clear()
@@ -324,11 +353,26 @@ class LayoutDocument:
             try:
                 if self.rebuild_route(route_id) is not None:
                     rebuilt_routes.append(route_id)
-            except Exception:
-                # rebuild_route had already deleted the old geometry; drop the
-                # record too rather than keep a route with nothing drawn. The
-                # caller sees it is gone from self.routes.
-                self.routes.pop(route_id, None)
+            except Exception as exc:
+                if _rolling_back:
+                    # Even the previous width no longer routes (should not
+                    # happen: it routed before). Drop the record rather than
+                    # keep a route with nothing drawn.
+                    self.routes.pop(route_id, None)
+                    continue
+                # A route that cannot be drawn at the new width: put the whole
+                # layout back at the old one rather than lose the route.
+                # rebuild_route already deleted this route's geometry, so the
+                # rollback must not try to delete it again.
+                if route_id in self.routes:
+                    self.routes[route_id].refs = []
+                self.set_waveguide_width(
+                    old_settings.waveguide_width_um, old_settings.cross_section, _rolling_back=True
+                )
+                raise ValueError(
+                    f"A route could not be drawn at {width_um:g} µm ({exc}); "
+                    "the waveguide width was left unchanged."
+                ) from exc
         return rebuilt_instances, rebuilt_routes
 
     def follows_project_width(self, component_spec: str, kwargs: dict) -> bool:

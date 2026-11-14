@@ -2279,8 +2279,16 @@ class FdtdWindow(QMainWindow):
         )
 
     def _frame_dt_fs(self, n_frames: int) -> float:
-        """Time between recorded frames, from the run's own duration and frame
-        count — so graph x axes are physical time rather than a frame index."""
+        """Time between recorded frames, so graph x axes are physical time
+        rather than a frame index. Taken from the frame times the run recorded
+        (a spectrum's wavelengths scale with it, so it must be exact); results
+        without them fall back to the run duration over the frame count."""
+        try:
+            times = np.asarray(self._last_result.monitor_times["field"], dtype=float)
+            if len(times) > 1 and times[1] > times[0]:
+                return float(times[1] - times[0]) * 1e15
+        except (AttributeError, KeyError, TypeError, IndexError, ValueError):
+            pass
         run_fs = (
             self._last_params.resolved_run_time_fs()
             if self._last_params is not None else float(n_frames)

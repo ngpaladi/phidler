@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import re
 from pathlib import Path
@@ -196,7 +197,17 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
             if target.id == "top" and _is_attr_call(node.value, "gf", "Component"):
                 continue
             if target.id == _WAVEGUIDE_NAME and _is_attr_call(node.value, "gf", "get_cross_section"):
-                continue  # the project waveguide width — read from the docstring settings
+                # The project waveguide width. The line itself wins over the
+                # docstring header, which a hand edit can leave stale.
+                call = node.value
+                updates = {}
+                if call.args:
+                    updates["cross_section"] = _literal(call.args[0], "WAVEGUIDE cross-section")
+                for kw in call.keywords:
+                    if kw.arg == "width":
+                        updates["waveguide_width_um"] = float(_literal(kw.value, "WAVEGUIDE width"))
+                settings = dataclasses.replace(settings, **updates)
+                continue
             if _is_add_ref_get_component(node.value):
                 var_name = target.id
                 inner = node.value.args[0]

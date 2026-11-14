@@ -81,15 +81,19 @@ On startup (and via File > New), Phidler shows a Project Settings dialog:
   by default.
 - **Waveguide width**: one width for the whole project. Every route in the
   default cross-section, and every component built in it, is drawn at this
-  width, and changing it redraws what is already placed. Leave it at
+  width, and changing it redraws what is already placed. The width is snapped
+  to an even number of nanometres, which a centred waveguide needs on the 1 nm
+  layout grid; a width that cannot be drawn is refused and nothing changes.
+  Leave it at
   **PDK default** to use the PDK's own width (0.5 µm for strip). **Use
   suggested** copies the suggested width below into it. The same control is on
   the routing toolbar as **Width**. What it does not change:
     - components in another cross-section (nitride, metal, …);
     - a component whose own `width` you set to something else;
-    - a few composite parts (several `mzi` and heater variants) that gdsfactory
-      can only build at the PDK width. They stay as the PDK draws them and the
-      status bar names them.
+    - composite parts (several `mzi` and heater variants) that gdsfactory can
+      only build at the PDK width, and parts that fix their own widths (tapers,
+      some crossings). They stay as the PDK draws them and the status bar names
+      them.
 
   The change is not on the undo stack; set the width back to reverse it.
 - **Etch / slab layers**: for rib waveguides, list the partial-etch layers

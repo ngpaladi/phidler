@@ -809,7 +809,9 @@ class MainWindow(QMainWindow):
             "redraws every route in the project cross-section and every component built "
             "in it, placed or new, at this width. 0 uses the PDK's width."
         )
-        self.waveguide_width_spin.editingFinished.connect(self._on_waveguide_width_edited)
+        # valueChanged with keyboard tracking off: fires on the arrows and on
+        # Enter / focus-out, not on every typed digit.
+        self.waveguide_width_spin.valueChanged.connect(lambda _v: self._on_waveguide_width_edited())
         toolbar.addWidget(self.waveguide_width_spin)
 
         toolbar.addWidget(QLabel(" Goal: "))
@@ -1865,6 +1867,9 @@ class MainWindow(QMainWindow):
             self._rebuild_for_waveguide_width(settings.waveguide_width_um, settings.cross_section)
         else:
             self.document.project_settings = settings
+        # Read back from the document: the width may have been snapped to the
+        # layout grid, or refused and left as it was.
+        settings = self.document.project_settings
         self.route_cross_section = settings.cross_section
         self.cross_section_combo.setCurrentText(settings.cross_section)
         self.waveguide_width_spin.blockSignals(True)
@@ -1875,7 +1880,15 @@ class MainWindow(QMainWindow):
         """Redraw the layout at a new project waveguide width and say what
         changed — including anything that could not follow."""
         routes_before = list(self.document.routes)
-        inst_ids, route_ids = self.document.set_waveguide_width(width_um, cross_section)
+        try:
+            inst_ids, route_ids = self.document.set_waveguide_width(width_um, cross_section)
+        except ValueError as exc:
+            # Refused: the document is back at (or never left) the old width,
+            # but a rollback rebuilt the geometry, so the canvas still resyncs.
+            inst_ids, route_ids = list(self.document.instances), list(self.document.routes)
+            failure = str(exc)
+        else:
+            failure = None
         for inst_id in inst_ids:
             self.scene.resync_geometry(inst_id)
         for route_id in routes_before:
@@ -1883,6 +1896,9 @@ class MainWindow(QMainWindow):
             if route_id in self.document.routes:
                 self.scene.add_route_item(route_id)
         self._on_selection_changed()
+        if failure is not None:
+            self.statusBar().showMessage(failure, 12000)
+            return
         message = (
             f"Waveguide width {self.document.waveguide_width_um():g} µm: "
             f"redrew {len(inst_ids)} component(s) and {len(route_ids)} route(s)."
@@ -1892,7 +1908,7 @@ class MainWindow(QMainWindow):
             message += f" {dropped} route(s) could not be redrawn and were removed."
         kept = sorted(self.document.width_fallback_specs)
         if kept:
-            message += " Kept at the PDK width (only build there): " + ", ".join(kept) + "."
+            message += " Not at this width (they keep their own): " + ", ".join(kept) + "."
         self.statusBar().showMessage(message, 12000)
 
     def _on_waveguide_width_edited(self) -> None:

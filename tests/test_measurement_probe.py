@@ -400,9 +400,10 @@ def test_export_graphs_csv_has_time_and_one_column_per_probe(qapp, tmp_path):
         rows = list(csv.reader(fh))
     assert rows[0] == ["time_fs", "P1_intensity", "P2_intensity"]
     assert len(rows) - 1 == len(graphs[0]["trace"])
-    # Time runs from 0 to the run duration, not a frame index.
+    # Time runs from 0 to the last recorded frame's time, not a frame index.
     assert float(rows[1][0]) == 0.0
-    assert float(rows[-1][0]) == pytest.approx(params.resolved_run_time_fs())
+    assert float(rows[-1][0]) == pytest.approx(float(result.monitor_times["field"][-1]) * 1e15, rel=1e-4)
+    assert float(rows[-1][0]) == pytest.approx(params.resolved_run_time_fs(), rel=0.05)
 
 
 def test_gif_export_includes_the_graphs_in_the_canvas(qapp, tmp_path):
@@ -650,7 +651,8 @@ def test_graph_controls_drive_overlay_csv_and_saved_config(qapp, tmp_path):
     with open(path, newline="") as fh:
         rows = list(csv.reader(fh))
     assert rows[0] == ["time_fs", "P1_field"]
-    assert float(rows[-1][0]) == pytest.approx(params.resolved_run_time_fs())
+    # The time axis is the run's own recorded frame times, not duration / frames.
+    assert float(rows[2][0]) == pytest.approx(float(result.monitor_times["field"][1]) * 1e15, rel=1e-4)
 
     fdtd_win.graph_quantity_combo.setCurrentIndex(fdtd_win.graph_quantity_combo.findData("spectrum"))
     spectrum = fdtd_win._probe_graph_data()

@@ -186,8 +186,7 @@ def test_toolbar_width_redraws_the_canvas_and_marks_dirty(qapp):
     win.scene.add_route_item(route.id)
     before = win.scene.items_by_inst[a.id].boundingRect().height()
 
-    win.waveguide_width_spin.setValue(2.0)
-    win._on_waveguide_width_edited()
+    win.waveguide_width_spin.setValue(2.0)  # valueChanged applies it
 
     assert win.document.project_settings.waveguide_width_um == pytest.approx(2.0)
     assert win.scene.items_by_inst[a.id].boundingRect().height() > before
@@ -195,7 +194,6 @@ def test_toolbar_width_redraws_the_canvas_and_marks_dirty(qapp):
     assert win.isWindowModified()
 
     win.waveguide_width_spin.setValue(0.0)  # "PDK"
-    win._on_waveguide_width_edited()
     assert win.document.project_settings.waveguide_width_um is None
     assert _optical_widths(win.document, a.id) == [0.5]
 
@@ -224,3 +222,77 @@ def test_sim_window_seeds_core_width_from_the_project_width(qapp):
     win.document.set_waveguide_width(0.8)
     fdtd_win = FdtdWindow(win.document, win.view)
     assert fdtd_win.mode_core_width_spin.value() == pytest.approx(0.8)
+
+
+def test_odd_nanometre_width_is_snapped_not_lost():
+    """0.287 µm (what Use suggested gives on the default project) cannot be
+    centred on the 1 nm grid; it is snapped to an even width rather than making every
+    component fall back and every route vanish."""
+    doc = LayoutDocument()
+    a, _b, route = _two_straights(doc)
+    doc.set_waveguide_width(0.287)
+    snapped = doc.project_settings.waveguide_width_um
+    assert snapped in (pytest.approx(0.286), pytest.approx(0.288))  # an even number of nm
+    assert _optical_widths(doc, a.id) == [round(snapped, 3)]
+    assert route.id in doc.routes and _route_width(doc, route.id) == pytest.approx(snapped)
+    assert not doc.width_fallback_specs
+
+
+def test_undrawable_width_is_refused_and_nothing_changes():
+    doc = LayoutDocument()
+    a, _b, route = _two_straights(doc)
+    with pytest.raises(ValueError):
+        doc.set_waveguide_width(0.0004)
+    assert doc.project_settings.waveguide_width_um is None
+    assert _optical_widths(doc, a.id) == [0.5]
+    assert route.id in doc.routes
+
+
+def test_route_failure_rolls_back_to_the_old_width(monkeypatch):
+    doc = LayoutDocument()
+    a, _b, route = _two_straights(doc)
+    doc.set_waveguide_width(0.8)
+    original = doc.add_route
+
+    def failing(*args, **kwargs):
+        if doc.project_settings.waveguide_width_um == pytest.approx(1.2):
+            raise RuntimeError("no room")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(doc, "add_route", failing)
+    with pytest.raises(ValueError, match="left unchanged"):
+        doc.set_waveguide_width(1.2)
+    assert doc.project_settings.waveguide_width_um == pytest.approx(0.8)
+    assert _optical_widths(doc, a.id) == [0.8]
+    assert route.id in doc.routes and _route_width(doc, route.id) == pytest.approx(0.8)
+
+
+def test_part_that_builds_but_keeps_its_own_width_is_reported():
+    doc = LayoutDocument()
+    taper = doc.add_instance("taper", {})
+    doc.set_waveguide_width(0.8)
+    assert "taper" in doc.width_fallback_specs
+    assert not doc.follows_project_width("taper", {})
+    assert taper.id in doc.instances
+
+
+def test_script_width_line_wins_over_a_stale_header(qapp, tmp_path):
+    win = MainWindow()
+    win.document.set_waveguide_width(0.8)
+    a, _b, _route = _two_straights(win.document)
+    path = tmp_path / "edited.py"
+    script = export_python_script(win.document, str(path))
+    path.write_text(script.replace("width=0.8)", "width=1.0)"))
+
+    other = MainWindow()
+    load_python_script(str(path), other.document, other.scene)
+    assert other.document.project_settings.waveguide_width_um == pytest.approx(1.0)
+    assert _optical_widths(other.document, a.id) == [1.0]
+
+
+def test_refused_width_from_the_toolbar_leaves_the_spin_at_the_old_value(qapp):
+    win = MainWindow()
+    win.waveguide_width_spin.setValue(0.8)
+    win.waveguide_width_spin.setValue(0.0004 if win.waveguide_width_spin.decimals() > 3 else 0.001)
+    assert win.document.project_settings.waveguide_width_um in (pytest.approx(0.8), pytest.approx(0.002))
+    assert win.waveguide_width_spin.value() == pytest.approx(win.document.project_settings.waveguide_width_um)
