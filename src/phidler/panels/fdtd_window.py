@@ -49,7 +49,10 @@ from PySide6.QtWidgets import (
 from phidler.canvas.view import C0_UM_PER_FS, C0_UM_PER_NS, UNIT_MODES, LayoutView, nice_ticks
 from phidler.fdtd_sim import (
     DISCLAIMER,
+    GRAPH_QUANTITIES,
+    GRAPH_SIZES,
     FdtdParams,
+    GraphOptions,
     ModeProfileParams,
     ProbeSpec,
     SimulationConfig,
@@ -67,7 +70,8 @@ from phidler.fdtd_sim import (
     mode_confinement,
     nearest_z_index,
     photon_energy_ev_from_wavelength_um,
-    probe_intensity_trace,
+    probe_field_trace,
+    probe_graph_series,
     run_simulation,
     solve_mode_profile,
     suggest_region_um,
@@ -287,77 +291,171 @@ def _array_to_qimage(
 # PNG export.
 # ---------------------------------------------------------------------------
 
+_GRAPH_QUANTITY_LABELS = ("Intensity |Ez|²", "Field Ez", "Energy passed", "Spectrum")
 _GRAPH_W = 190       # mini-plot size in device pixels
 _GRAPH_H = 74
 _GRAPH_MARGIN = 8    # gap to the viewport edge
 _GRAPH_GAP = 6       # gap between stacked plots
 
 
-def paint_probe_graphs(painter, width: int, height: int, graphs: list[dict], frame_idx: int) -> None:
-    """Draw stacked intensity-vs-time mini-plots into the top-right corner of a
-    (width × height) pixel area. Each graph dict holds 'label', 'color' and
-    'trace' (per-frame intensity array); frame_idx positions the playhead.
-    Painter must already be in device-pixel coordinates."""
-    font = painter.font()
-    font.setPointSize(7)
-    painter.setFont(font)
+# Mini-plot (width, height) in device pixels for each GraphOptions.size.
+_GRAPH_SIZES = {"small": (_GRAPH_W, _GRAPH_H), "medium": (280, 110), "large": (400, 160)}
+_GRAPH_DB_FLOOR = -40.0  # bottom of a log-scale plot, dB below the peak
 
-    y = _GRAPH_MARGIN
-    for i, g in enumerate(graphs):
-        if y + _GRAPH_H > height - _GRAPH_MARGIN:
-            # Viewport too short for the rest. Say how many are hidden rather
-            # than silently dropping them — otherwise a short window reads as
-            # "these are all the probes". Export Graphs… always shows every one.
-            painter.setPen(QPen(QColor("#cccccc")))
-            painter.drawText(
-                width - _GRAPH_W - _GRAPH_MARGIN, y + 10,
-                f"+{len(graphs) - i} more (taller window or Export Graphs…)",
-            )
-            break
-        trace = g["trace"]
-        n = len(trace)
-        color = QColor(g["color"])
-        rect = QRectF(width - _GRAPH_W - _GRAPH_MARGIN, y, _GRAPH_W, _GRAPH_H)
 
-        painter.setPen(QPen(color, 1))
-        painter.setBrush(QColor(0, 0, 0, 160))
-        painter.drawRect(rect)
+def _graph_size(options: GraphOptions) -> tuple[int, int]:
+    return _GRAPH_SIZES.get(options.size, _GRAPH_SIZES["small"])
 
-        vmax = max(float(trace.max()), 1e-30)
-        plot = rect.adjusted(4, 14, -4, -4)
-        pts = [
-            QPointF(
-                plot.left() + plot.width() * i / max(n - 1, 1),
-                plot.bottom() - plot.height() * float(v) / vmax,
-            )
-            for i, v in enumerate(trace)
-        ]
-        painter.setBrush(Qt.NoBrush)
+
+def _graph_y(graph: dict) -> np.ndarray:
+    return np.asarray(graph["trace"], dtype=np.float64)
+
+
+def _graph_peak(graph: dict) -> float:
+    y = _graph_y(graph)
+    return max(float(np.abs(y).max()) if len(y) else 0.0, 1e-30)
+
+
+def _graph_points(graph: dict, plot: QRectF, peak: float, log_scale: bool) -> list[QPointF]:
+    """The trace as plot-area points. Linear: 0 at the bottom (or the middle
+    for a signed trace) and ``peak`` at the top. Log: 0 dB (the peak) at the
+    top, _GRAPH_DB_FLOOR at the bottom."""
+    y = _graph_y(graph)
+    n = len(y)
+    if graph.get("signed"):
+        frac = 0.5 + 0.5 * y / peak
+    elif log_scale:
+        db = 10.0 * np.log10(np.maximum(y, 0.0) / peak + 1e-300)
+        frac = 1.0 - np.clip(db, _GRAPH_DB_FLOOR, 0.0) / _GRAPH_DB_FLOOR
+    else:
+        frac = y / peak
+    frac = np.clip(frac, 0.0, 1.0)
+    return [
+        QPointF(plot.left() + plot.width() * i / max(n - 1, 1), plot.bottom() - plot.height() * float(f))
+        for i, f in enumerate(frac)
+    ]
+
+
+def _graph_readout(graph: dict, frame_idx: int) -> str:
+    """The numbers in a plot's title: the value under the playhead and the peak
+    for a time trace, the peak's wavelength for a spectrum."""
+    y = _graph_y(graph)
+    if not len(y):
+        return "no data (frames too coarse)" if not graph.get("time_axis", True) else "no data"
+    name = graph.get("y_name", "I")
+    if not graph.get("time_axis", True):
+        x = np.asarray(graph["x"])
+        return f"peak at {float(x[int(np.argmax(y))]):.4g} {graph.get('x_unit', '')}"
+    fi = max(0, min(frame_idx, len(y) - 1))
+    return f"{name}={float(y[fi]):.3g}  peak={float(np.abs(y).max()):.3g}"
+
+
+def _paint_graph_frame(painter, rect: QRectF, graphs: list[dict], frame_idx: int,
+                       options: GraphOptions, peak: float) -> None:
+    """One plot box holding every graph in ``graphs`` on the same axes."""
+    first = graphs[0]
+    painter.setPen(QPen(QColor(first["color"]) if len(graphs) == 1 else QColor("#bbbbbb"), 1))
+    painter.setBrush(QColor(0, 0, 0, 160))
+    painter.drawRect(rect)
+    title_h = 14 + 10 * (len(graphs) - 1)
+    plot = rect.adjusted(4, title_h, -4, -13)
+
+    log_scale = options.log_scale and not first.get("signed")
+    painter.setBrush(Qt.NoBrush)
+    if first.get("signed"):
+        painter.setPen(QPen(QColor(255, 255, 255, 50), 1))
+        painter.drawLine(QPointF(plot.left(), plot.center().y()), QPointF(plot.right(), plot.center().y()))
+    for g in graphs:
+        pts = _graph_points(g, plot, peak, log_scale)
+        painter.setPen(QPen(QColor(g["color"]), 1))
         if len(pts) > 1:
             painter.drawPolyline(QPolygonF(pts))
 
+    n = len(_graph_y(first))
+    if first.get("time_axis", True) and n:
         fi = max(0, min(frame_idx, n - 1))
         px = plot.left() + plot.width() * fi / max(n - 1, 1)
         painter.setPen(QPen(QColor(255, 255, 255, 140), 1, Qt.DashLine))
         painter.drawLine(QPointF(px, plot.top()), QPointF(px, plot.bottom()))
 
-        painter.setPen(QPen(color))
-        painter.drawText(
-            int(rect.left()) + 4, int(rect.top()) + 10,
-            f"{g['label']}  I={float(trace[fi]):.3g}  peak={vmax:.3g}",
-        )
-        y += _GRAPH_H + _GRAPH_GAP
+    for row, g in enumerate(graphs):
+        painter.setPen(QPen(QColor(g["color"])))
+        painter.drawText(int(rect.left()) + 4, int(rect.top()) + 10 + 10 * row,
+                         f"{g['label']}  {_graph_readout(g, frame_idx)}")
+
+    # Axis ends: the x range along the bottom, the y scale in the corner.
+    painter.setPen(QPen(QColor("#9a9a9a")))
+    x = first.get("x")
+    if x is not None and len(x):
+        unit = first.get("x_unit", "")
+        baseline = int(rect.bottom()) - 3
+        painter.drawText(int(plot.left()), baseline, f"{float(x[0]):.4g}")
+        right = f"{float(x[-1]):.4g} {unit}"
+        painter.drawText(int(plot.right()) - painter.fontMetrics().horizontalAdvance(right), baseline, right)
+    if log_scale:
+        scale = f"dB, {_GRAPH_DB_FLOOR:.0f} to 0"
+        painter.drawText(int(plot.center().x()) - painter.fontMetrics().horizontalAdvance(scale) // 2,
+                         int(rect.bottom()) - 3, scale)
 
 
-def render_probe_graphs_image(graphs: list[dict], frame_idx: int) -> QImage:
+def paint_probe_graphs(painter, width: int, height: int, graphs: list[dict], frame_idx: int,
+                       options: GraphOptions | None = None) -> None:
+    """Draw the probe mini-plots into the top-right corner of a (width × height)
+    pixel area: one plot per probe stacked downwards, or all probes in a single
+    plot when ``options.overlay`` is set.
+
+    Each graph dict holds 'label', 'color' and 'trace' (the y values), plus
+    optionally 'x' and 'x_unit' (axis-end labels), 'y_name', 'signed' and
+    'time_axis' — see fdtd_sim.probe_graph_series. frame_idx positions the
+    playhead on time traces. Painter must already be in device-pixel
+    coordinates."""
+    options = options or GraphOptions()
+    if not graphs:
+        return
+    font = painter.font()
+    font.setPointSize(7)
+    painter.setFont(font)
+    graph_w, graph_h = _graph_size(options)
+    left = width - graph_w - _GRAPH_MARGIN
+    shared_peak = max(_graph_peak(g) for g in graphs)
+
+    if options.overlay:
+        box_h = graph_h + 10 * (len(graphs) - 1)
+        _paint_graph_frame(painter, QRectF(left, _GRAPH_MARGIN, graph_w, box_h),
+                           graphs, frame_idx, options, shared_peak)
+        return
+
+    y = _GRAPH_MARGIN
+    for i, g in enumerate(graphs):
+        if y + graph_h > height - _GRAPH_MARGIN:
+            # Viewport too short for the rest. Say how many are hidden rather
+            # than silently dropping them — otherwise a short window reads as
+            # "these are all the probes". Export Graphs… always shows every one.
+            painter.setPen(QPen(QColor("#cccccc")))
+            painter.drawText(left, y + 10,
+                             f"+{len(graphs) - i} more (taller window, Overlaid, or Export Graphs…)")
+            break
+        peak = shared_peak if options.shared_scale else _graph_peak(g)
+        _paint_graph_frame(painter, QRectF(left, y, graph_w, graph_h), [g], frame_idx, options, peak)
+        y += graph_h + _GRAPH_GAP
+
+
+def render_probe_graphs_image(graphs: list[dict], frame_idx: int,
+                              options: GraphOptions | None = None) -> QImage:
     """Render the probe graphs alone (no field behind them) to a QImage —
     the 'export separately' path."""
-    w = _GRAPH_W + 2 * _GRAPH_MARGIN
-    h = max(1, len(graphs)) * (_GRAPH_H + _GRAPH_GAP) - _GRAPH_GAP + 2 * _GRAPH_MARGIN
+    options = options or GraphOptions()
+    graph_w, graph_h = _graph_size(options)
+    count = max(1, len(graphs))
+    w = graph_w + 2 * _GRAPH_MARGIN
+    if options.overlay:
+        h = graph_h + 10 * (count - 1) + 2 * _GRAPH_MARGIN
+    else:
+        h = count * (graph_h + _GRAPH_GAP) - _GRAPH_GAP + 2 * _GRAPH_MARGIN
     img = QImage(w, h, QImage.Format_RGB888)
     img.fill(QColor("#1e1e1e"))
     painter = QPainter(img)
-    paint_probe_graphs(painter, w, h, graphs, frame_idx)
+    paint_probe_graphs(painter, w, h, graphs, frame_idx, options)
     painter.end()
     return img
 
@@ -389,6 +487,7 @@ class FieldView(QGraphicsView):
         self._n_eff: float = 1.0                  # phase index for µm→time conversion
         self._probe_graphs: list[dict] = []       # see paint_probe_graphs
         self._probe_graph_frame: int = 0
+        self._probe_graph_options = GraphOptions()
 
         # Placeholder label parented to the viewport widget so it sits inside
         # the scene area rather than over the frame/scrollbars.
@@ -538,7 +637,8 @@ class FieldView(QGraphicsView):
         # Probe intensity graphs, painted into the viewport corner so they're
         # part of the rendered canvas — grab() and the GIF export include them.
         if self._probe_graphs:
-            paint_probe_graphs(painter, vp_w, vp_h, self._probe_graphs, self._probe_graph_frame)
+            paint_probe_graphs(painter, vp_w, vp_h, self._probe_graphs, self._probe_graph_frame,
+                               self._probe_graph_options)
 
         painter.restore()
 
@@ -636,9 +736,12 @@ class FieldView(QGraphicsView):
 
     # -- probe graphs ----------------------------------------------------------
 
-    def set_probe_graphs(self, graphs: list[dict]) -> None:
-        """Set (or clear, with []) the intensity graphs painted over the field."""
+    def set_probe_graphs(self, graphs: list[dict], options: GraphOptions | None = None) -> None:
+        """Set (or clear, with []) the probe graphs painted over the field, and
+        optionally how they are drawn."""
         self._probe_graphs = list(graphs)
+        if options is not None:
+            self._probe_graph_options = options
         self.viewport().update()
 
     def set_probe_graph_frame(self, frame_idx: int) -> None:
@@ -1280,7 +1383,7 @@ class FdtdWindow(QMainWindow):
         self.mode_core_width_spin = QDoubleSpinBox()
         self.mode_core_width_spin.setDecimals(3)
         self.mode_core_width_spin.setRange(0.05, 50.0)
-        self.mode_core_width_spin.setValue(0.5)
+        self.mode_core_width_spin.setValue(self.document.waveguide_width_um())
         self.mode_core_width_spin.setToolTip(
             "Lateral width of the waveguide core for this standalone cross-section solve "
             "(drawn as the core outline on the profile). Independent of the layout — set "
@@ -1652,6 +1755,49 @@ class FdtdWindow(QMainWindow):
         self.probe_table.itemChanged.connect(self._on_probe_table_item_changed)
         layout.addWidget(self.probe_table)
 
+        # How the probe graphs are drawn. Pure presentation over the recorded
+        # run, so every control redraws at once without re-running.
+        graph_row = QHBoxLayout()
+        graph_row.addWidget(QLabel("Graphs:"))
+        self.graph_quantity_combo = QComboBox()
+        for key, label in zip(GRAPH_QUANTITIES, _GRAPH_QUANTITY_LABELS):
+            self.graph_quantity_combo.addItem(label, key)
+        self.graph_quantity_combo.setToolTip(
+            "What each probe graph plots. Intensity |Ez|² and Field Ez are against time. "
+            "Energy passed is the running total of intensity, so the final values of two "
+            "probes compare a split directly. Spectrum is the field's power against "
+            "wavelength, around the run wavelength."
+        )
+        graph_row.addWidget(self.graph_quantity_combo)
+        self.graph_log_check = QCheckBox("Log (dB)")
+        self.graph_log_check.setToolTip(
+            "Plot in dB below the peak, down to −40 dB, so weak signals next to a strong "
+            "one stay visible. Does not apply to Field Ez, which is signed."
+        )
+        graph_row.addWidget(self.graph_log_check)
+        self.graph_shared_check = QCheckBox("Same scale")
+        self.graph_shared_check.setToolTip(
+            "Give every probe graph the same vertical range (the largest peak), so their "
+            "heights compare directly. Off: each graph fills its own plot."
+        )
+        graph_row.addWidget(self.graph_shared_check)
+        self.graph_overlay_check = QCheckBox("Overlaid")
+        self.graph_overlay_check.setToolTip(
+            "Draw every probe in one plot on shared axes instead of one plot per probe."
+        )
+        graph_row.addWidget(self.graph_overlay_check)
+        self.graph_size_combo = QComboBox()
+        for key in GRAPH_SIZES:
+            self.graph_size_combo.addItem(key.capitalize(), key)
+        self.graph_size_combo.setToolTip("Size of the graphs drawn over the field view and in exports.")
+        graph_row.addWidget(self.graph_size_combo)
+        graph_row.addStretch(1)
+        layout.addLayout(graph_row)
+        self.graph_quantity_combo.currentIndexChanged.connect(lambda _i: self._refresh_probe_graphs())
+        self.graph_size_combo.currentIndexChanged.connect(lambda _i: self._refresh_probe_graphs())
+        for check in (self.graph_log_check, self.graph_shared_check, self.graph_overlay_check):
+            check.toggled.connect(lambda _on: self._refresh_probe_graphs())
+
         self.run_button = QPushButton("Compute")
         self.run_button.setToolTip(
             "Run the FDTD propagation with the parameters and sources above. Runs off the "
@@ -1720,8 +1866,9 @@ class FdtdWindow(QMainWindow):
         self.export_graphs_button = QPushButton("Export Graphs…")
         self.export_graphs_button.setEnabled(False)
         self.export_graphs_button.setToolTip(
-            "Export the probe intensity graphs separately from the field view: a PNG of "
-            "the graphs alone, or a CSV of time (fs) and per-probe intensity for external "
+            "Export the probe graphs separately from the field view, as chosen in the "
+            "Graphs row: a PNG of the graphs alone, or a CSV of the x axis (time in fs, or "
+            "wavelength for a spectrum) and one column per probe for external "
             "plotting. (Graphs ticked in the probe table are also drawn over the field "
             "view itself, so Save GIF… exports them as part of the sim canvas.) Enabled "
             "once a run gives at least one probe a trace."
@@ -1823,7 +1970,9 @@ class FdtdWindow(QMainWindow):
             row, _COL_ENERGY, QTableWidgetItem(f"{photon_energy_ev_from_wavelength_um(wavelength_um):.4f}")
         )
         self.source_table.setItem(row, _COL_PHOTON_COUNT, QTableWidgetItem("1"))
-        self.source_table.setItem(row, _COL_CORE_WIDTH, QTableWidgetItem("0.5"))
+        self.source_table.setItem(
+            row, _COL_CORE_WIDTH, QTableWidgetItem(f"{self.document.waveguide_width_um():g}")
+        )
         self.source_table.setItem(row, _COL_SCRIPT, QTableWidgetItem(""))
         self.source_table.setItem(row, _COL_BETA, QTableWidgetItem("0.8"))
         self.source_table.setItem(row, _COL_TRACK_DIR, QTableWidgetItem("0.0"))
@@ -1971,7 +2120,7 @@ class FdtdWindow(QMainWindow):
                           "of a splitter).",
             _PCOL_I_PEAK: "Largest intensity seen at this probe across the run — when the "
                           "pulse passing through it was brightest.",
-            _PCOL_GRAPH: "Draw this probe's intensity-vs-time trace over the field view, "
+            _PCOL_GRAPH: "Draw this probe's graph (see the Graphs row below) over the field view, "
                          "in the probe's colour. Graphs are part of the rendered canvas, "
                          "so they appear in an exported GIF too.",
         }
@@ -2016,7 +2165,7 @@ class FdtdWindow(QMainWindow):
         remove_button.clicked.connect(lambda checked=False, m=marker: self._on_remove_probe_row(m))
         self.probe_table.setCellWidget(row, _PCOL_REMOVE, remove_button)
 
-        self._probe_rows.append({"marker": marker, "trace": None})
+        self._probe_rows.append({"marker": marker, "trace": None, "field": None})
         # A probe added after a run should measure that run immediately —
         # probes are post-processing over the recorded movie, not part of the
         # solve, so there's nothing to re-run.
@@ -2075,20 +2224,22 @@ class FdtdWindow(QMainWindow):
         run. With no result yet, it just clears the readouts."""
         result, sim = self._last_result, self._last_sim
         for row, row_data in enumerate(self._probe_rows):
-            trace = None
+            trace = field = None
             if result is not None and sim is not None:
                 pos = row_data["marker"].pos()
                 try:
-                    trace = probe_intensity_trace(
+                    field = probe_field_trace(
                         sim, result, pos.x(), pos.y(),
                         origin_um=getattr(self, "_field_origin_um", (0.0, 0.0)),
                     )
+                    trace = None if field is None else field * field
                 except Exception:
                     # A probe must never break the window: a result stub whose
                     # movie/grid isn't shaped as expected just leaves this probe
                     # unmeasured rather than raising into the UI.
-                    trace = None
+                    trace = field = None
             row_data["trace"] = trace
+            row_data["field"] = field
         self._update_probe_result_cells()
         self._refresh_probe_graphs()
 
@@ -2118,27 +2269,63 @@ class FdtdWindow(QMainWindow):
         finally:
             self._updating_probe_cells = False
 
+    def _graph_options(self) -> GraphOptions:
+        return GraphOptions(
+            quantity=self.graph_quantity_combo.currentData() or "intensity",
+            log_scale=self.graph_log_check.isChecked(),
+            shared_scale=self.graph_shared_check.isChecked(),
+            overlay=self.graph_overlay_check.isChecked(),
+            size=self.graph_size_combo.currentData() or "small",
+        )
+
+    def _frame_dt_fs(self, n_frames: int) -> float:
+        """Time between recorded frames, so graph x axes are physical time
+        rather than a frame index. Taken from the frame times the run recorded
+        (a spectrum's wavelengths scale with it, so it must be exact); results
+        without them fall back to the run duration over the frame count."""
+        try:
+            times = np.asarray(self._last_result.monitor_times["field"], dtype=float)
+            if len(times) > 1 and times[1] > times[0]:
+                return float(times[1] - times[0]) * 1e15
+        except (AttributeError, KeyError, TypeError, IndexError, ValueError):
+            pass
+        run_fs = (
+            self._last_params.resolved_run_time_fs()
+            if self._last_params is not None else float(n_frames)
+        )
+        return run_fs / max(n_frames - 1, 1)
+
     def _probe_graph_data(self) -> list[dict]:
         """The graph descriptors for probes that have a trace and are ticked —
-        the input both the field-view overlay and the standalone export use."""
+        the one input the field-view overlay, the PNG and the CSV all use, so
+        they always show the same quantity."""
+        quantity = self._graph_options().quantity
+        wavelength_um = self._last_params.wavelength_um if self._last_params is not None else None
         graphs = []
         for row, row_data in enumerate(self._probe_rows):
-            trace = row_data["trace"]
-            if trace is None or len(trace) == 0:
+            field = row_data.get("field")
+            if field is None:
+                # Traces set directly (no signed field kept) can only be intensity.
+                trace = row_data["trace"]
+                field = None if trace is None else np.sqrt(np.maximum(np.asarray(trace, dtype=float), 0.0))
+            if field is None or len(field) == 0:
                 continue
             check = self.probe_table.cellWidget(row, _PCOL_GRAPH)
             if check is not None and not check.isChecked():
                 continue
+            series = probe_graph_series(field, quantity, self._frame_dt_fs(len(field)), wavelength_um)
             graphs.append({
                 "label": f"P{row + 1}",
                 "color": _probe_color(row),
-                "trace": trace,
+                "trace": series["y"],
+                "quantity": quantity,
+                **{k: series[k] for k in ("x", "x_unit", "y_name", "signed", "time_axis")},
             })
         return graphs
 
     def _refresh_probe_graphs(self) -> None:
         graphs = self._probe_graph_data()
-        self.run_view.set_probe_graphs(graphs)
+        self.run_view.set_probe_graphs(graphs, self._graph_options())
         self.run_view.set_probe_graph_frame(self.frame_slider.value())
         self.export_graphs_button.setEnabled(
             any(r["trace"] is not None for r in self._probe_rows)
@@ -2157,7 +2344,7 @@ class FdtdWindow(QMainWindow):
             )
             return
         path, selected = QFileDialog.getSaveFileName(
-            self, "Export Probe Graphs", "probe_intensity.png",
+            self, "Export Probe Graphs", f"probe_{self._graph_options().quantity}.png",
             "PNG image (*.png);;CSV data (*.csv)",
         )
         if not path:
@@ -2171,7 +2358,9 @@ class FdtdWindow(QMainWindow):
             if as_csv:
                 self._export_graphs_csv(path, graphs)
             else:
-                image = render_probe_graphs_image(graphs, self.frame_slider.value())
+                image = render_probe_graphs_image(
+                    graphs, self.frame_slider.value(), self._graph_options()
+                )
                 if not image.save(path, "PNG"):
                     raise RuntimeError(f"Qt could not write {path}")
         except Exception as exc:
@@ -2180,22 +2369,22 @@ class FdtdWindow(QMainWindow):
         self.run_status_label.setText(f"Saved {len(graphs)} probe graph(s) to {path}")
 
     def _export_graphs_csv(self, path: str, graphs: list[dict]) -> None:
-        """Time (fs) plus one intensity column per graphed probe. Frame times
-        come from the run's own duration and frame count, so the x axis is
-        physical time rather than a frame index."""
+        """The x axis (time in fs, or wavelength in µm for a spectrum) plus one
+        column per graphed probe, named for the quantity plotted. Always the
+        plain values, whatever the on-screen scale."""
         import csv
 
         n = max(len(g["trace"]) for g in graphs)
-        run_fs = (
-            self._last_params.resolved_run_time_fs()
-            if self._last_params is not None else float(n)
-        )
-        dt_fs = run_fs / max(n - 1, 1)
+        longest = max(graphs, key=lambda g: len(g["trace"]))
+        x = longest.get("x")
+        if x is None:
+            x = np.arange(n) * self._frame_dt_fs(n)
+        x_name = "time_fs" if longest.get("time_axis", True) else "wavelength_um"
         with open(path, "w", newline="") as fh:
             writer = csv.writer(fh)
-            writer.writerow(["time_fs"] + [f"{g['label']}_intensity" for g in graphs])
+            writer.writerow([x_name] + [f"{g['label']}_{g.get('quantity', 'intensity')}" for g in graphs])
             for i in range(n):
-                row = [f"{i * dt_fs:.6g}"]
+                row = [f"{float(x[i]):.6g}"]
                 for g in graphs:
                     trace = g["trace"]
                     row.append(f"{float(trace[i]):.6g}" if i < len(trace) else "")
@@ -2227,6 +2416,11 @@ class FdtdWindow(QMainWindow):
             region_selected_only=self.run_region_check.isChecked(),
             sources=params.sources,
             probes=self._collect_probe_specs(),
+            graph_quantity=self._graph_options().quantity,
+            graph_log_scale=self.graph_log_check.isChecked(),
+            graph_shared_scale=self.graph_shared_check.isChecked(),
+            graph_overlay=self.graph_overlay_check.isChecked(),
+            graph_size=self._graph_options().size,
             mode_wavelength_um=self.mode_wavelength_spin.value(),
             mode_core_width_um=self.mode_core_width_spin.value(),
             mode_num_modes=self.mode_num_modes_spin.value(),
@@ -2254,6 +2448,15 @@ class FdtdWindow(QMainWindow):
         # (whose SimulationConfig had no probes field) loading cleanly.
         for probe in getattr(config, "probes", ()):
             self._restore_probe(probe)
+        # An unknown key (a project from a newer phidler) leaves the default.
+        for combo, key in ((self.graph_quantity_combo, config.graph_quantity),
+                           (self.graph_size_combo, config.graph_size)):
+            index = combo.findData(key)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        self.graph_log_check.setChecked(config.graph_log_scale)
+        self.graph_shared_check.setChecked(config.graph_shared_scale)
+        self.graph_overlay_check.setChecked(config.graph_overlay)
 
         self.mode_wavelength_spin.setValue(config.mode_wavelength_um)
         self.mode_core_width_spin.setValue(config.mode_core_width_um)

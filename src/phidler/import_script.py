@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
+import inspect
 import re
 from pathlib import Path
 
@@ -10,8 +12,26 @@ from .model.placed_instance import ArraySpec
 from .pdk_catalog import ComponentSpec
 
 _INST_VAR_RE = re.compile(r"inst_(\d+)")
-_SETTINGS_LINE_RE = re.compile(r"^(platform_name|core_index|clad_index|thickness_um|wavelength_um|cross_section):\s*(.+)$")
-_SETTINGS_FLOAT_FIELDS = {"core_index", "clad_index", "thickness_um", "wavelength_um"}
+_SETTINGS_LINE_RE = re.compile(
+    r"^(platform_name|core_index|clad_index|thickness_um|wavelength_um|cross_section|waveguide_width_um):\s*(.+)$"
+)
+_SETTINGS_FLOAT_FIELDS = {"core_index", "clad_index", "thickness_um", "wavelength_um", "waveguide_width_um"}
+# The variable export_script binds the project-width cross-section to.
+_WAVEGUIDE_NAME = "WAVEGUIDE"
+
+
+def _is_waveguide_ref(node: ast.expr) -> bool:
+    return isinstance(node, ast.Name) and node.id == _WAVEGUIDE_NAME
+
+
+def _default_cross_section(component_spec: str):
+    import gdsfactory as gf
+
+    factory = gf.get_active_pdk().cells.get(component_spec)
+    try:
+        return inspect.signature(factory).parameters["cross_section"].default
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 class ScriptParseError(ValueError):
@@ -151,6 +171,7 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
     except SyntaxError as exc:
         raise ScriptParseError(f"{path} is not valid Python: {exc}") from exc
 
+    settings = _parse_settings_docstring(tree)
     custom_specs: dict[str, ComponentSpec] = {}
     custom_paths: list[str] = []
     pending_instances: dict[str, dict] = {}
@@ -175,11 +196,33 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
             target = node.targets[0]
             if target.id == "top" and _is_attr_call(node.value, "gf", "Component"):
                 continue
+            if target.id == _WAVEGUIDE_NAME and _is_attr_call(node.value, "gf", "get_cross_section"):
+                # The project waveguide width. The line itself wins over the
+                # docstring header, which a hand edit can leave stale.
+                call = node.value
+                updates = {}
+                if call.args:
+                    updates["cross_section"] = _literal(call.args[0], "WAVEGUIDE cross-section")
+                for kw in call.keywords:
+                    if kw.arg == "width":
+                        updates["waveguide_width_um"] = float(_literal(kw.value, "WAVEGUIDE width"))
+                settings = dataclasses.replace(settings, **updates)
+                continue
             if _is_add_ref_get_component(node.value):
                 var_name = target.id
                 inner = node.value.args[0]
                 component_spec = inner.args[0].value
-                kwargs = {kw.arg: _literal(kw.value, f"{var_name}.{kw.arg}") for kw in inner.keywords}
+                # cross_section=WAVEGUIDE is the project width, which the
+                # document applies itself; only the cross-section *name* is kept,
+                # and only where it isn't already the component's default.
+                kwargs = {
+                    kw.arg: _literal(kw.value, f"{var_name}.{kw.arg}")
+                    for kw in inner.keywords
+                    if not _is_waveguide_ref(kw.value)
+                }
+                if any(_is_waveguide_ref(kw.value) for kw in inner.keywords):
+                    if _default_cross_section(component_spec) != settings.cross_section:
+                        kwargs["cross_section"] = settings.cross_section
                 # Array keywords (if any) live on the outer add_ref call, not on
                 # the inner get_component — columns/rows/column_pitch/row_pitch.
                 array_kwargs = {
@@ -226,7 +269,10 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
                 meander_amplitude_um = None
                 for kw in call.keywords:
                     if kw.arg == "cross_section":
-                        cross_section = _literal(kw.value, "route cross_section")
+                        cross_section = (
+                            settings.cross_section if _is_waveguide_ref(kw.value)
+                            else _literal(kw.value, "route cross_section")
+                        )
                     elif kw.arg == "steps":
                         meander_amplitude_um = _meander_amplitude_from_steps(kw.value)
                 pending_routes.append(
@@ -246,7 +292,10 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
                 cross_section = "strip"
                 for kw in call.keywords:
                     if kw.arg == "cross_section":
-                        cross_section = _literal(kw.value, "route cross_section")
+                        cross_section = (
+                            settings.cross_section if _is_waveguide_ref(kw.value)
+                            else _literal(kw.value, "route cross_section")
+                        )
                 pending_routes.append(
                     {
                         "a_var": a_var,
@@ -279,6 +328,10 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
         scene.remove_route_item(route_id)
     scene.clear_annotation_items()  # clear_all() emptied the notes; drop their items too
     scene.clear_reference_item()
+
+    # Before the replay: the project waveguide width decides how the instances
+    # and routes below are drawn.
+    document.project_settings = settings
 
     var_to_id: dict[str, int] = {}
     max_id = 0
@@ -324,8 +377,6 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
 
     for custom_path in custom_paths:
         document.record_custom_component_path(custom_path)
-
-    document.project_settings = _parse_settings_docstring(tree)
 
     return custom_specs
 
