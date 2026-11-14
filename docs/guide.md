@@ -189,6 +189,11 @@ automatically.
   horizontally / vertically (about either screen axis). You can also use the
   on-canvas transform overlay (see below).
 - **Delete / Copy / Paste**: `Delete`, `Ctrl+C`, `Ctrl+V`.
+- **Duplicate**: `Ctrl+D` (also in the Edit and right-click menus) places a copy
+  of each selected component two grid steps down and to the right of it, with the
+  same parameters, rotation, flip, scale and array. The copies become the
+  selection, so pressing `Ctrl+D` again steps out a row. It is one undo step.
+  Routes are not copied.
 - **Cancel with `Esc`**: backs out of whatever you're in the middle of:
   an armed placement, the measure, source or probe tool, or a route. `Esc` works no
   matter which panel has focus (you don't have to click the canvas first).

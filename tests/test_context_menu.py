@@ -76,6 +76,7 @@ def test_build_canvas_context_menu_contains_expected_actions(qapp):
     assert win.delete_action in actions
     assert win.copy_action in actions
     assert win.paste_action in actions
+    assert win.duplicate_action in actions
     assert win.select_all_action in actions
     assert win.zoom_fit_action in actions
     assert win.zoom_selection_action in actions
