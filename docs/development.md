@@ -184,6 +184,10 @@ packaging inputs uploads them as workflow artifacts. The nightly schedule (or a
 manual run) also replaces the rolling `nightly` pre-release with all four. That
 release job only runs if every build and smoke test passes.
 
+The scheduled run builds nothing when there is nothing new: it is skipped unless
+`main` here or photonfdtd's `main` has moved since the last published nightly.
+A manual run always rebuilds.
+
 All of them install the same stack: photonfdtd (the AppImage from GitHub
 `main`'s current HEAD, so each nightly gets the newest solver; the others from
 PyPI), which pulls in JAX's CPU build, the FDTD extras (matplotlib), then the

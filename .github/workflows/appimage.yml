@@ -8,7 +8,8 @@ name: Build Linux packages
 # packaging/flatpak/). deb / rpm: a relocatable CPython with the same stack under
 # /opt/phidler, packed by nfpm (see packaging/linux/). On the nightly schedule
 # (and manual runs) it also publishes a rolling `nightly` pre-release with all
-# of them attached.
+# of them attached. The scheduled run skips the builds when neither `main` nor
+# photonfdtd's `main` has moved since the last nightly (see the `changes` job).
 #
 # Runners are pinned to ubuntu-24.04 rather than ubuntu-latest (which moves to
 # Ubuntu 26 from Oct 2026): the Flatpak job's apt packages and its AppArmor
@@ -38,7 +39,44 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    # Decides whether the packages need building. Pushes, PRs and manual runs
+    # always build. The nightly schedule builds only when something it packages
+    # has moved since the last published nightly: this repo's `main` (the commit
+    # the rolling `nightly` tag points at) or photonfdtd's `main` (the AppImage
+    # bundles its HEAD; the commit is recorded in the release notes). Both are
+    # only updated by a successful publish, so a failed nightly is retried the
+    # next night.
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      photonfdtd: ${{ steps.decide.outputs.photonfdtd }}
+    steps:
+      - name: Compare with the last nightly
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          photonfdtd=$(git ls-remote https://github.com/ngpaladi/photonfdtd.git HEAD | awk 'NR==1{print $1}' || true)
+          echo "photonfdtd=$photonfdtd" >> "$GITHUB_OUTPUT"
+          build=true
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # Any lookup that fails (no tag yet, API error) leaves a value empty,
+            # which never matches, so the build runs.
+            nightly=$(gh api "repos/${{ github.repository }}/commits/nightly" --jq .sha 2>/dev/null || true)
+            notes=$(gh release view nightly --repo "${{ github.repository }}" --json body --jq .body 2>/dev/null || true)
+            echo "main: ${{ github.sha }}  nightly: ${nightly:-none}  photonfdtd: ${photonfdtd:-unknown}"
+            if [ "$nightly" = "${{ github.sha }}" ] && [ -n "$photonfdtd" ] \
+               && printf '%s' "$notes" | grep -qF "photonfdtd \`$photonfdtd\`"; then
+              build=false
+              echo "Nothing changed on main (or photonfdtd main) since the last nightly; skipping the build." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -91,6 +129,8 @@ jobs:
           if-no-files-found: error
 
   flatpak:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-24.04
     env:
       APP_ID: io.github.ngpaladi.Phidler
@@ -130,6 +170,8 @@ jobs:
           if-no-files-found: error
 
   linux-packages:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -189,7 +231,7 @@ jobs:
     # Only on the schedule or a manual run — ordinary pushes just produce the CI
     # artifacts above. Runs after (and only if) the build + smoke test passed, so a broken
     # build is never released. Scoped contents:write lives here, not on the builds.
-    needs: [build, flatpak, linux-packages]
+    needs: [changes, build, flatpak, linux-packages]
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     permissions:
@@ -212,6 +254,6 @@ jobs:
           gh release delete nightly --yes --cleanup-tag || true
           gh release create nightly Phidler-*.AppImage Phidler-*.flatpak phidler_*.deb phidler-*.rpm \
             --title "Nightly build ($(date -u +%Y-%m-%d))" \
-            --notes "Automated nightly build from \`${{ github.sha }}\`. All four packages bundle phidler and the FDTD simulation stack (photonfdtd + JAX + matplotlib). **AppImage:** self-contained, no install — \`chmod +x\` it and run. **Flatpak:** \`flatpak install --user Phidler-x86_64.flatpak\` (pulls the KDE runtime from Flathub), then \`flatpak run io.github.ngpaladi.Phidler\`. **.deb / .rpm:** \`sudo apt install ./phidler_*_amd64.deb\` or \`sudo dnf install ./phidler-*.x86_64.rpm\`, then run \`phidler\`." \
+            --notes "Automated nightly build from \`${{ github.sha }}\`, with photonfdtd \`${{ needs.changes.outputs.photonfdtd }}\`. All four packages bundle phidler and the FDTD simulation stack (photonfdtd + JAX + matplotlib). **AppImage:** self-contained, no install — \`chmod +x\` it and run. **Flatpak:** \`flatpak install --user Phidler-x86_64.flatpak\` (pulls the KDE runtime from Flathub), then \`flatpak run io.github.ngpaladi.Phidler\`. **.deb / .rpm:** \`sudo apt install ./phidler_*_amd64.deb\` or \`sudo dnf install ./phidler-*.x86_64.rpm\`, then run \`phidler\`." \
             --prerelease \
             --target "${{ github.sha }}"
