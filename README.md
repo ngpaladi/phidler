@@ -230,7 +230,10 @@ so they can be regenerated after future UI changes.
   they don't change the active PDK or any geometry on their own.
   The one setting there that does change geometry is **Waveguide width**: a
   single width applied to every route and component in the default
-  cross-section, also editable from the routing toolbar.
+  cross-section, also editable from the routing toolbar. With `lnoi_rib` as
+  the default cross-section (the Lithium Niobate platform picks it), it also
+  sets the width of the lithium niobate switch and phase shifter,
+  unless a cell's own `width` parameter says otherwise.
 
   <img src="docs/screenshots/project_settings_dialog.png" width="380" alt="Project Settings dialog with platform picker and the suggested-width disclaimer">
 - **Properties panel** (right dock): editing a selected instance's
@@ -365,7 +368,10 @@ so they can be regenerated after future UI changes.
     and the tab runs operating points, voltage and wavelength sweeps, and
     time-domain runs with square-wave, sine, pulse or PRBS pad drives through
     the modulators' and detectors' bandwidths. The lithium niobate cells sit
-    in the palette under "Lithium Niobate (photonfdtd)". Walkthrough:
+    in the palette under "Lithium Niobate (photonfdtd)". Among them,
+    `lnoi_mzi_switch` starts with a 50:50 beamsplitter. Its couplers are sized
+    for a 50:50 split from a mode solve at whatever width it is drawn at.
+    Walkthrough:
     [docs/chip_simulation.md](docs/chip_simulation.md).
   - **Component files** (`*.pcomp.json`): a part's layout, ports, pins and
     circuit model (solved physics, S-parameter table, recipe, optional

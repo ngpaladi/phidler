@@ -89,11 +89,35 @@ On startup (and via File > New), Phidler shows a Project Settings dialog:
   suggested** copies the suggested width below into it. The same control is on
   the routing toolbar as **Width**. What it does not change:
     - components in another cross-section (nitride, metal, …);
-    - a component whose own `width` you set to something else;
+    - a component whose own `width` you set to something else (a `width`
+      equal to the project width still follows it);
     - composite parts (several `mzi` and heater variants) that gdsfactory can
       only build at the PDK width, and parts that fix their own widths (tapers,
       some crossings). They stay as the PDK draws them and the status bar names
       them.
+
+  The lithium niobate switch and phase shifter (Lithium Niobate (photonfdtd)
+  in the palette) are drawn in the `lnoi_rib` cross-section, which the
+  Lithium Niobate (LN) platform selects. With **lnoi_rib** as the default
+  cross-section the waveguide width applies to them as well; at PDK default
+  they keep their 1.2 µm ridge. The delta-beta coupler switch keeps its own
+  width, because its default length is three coupling lengths at 1.2 µm. The suggested width assumes a fully
+  etched symmetric slab, so it does not describe the LN rib (0.6 µm film,
+  0.3 µm etch); for that, set the width by hand.
+- **LN MZI switch** (`lnoi_mzi_switch`): a 2 × 2 Mach-Zehnder switch on x-cut
+  thin-film lithium niobate that starts with a 50:50 beamsplitter. A
+  directional coupler splits the input 50:50, the two arms run between
+  push-pull ground-signal-ground electrodes, and a second 50:50 coupler
+  recombines them. With `coupler_length` at 0 (the default), the coupler
+  length comes from a mode solve of the two coupled ridges at the switch's
+  `width` and `coupler_gap`. The split therefore stays 50:50 when the width
+  changes: about 276 µm at 1.2 µm wide and 153 µm at 1.0 µm, for a 1 µm gap.
+  The solve uses a 50 nm mesh, the same one as the Circuit tab's model; halving
+  the mesh moves the length by up to 2 %, which moves the split by about 0.03.
+  The fan-in and fan-out bends add a little coupling that the solve leaves out.
+  The first solve of a design takes a couple of seconds; after that it is
+  read from `~/.cache/phidler/lnoi_coupler_length.json`. Any other
+  `coupler_length` is drawn as given.
 
   The change is not on the undo stack; set the width back to reverse it.
 - **Etch / slab layers**: for rib waveguides, list the partial-etch layers

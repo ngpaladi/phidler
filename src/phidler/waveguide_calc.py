@@ -39,12 +39,13 @@ PLATFORM_PRESETS: dict[str, PlatformPreset] = {
     # equation reproduces to 3 significant figures (2.296), so this isn't a
     # single unverified number. Thin-film LN-on-insulator (TFLN) commercial
     # wafers commonly use ~300nm device-layer thickness; SiO2 cladding/box
-    # (n=1.44) is standard. No LN-specific cross_section exists in the
-    # generic PDK used here, so this defaults to "strip" same as silicon —
-    # this preset only changes the suggested-width estimate and project
-    # metadata, not the active PDK's actual material/layer set.
+    # (n=1.44) is standard. The cross-section is the LN ridge that
+    # phidler.chip_circuit registers from photonfdtd.lnoi ("lnoi_rib"), so
+    # the project waveguide width reaches the lithium niobate cells; the
+    # dialog falls back to "strip" when photonfdtd isn't installed. This
+    # preset doesn't change the active PDK's material/layer set.
     "Lithium Niobate (LN)": PlatformPreset(
-        "Lithium Niobate (LN)", core_index=2.211, clad_index=1.44, thickness_um=0.300, cross_section="strip"
+        "Lithium Niobate (LN)", core_index=2.211, clad_index=1.44, thickness_um=0.300, cross_section="lnoi_rib"
     ),
     # Lithium tantalate ordinary index at 1550nm: ~2.14, a standard
     # literature reference value (LiTaO3 has much lower birefringence than

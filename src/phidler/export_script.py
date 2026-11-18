@@ -53,6 +53,15 @@ def export_python_script(document: LayoutDocument, path: str) -> str:
             lines.append(f"load_custom_components({custom_path!r})")
         lines.append("")
 
+    from .chip_circuit import extra_cells
+
+    if any(inst.component_spec in extra_cells() for inst in document.instances.values()):
+        lines.append("# This design uses Phidler's lithium niobate cells (photonfdtd.lnoi).")
+        lines.append("from phidler.chip_circuit import register_cells")
+        lines.append("")
+        lines.append("register_cells()")
+        lines.append("")
+
     lines.append("top = gf.Component()")
     lines.append("")
     if s.waveguide_width_um:
@@ -74,7 +83,11 @@ def export_python_script(document: LayoutDocument, path: str) -> str:
             var_names[inst.id] = var_name
             emitted = {key: repr(value) for key, value in inst.kwargs.items()}
             if document.follows_project_width(inst.component_spec, inst.kwargs):
-                emitted["cross_section"] = WAVEGUIDE_NAME
+                if document.width_follower(inst.component_spec):
+                    # Takes the width as a number, not a cross-section.
+                    emitted.setdefault("width", repr(float(s.waveguide_width_um)))
+                else:
+                    emitted["cross_section"] = WAVEGUIDE_NAME
             kwargs_str = ", ".join(f"{key}={value}" for key, value in emitted.items())
             call = f"gf.get_component({inst.component_spec!r}" + (f", {kwargs_str}" if kwargs_str else "") + ")"
             transform = document.get_transform(inst.id)

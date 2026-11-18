@@ -1335,7 +1335,7 @@ class MainWindow(QMainWindow):
             inst_id,
             inst.component_spec,
             spec.signature,
-            inst.kwargs,
+            self.document.default_width_kwargs(inst.component_spec, inst.kwargs),
             columns=a.columns,
             rows=a.rows,
             column_pitch=a.column_pitch,

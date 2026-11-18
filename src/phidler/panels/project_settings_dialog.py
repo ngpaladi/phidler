@@ -186,7 +186,10 @@ class ProjectSettingsDialog(QDialog):
         self.core_index_spin.setValue(preset.core_index)
         self.clad_index_spin.setValue(preset.clad_index)
         self.thickness_spin.setValue(preset.thickness_um)
-        self.cross_section_combo.setCurrentText(preset.cross_section)
+        # A preset cross-section the PDK doesn't have (lnoi_rib without
+        # photonfdtd) falls back to strip.
+        available = self.cross_section_combo.findText(preset.cross_section) >= 0
+        self.cross_section_combo.setCurrentText(preset.cross_section if available else "strip")
 
     def _use_suggested_width(self) -> None:
         if self._suggested_width_um is not None:
