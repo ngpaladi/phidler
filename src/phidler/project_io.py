@@ -104,6 +104,20 @@ def load_project(path: str, document: LayoutDocument, scene) -> dict[str, Compon
         custom_specs.update(result.specs)
         document.record_custom_component_path(custom_path)
 
+    # Before the replay below: the project waveguide width decides how the
+    # instances and routes are drawn.
+    settings_data = data.get("project_settings")
+    if settings_data:
+        settings_data = dict(settings_data)
+        # asdict flattened the EtchLayer tuple to a list of dicts; rebuild them
+        # (absent in projects saved before etch layers -> the () default).
+        etch = settings_data.pop("etch_layers", None)
+        if etch is not None:
+            settings_data["etch_layers"] = tuple(EtchLayer(**e) for e in etch)
+        document.project_settings = ProjectSettings(**known_fields(ProjectSettings, settings_data))
+    else:
+        document.project_settings = ProjectSettings()
+
     max_id = 0
     for inst_data in data.get("instances", []):
         t = inst_data["transform"]
@@ -159,18 +173,6 @@ def load_project(path: str, document: LayoutDocument, scene) -> dict[str, Compon
         document.layers[info.key] = info
 
     document.bump_id_counter(max_id + 1)
-
-    settings_data = data.get("project_settings")
-    if settings_data:
-        settings_data = dict(settings_data)
-        # asdict flattened the EtchLayer tuple to a list of dicts; rebuild them
-        # (absent in projects saved before etch layers -> the () default).
-        etch = settings_data.pop("etch_layers", None)
-        if etch is not None:
-            settings_data["etch_layers"] = tuple(EtchLayer(**e) for e in etch)
-        document.project_settings = ProjectSettings(**settings_data)
-    else:
-        document.project_settings = ProjectSettings()
 
     sim_data = data.get("simulation_config")  # absent in projects saved before this feature
     if sim_data is not None:

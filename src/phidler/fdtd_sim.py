@@ -187,9 +187,9 @@ class ProbeSpec:
     graph: bool = True
 
 
-def probe_intensity_trace(sim: Any, result: Any, x_um: float, y_um: float,
-                          origin_um: tuple[float, float] = (0.0, 0.0)) -> Any:
-    """Per-recorded-frame intensity |Ez|² at the movie cell nearest (x_um, y_um).
+def probe_field_trace(sim: Any, result: Any, x_um: float, y_um: float,
+                      origin_um: tuple[float, float] = (0.0, 0.0)) -> Any:
+    """Per-recorded-frame field Ez (signed) at the movie cell nearest (x_um, y_um).
 
     Returns an (n_frames,) float array, or None when the point lies outside
     the simulated grid (e.g. a probe left behind from a whole-layout run when
@@ -216,8 +216,88 @@ def probe_intensity_trace(sim: Any, result: Any, x_um: float, y_um: float,
     ix = int(round(fx * (nx - 1)))
     iy = int(round(fy * (ny - 1)))
     z_idx = 0 if nz == 1 else nearest_z_index(sim.grid, 0.0)
-    trace = np.asarray(arr[:, ix, iy, z_idx], dtype=np.float64)
-    return trace * trace
+    return np.asarray(arr[:, ix, iy, z_idx], dtype=np.float64)
+
+
+def probe_intensity_trace(sim: Any, result: Any, x_um: float, y_um: float,
+                          origin_um: tuple[float, float] = (0.0, 0.0)) -> Any:
+    """Per-recorded-frame intensity |Ez|² at the probe: probe_field_trace
+    squared, or None when the point lies outside the simulated grid."""
+    field = probe_field_trace(sim, result, x_um, y_um, origin_um=origin_um)
+    return None if field is None else field * field
+
+
+# What a probe graph can plot, in the order the simulation window offers them.
+GRAPH_QUANTITIES = ("intensity", "field", "energy", "spectrum")
+GRAPH_SIZES = ("small", "medium", "large")
+_C0_UM_PER_FS = 0.299792458
+
+
+@dataclass(frozen=True)
+class GraphOptions:
+    """How the probe graphs are drawn. ``quantity`` is one of GRAPH_QUANTITIES;
+    ``log_scale`` plots in dB below the peak; ``shared_scale`` gives every probe
+    the same vertical range so they can be compared by eye; ``overlay`` draws
+    all probes in one plot instead of one plot each; ``size`` is one of
+    GRAPH_SIZES."""
+
+    quantity: str = "intensity"
+    log_scale: bool = False
+    shared_scale: bool = False
+    overlay: bool = False
+    size: str = "small"
+
+
+def probe_graph_series(field: Any, quantity: str, dt_fs: float,
+                       wavelength_um: float | None = None) -> dict:
+    """The (x, y) series one probe graph plots, from the probe's signed field
+    trace sampled every ``dt_fs``.
+
+    - "intensity": |Ez|² against time.
+    - "field": Ez against time.
+    - "energy": the running sum of |Ez|²·dt against time — how much has passed
+      the probe so far, so two probes' final values compare a split directly.
+    - "spectrum": |FFT(Ez)|² against vacuum wavelength, over 0.6–1.6 times
+      ``wavelength_um`` (every resolved wavelength when it is None). The
+      recorded frames must sample the carrier: wavelengths shorter than the
+      frames' Nyquist limit are left out, so an undersampled run gives an
+      empty series rather than an aliased one.
+
+    Returns a dict with 'x', 'y' (arrays), 'x_unit', 'y_name', 'signed'
+    (whether y goes negative) and 'time_axis' (False for the spectrum)."""
+    import numpy as np
+
+    field = np.asarray(field, dtype=np.float64)
+    n = len(field)
+    t = np.arange(n) * dt_fs
+    if quantity == "field":
+        return {"x": t, "y": field, "x_unit": "fs", "y_name": "Ez", "signed": True, "time_axis": True}
+    if quantity == "energy":
+        return {"x": t, "y": np.cumsum(field * field) * dt_fs, "x_unit": "fs",
+                "y_name": "E", "signed": False, "time_axis": True}
+    if quantity == "spectrum":
+        empty = {"x": np.zeros(0), "y": np.zeros(0), "x_unit": "µm", "y_name": "S",
+                 "signed": False, "time_axis": False}
+        if n < 4 or dt_fs <= 0:
+            return empty
+        # The frames' Nyquist wavelength must clear the whole band: otherwise
+        # the carrier folds back into it and the plot shows an alias.
+        if wavelength_um is not None and 2.0 * dt_fs * _C0_UM_PER_FS > 0.6 * wavelength_um:
+            return empty
+        # Zero-padded so the few bins a short run resolves draw as a curve.
+        nfft = 1 << int(np.ceil(np.log2(8 * n)))
+        power = np.abs(np.fft.rfft(field - field.mean(), nfft)) ** 2
+        freq = np.fft.rfftfreq(nfft, d=dt_fs)[1:]          # 1/fs, zero dropped
+        lam = _C0_UM_PER_FS / freq
+        power = power[1:]
+        keep = np.ones(len(lam), dtype=bool)
+        if wavelength_um is not None:
+            keep = (lam >= 0.6 * wavelength_um) & (lam <= 1.6 * wavelength_um)
+        order = np.argsort(lam[keep])
+        return {**empty, "x": lam[keep][order], "y": power[keep][order]}
+    if quantity != "intensity":
+        raise ValueError(f"unknown graph quantity {quantity!r}; expected one of {GRAPH_QUANTITIES}")
+    return {"x": t, "y": field * field, "x_unit": "fs", "y_name": "I", "signed": False, "time_axis": True}
 
 
 class ScriptedWaveform:
@@ -325,6 +405,13 @@ class SimulationConfig:
     # Measurement probes placed on the canvas. New field: defaults empty so
     # projects saved by an older phidler (which never wrote it) load unchanged.
     probes: tuple[ProbeSpec, ...] = ()
+    # How the probe graphs are drawn (see GraphOptions). New fields, defaulted
+    # to what the graphs always did, so older projects load unchanged.
+    graph_quantity: str = "intensity"
+    graph_log_scale: bool = False
+    graph_shared_scale: bool = False
+    graph_overlay: bool = False
+    graph_size: str = "small"
 
     # Vertical mode profile tab
     mode_wavelength_um: float = DEFAULT_WAVELENGTH_UM

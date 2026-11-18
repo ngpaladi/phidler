@@ -400,9 +400,10 @@ def test_export_graphs_csv_has_time_and_one_column_per_probe(qapp, tmp_path):
         rows = list(csv.reader(fh))
     assert rows[0] == ["time_fs", "P1_intensity", "P2_intensity"]
     assert len(rows) - 1 == len(graphs[0]["trace"])
-    # Time runs from 0 to the run duration, not a frame index.
+    # Time runs from 0 to the last recorded frame's time, not a frame index.
     assert float(rows[1][0]) == 0.0
-    assert float(rows[-1][0]) == pytest.approx(params.resolved_run_time_fs())
+    assert float(rows[-1][0]) == pytest.approx(float(result.monitor_times["field"][-1]) * 1e15, rel=1e-4)
+    assert float(rows[-1][0]) == pytest.approx(params.resolved_run_time_fs(), rel=0.05)
 
 
 def test_gif_export_includes_the_graphs_in_the_canvas(qapp, tmp_path):
@@ -512,3 +513,158 @@ def test_close_still_captures_config_after_the_closeevent_merge(qapp):
 
     assert win.document.simulation_config is not None
     assert win.document.simulation_config.probes == (ProbeSpec(x_um=6.0, y_um=7.0),)
+
+
+# -- graph options ----------------------------------------------------------- #
+
+
+def _carrier(n=400, dt_fs=0.5, wavelength_um=1.55):
+    """A Gaussian pulse on a carrier at ``wavelength_um``, sampled every dt_fs."""
+    t = np.arange(n) * dt_fs
+    omega = 2 * math.pi * 0.299792458 / wavelength_um  # rad/fs
+    return np.exp(-(((t - 100.0) / 30.0) ** 2)) * np.sin(omega * t)
+
+
+def test_graph_series_intensity_field_and_energy():
+    from phidler.fdtd_sim import probe_graph_series
+
+    field = _carrier()
+    intensity = probe_graph_series(field, "intensity", 0.5)
+    assert np.allclose(intensity["y"], field ** 2)
+    assert intensity["x"][1] == pytest.approx(0.5) and intensity["x_unit"] == "fs"
+
+    signed = probe_graph_series(field, "field", 0.5)
+    assert signed["signed"] and np.allclose(signed["y"], field) and signed["y"].min() < 0
+
+    energy = probe_graph_series(field, "energy", 0.5)
+    assert np.all(np.diff(energy["y"]) >= 0)  # a running total never falls
+    assert energy["y"][-1] == pytest.approx(float((field ** 2).sum() * 0.5))
+
+    with pytest.raises(ValueError):
+        probe_graph_series(field, "nonsense", 0.5)
+
+
+def test_graph_series_spectrum_peaks_at_the_carrier_wavelength():
+    from phidler.fdtd_sim import probe_graph_series
+
+    series = probe_graph_series(_carrier(wavelength_um=1.55), "spectrum", 0.5, wavelength_um=1.55)
+    assert not series["time_axis"] and series["x_unit"] == "µm"
+    assert np.all(np.diff(series["x"]) > 0)
+    assert series["x"][0] >= 0.6 * 1.55 and series["x"][-1] <= 1.6 * 1.55
+    assert series["x"][int(np.argmax(series["y"]))] == pytest.approx(1.55, abs=0.02)
+
+
+def test_graph_series_spectrum_is_empty_when_frames_undersample_the_carrier():
+    """Frames 4 fs apart cannot resolve a 5.2 fs carrier: nothing in the band is
+    below the Nyquist limit, so the series is empty instead of aliased."""
+    from phidler.fdtd_sim import probe_graph_series
+
+    series = probe_graph_series(_carrier(n=100, dt_fs=4.0), "spectrum", 4.0, wavelength_um=1.55)
+    assert len(series["x"]) == 0 and len(series["y"]) == 0
+
+
+@pytest.mark.parametrize("options", [
+    dict(quantity="intensity", log_scale=True),
+    dict(quantity="field"),
+    dict(quantity="energy", shared_scale=True),
+    dict(quantity="spectrum", overlay=True, size="large"),
+    dict(quantity="intensity", overlay=True, log_scale=True, size="medium"),
+])
+def test_every_graph_option_renders(qapp, options):
+    from phidler.fdtd_sim import GraphOptions, probe_graph_series
+    from phidler.panels.fdtd_window import _GRAPH_SIZES, render_probe_graphs_image
+
+    opts = GraphOptions(**options)
+    graphs = []
+    for i, scale in enumerate((1.0, 0.3)):
+        series = probe_graph_series(scale * _carrier(), opts.quantity, 0.5, 1.55)
+        graphs.append({"label": f"P{i + 1}", "color": "#00e676", "trace": series["y"], **series})
+    image = render_probe_graphs_image(graphs, 50, opts)
+    width, height = _GRAPH_SIZES[opts.size]
+    assert image.width() > width
+    if opts.overlay:
+        assert image.height() < 2 * height  # one plot, not one per probe
+    else:
+        assert image.height() > 2 * height
+    # Something other than the background was drawn.
+    colours = {image.pixelColor(x, y).name() for x in range(0, image.width(), 3)
+               for y in range(0, image.height(), 3)}
+    assert len(colours) > 2
+
+
+def test_shared_scale_draws_the_weaker_probe_smaller(qapp):
+    """With a shared scale a probe at a tenth of the amplitude peaks lower in
+    its plot; with its own scale it fills the plot like the strong one."""
+    from PySide6.QtCore import QRectF
+
+    from phidler.panels.fdtd_window import _graph_peak, _graph_points
+
+    strong = {"trace": _carrier() ** 2}
+    weak = {"trace": 0.1 * _carrier() ** 2}
+    plot = QRectF(0, 0, 100, 100)
+    own = min(p.y() for p in _graph_points(weak, plot, _graph_peak(weak), False))
+    shared = min(p.y() for p in _graph_points(weak, plot, _graph_peak(strong), False))
+    assert own == pytest.approx(0.0, abs=1e-6)       # reaches the top
+    assert shared == pytest.approx(90.0, abs=1e-6)   # a tenth of the way up
+
+
+def test_log_scale_lifts_a_weak_signal(qapp):
+    from PySide6.QtCore import QRectF
+
+    from phidler.panels.fdtd_window import _graph_points
+
+    graph = {"trace": np.array([1.0, 0.01, 1e-9])}
+    plot = QRectF(0, 0, 100, 100)
+    linear = [p.y() for p in _graph_points(graph, plot, 1.0, False)]
+    log = [p.y() for p in _graph_points(graph, plot, 1.0, True)]
+    assert linear[1] == pytest.approx(99.0)
+    assert log[0] == pytest.approx(0.0) and log[1] == pytest.approx(50.0)  # −20 dB of 40
+    assert log[2] == pytest.approx(100.0)                                   # clipped at the floor
+
+
+def test_graph_controls_drive_overlay_csv_and_saved_config(qapp, tmp_path):
+    import csv
+
+    win = MainWindow()
+    doc = win.document
+    doc.add_instance("straight", {"length": 10.0, "width": 0.5})
+    fdtd_win = FdtdWindow(doc, win.view)
+    win.view.probe_placement_requested.emit(0.0, 0.0)
+    params, sim, result = _run_a_tiny_sim(doc)
+    fdtd_win._last_params = params
+    fdtd_win._region_um = None
+    fdtd_win._on_fdtd_finished(sim, result, 1.0)
+
+    intensity = fdtd_win._probe_graph_data()[0]["trace"]
+    fdtd_win.graph_quantity_combo.setCurrentIndex(fdtd_win.graph_quantity_combo.findData("field"))
+    fdtd_win.graph_overlay_check.setChecked(True)
+    fdtd_win.graph_size_combo.setCurrentIndex(fdtd_win.graph_size_combo.findData("large"))
+
+    graphs = fdtd_win._probe_graph_data()
+    assert np.allclose(np.asarray(graphs[0]["trace"]) ** 2, intensity)
+    assert fdtd_win.run_view._probe_graph_options.quantity == "field"
+    assert fdtd_win.run_view._probe_graph_options.overlay
+    assert fdtd_win.run_view._probe_graphs[0]["signed"]
+
+    path = tmp_path / "field.csv"
+    fdtd_win._export_graphs_csv(str(path), graphs)
+    with open(path, newline="") as fh:
+        rows = list(csv.reader(fh))
+    assert rows[0] == ["time_fs", "P1_field"]
+    # The time axis is the run's own recorded frame times, not duration / frames.
+    assert float(rows[2][0]) == pytest.approx(float(result.monitor_times["field"][1]) * 1e15, rel=1e-4)
+
+    fdtd_win.graph_quantity_combo.setCurrentIndex(fdtd_win.graph_quantity_combo.findData("spectrum"))
+    spectrum = fdtd_win._probe_graph_data()
+    fdtd_win._export_graphs_csv(str(path), spectrum)
+    with open(path, newline="") as fh:
+        assert next(csv.reader(fh)) == ["wavelength_um", "P1_spectrum"]
+
+    fdtd_win.sync_config_to_document()
+    config = doc.simulation_config
+    assert (config.graph_quantity, config.graph_overlay, config.graph_size) == ("spectrum", True, "large")
+
+    reopened = FdtdWindow(doc, win.view)
+    assert reopened.graph_quantity_combo.currentData() == "spectrum"
+    assert reopened.graph_overlay_check.isChecked()
+    assert reopened.graph_size_combo.currentData() == "large"

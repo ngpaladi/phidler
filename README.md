@@ -228,6 +228,9 @@ so they can be regenerated after future UI changes.
   chosen platform/thickness/wavelength are recorded as project metadata
   in both the `.phidler` file and the exported Python script's header —
   they don't change the active PDK or any geometry on their own.
+  The one setting there that does change geometry is **Waveguide width**: a
+  single width applied to every route and component in the default
+  cross-section, also editable from the routing toolbar.
 
   <img src="docs/screenshots/project_settings_dialog.png" width="380" alt="Project Settings dialog with platform picker and the suggested-width disclaimer">
 - **Properties panel** (right dock): editing a selected instance's
