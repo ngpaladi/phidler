@@ -254,6 +254,11 @@ def load_python_script(path: str, document: LayoutDocument, scene) -> dict[str, 
             call = node.value
             if isinstance(call.func, ast.Attribute) and call.func.attr == "activate":
                 continue  # get_generic_pdk().activate()
+            if isinstance(call.func, ast.Name) and call.func.id == "register_cells" and not call.args:
+                from .chip_circuit import register_cells
+
+                register_cells()  # the lithium niobate cells (Phidler registers them at start-up too)
+                continue
             if isinstance(call.func, ast.Name) and call.func.id == "load_custom_components":
                 if len(call.args) != 1:
                     raise ScriptParseError("load_custom_components(...) call must take exactly one path argument")

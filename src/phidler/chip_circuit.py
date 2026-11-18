@@ -21,6 +21,8 @@ from typing import Callable
 
 import numpy as np
 
+from phidler.model.document import FOLLOWS_CROSS_SECTION
+
 try:  # photonfdtd >= 0.16
     from photonfdtd import circuit as pc
     from photonfdtd import lnoi
@@ -42,16 +44,97 @@ CATEGORY = "lithium_niobate"
 LN_CROSS_SECTION = "lnoi_rib"
 
 
+#: The split of the input beamsplitter of :func:`lnoi_mzi_switch`.
+MZI_SPLIT = 0.5
+
+
+def _coupler_cache_file():
+    import os
+    from pathlib import Path
+
+    root = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    return root / "phidler" / "lnoi_coupler_length.json"
+
+
+_coupler_lengths: dict[str, float] = {}
+
+
+def coupler_length_50_50(gap: float, width: float) -> float:
+    """Length (µm) of the 50:50 directional coupler of two LN ridges ``width``
+    wide and ``gap`` apart (edge to edge) on photonfdtd's default x-cut stack,
+    from a mode solve of the coupled ridges. The solve takes a couple of
+    seconds, so each design is kept in memory and in
+    ``~/.cache/phidler/lnoi_coupler_length.json``. Rounded to the 2 nm drawing
+    step."""
+    import json
+
+    key = f"gap={float(gap):.4f} width={float(width):.4f} split={MZI_SPLIT} {lnoi.X_CUT!r}"
+    path = _coupler_cache_file()
+    if key not in _coupler_lengths:
+        try:
+            _coupler_lengths.update(json.loads(path.read_text()))
+        except (OSError, ValueError):
+            pass
+    if key not in _coupler_lengths:
+        length = lnoi.coupler_length(gap=float(gap), width=float(width), stack=lnoi.X_CUT, split=MZI_SPLIT)
+        _coupler_lengths[key] = round(round(length / 0.002) * 0.002, 3)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(_coupler_lengths, indent=0, sort_keys=True))
+        except OSError:
+            pass
+    return _coupler_lengths[key]
+
+
+def lnoi_mzi_switch(
+    arm_length: float = 5000.0,
+    width: float = 1.2,
+    coupler_gap: float = 1.0,
+    coupler_length: float = 0.0,
+    electrode_gap: float = 5.0,
+    signal_width: float = 20.0,
+    ground_width: float = 60.0,
+    bend_length: float = 150.0,
+    radius: float = 80.0,
+):
+    """A 2 x 2 Mach-Zehnder switch on x-cut thin-film lithium niobate that starts
+    with a 50:50 beamsplitter.
+
+    Light into ``o1`` or ``o2`` is split 50:50 by a directional coupler, runs
+    down two arms of ``arm_length`` between push-pull ground-signal-ground
+    electrodes, and is recombined by a second 50:50 coupler onto ``o3``/``o4``.
+    ``coupler_length`` 0 (the default) sizes both couplers for a 50:50 split at
+    this ``width`` and ``coupler_gap`` (see :func:`coupler_length_50_50`), so
+    the split stays 50:50 when the waveguide width changes; any other value is
+    drawn as given. ``width`` follows the project waveguide width when the
+    project cross-section is ``lnoi_rib``. Otherwise as
+    :func:`photonfdtd.lnoi.mzi_switch`."""
+    length = float(coupler_length) or coupler_length_50_50(coupler_gap, width)
+    return lnoi.mzi_switch(
+        arm_length=arm_length, width=width, coupler_gap=coupler_gap, coupler_length=length,
+        electrode_gap=electrode_gap, signal_width=signal_width, ground_width=ground_width,
+        bend_length=bend_length, radius=radius,
+    )
+
+
 def extra_cells() -> dict[str, Callable]:
     """The photonfdtd cells Phidler offers, by registered name."""
     if not AVAILABLE:
         return {}
-    return {
+    cells = {
         "lnoi_phase_shifter": lnoi.phase_shifter,
-        "lnoi_mzi_switch": lnoi.mzi_switch,
+        "lnoi_mzi_switch": lnoi_mzi_switch,
         "lnoi_dbeta_coupler_switch": lnoi.dbeta_coupler_switch,
         "waveguide_photodetector": pc_cells.photodetector,
     }
+    # The delta-beta switch is left at its own width: its default length is
+    # three coupling lengths at 1.2 µm, which another width would break.
+    for name in ("lnoi_phase_shifter", "lnoi_mzi_switch"):
+        try:
+            setattr(cells[name], FOLLOWS_CROSS_SECTION, LN_CROSS_SECTION)
+        except (AttributeError, TypeError):  # pragma: no cover - a callable that refuses attributes
+            pass
+    return cells
 
 
 def register_cells() -> None:

@@ -133,6 +133,17 @@ class EtchLayer:
     slab_thickness_um: float = 0.0
 
 
+#: Attribute naming the cross-section a cell's numeric ``width`` parameter is
+#: the width of. A cell carrying it follows the project waveguide width when
+#: the project cross-section is that one (phidler.chip_circuit marks the
+#: lithium niobate cells with ``lnoi_rib``).
+FOLLOWS_CROSS_SECTION = "phidler_follows_cross_section"
+
+
+def _follows_cross_section(factory: Any) -> str | None:
+    return getattr(factory, FOLLOWS_CROSS_SECTION, None) if factory is not None else None
+
+
 @dataclass
 class ProjectSettings:
     """Project-level metadata captured by the New Project dialog (material
@@ -257,6 +268,25 @@ class LayoutDocument:
             return name
         return gf.get_cross_section(name, width=float(settings.waveguide_width_um))
 
+    def width_follower(self, component_spec: str) -> bool:
+        """Whether the component takes the project width through a numeric
+        ``width`` parameter rather than a ``cross_section`` one (the lithium
+        niobate cells, drawn in ``lnoi_rib``)."""
+        return _follows_cross_section(gf.get_active_pdk().cells.get(component_spec)) is not None
+
+    def default_width_kwargs(self, component_spec: str, kwargs: dict) -> dict:
+        """``kwargs`` with the width the component is drawn at filled in when
+        it follows the project width without one of its own, so the properties
+        panel shows the width actually drawn rather than the cell's default."""
+        if (
+            "width" not in kwargs
+            and self.project_settings.waveguide_width_um
+            and self.width_follower(component_spec)
+            and self._takes_project_cross_section(component_spec, kwargs)
+        ):
+            return {**kwargs, "width": float(self.project_settings.waveguide_width_um)}
+        return kwargs
+
     def _component_with_project_width(self, component_spec: str, kwargs: dict) -> gf.Component:
         """Build a component, in the project width where it can take it.
 
@@ -269,6 +299,16 @@ class LayoutDocument:
         ``width_fallback_specs`` so the UI can say so."""
         if self.project_settings.waveguide_width_um:
             factory = gf.get_active_pdk().cells.get(component_spec)
+            if (
+                "width" not in kwargs
+                and _follows_cross_section(factory) == self.project_settings.cross_section
+            ):
+                # A cell drawn in the project cross-section through a numeric
+                # ``width`` (the lithium niobate cells): the project width is
+                # its default. A width set in its parameters wins.
+                return gf.get_component(
+                    component_spec, **{**kwargs, "width": float(self.project_settings.waveguide_width_um)}
+                )
             parameter = None
             if factory is not None:
                 try:
@@ -337,12 +377,19 @@ class LayoutDocument:
         for inst_id, inst in list(self.instances.items()):
             kwargs = dict(inst.kwargs)
             explicit = kwargs.get("width")
+            was, now = old_width, new_width
+            follows = _follows_cross_section(gf.get_active_pdk().cells.get(inst.component_spec))
+            if follows is not None:
+                # A cell drawn in its own cross-section (lnoi_rib) was at that
+                # cross-section's width, whatever the project's was.
+                was = self._width_in(follows, old_settings)
+                now = self._width_in(follows, self.project_settings)
             if (
                 isinstance(explicit, (int, float)) and not isinstance(explicit, bool)
-                and math.isclose(explicit, old_width, abs_tol=1e-9)
-                and self._takes_project_cross_section(inst.component_spec, kwargs)
+                and math.isclose(explicit, was, abs_tol=1e-9)
+                and (follows is not None or self._takes_project_cross_section(inst.component_spec, kwargs))
             ):
-                kwargs["width"] = new_width
+                kwargs["width"] = now
             try:
                 self.update_instance_params(inst_id, kwargs)
             except Exception:
@@ -375,6 +422,15 @@ class LayoutDocument:
                 ) from exc
         return rebuilt_instances, rebuilt_routes
 
+    @staticmethod
+    def _width_in(cross_section: str, settings: ProjectSettings) -> float:
+        """The width cross-section ``cross_section`` is drawn at under
+        ``settings``: the project width if it is the project cross-section and
+        one is set, else its PDK width."""
+        if settings.waveguide_width_um and settings.cross_section == cross_section:
+            return float(settings.waveguide_width_um)
+        return float(gf.get_cross_section(cross_section).width)
+
     def follows_project_width(self, component_spec: str, kwargs: dict) -> bool:
         """Whether this component is drawn in the project-width cross-section:
         a project width is set, the component is in the project cross-section,
@@ -389,6 +445,9 @@ class LayoutDocument:
         factory = gf.get_active_pdk().cells.get(component_spec)
         if factory is None:
             return False
+        follows = _follows_cross_section(factory)
+        if follows is not None:
+            return follows == self.project_settings.cross_section
         try:
             parameter = inspect.signature(factory).parameters.get("cross_section")
         except (TypeError, ValueError):
