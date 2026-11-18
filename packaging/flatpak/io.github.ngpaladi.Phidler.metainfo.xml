@@ -23,6 +23,16 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.0" date="2026-11-17">
+      <description>
+        <p>A lithium niobate Mach-Zehnder switch that starts with a 50:50
+        beamsplitter, its couplers sized for a 50:50 split at whatever width it
+        is drawn at. One project-wide waveguide width, set by hand or from the
+        suggested single-mode width, that every route and component follows
+        unless its own parameters say otherwise. Probe graphs of intensity,
+        field, energy or spectrum, in dB, shared or overlaid.</p>
+      </description>
+    </release>
     <release version="0.3.3" date="2026-11-13">
       <description>
         <p>Drag a corner to resize a shape, and edit a rectangle's size or an
