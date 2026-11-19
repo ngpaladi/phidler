@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGraphicsScene,
     QGraphicsView,
     QGroupBox,
@@ -37,7 +38,9 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSlider,
+    QSplitter,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -1493,7 +1496,14 @@ class FdtdWindow(QMainWindow):
 
     def _build_propagation_tab(self) -> QWidget:
         widget = QWidget()
-        layout = QVBoxLayout(widget)
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(0, 0, 0, 0)
+        # The set-up controls scroll, above the result view, in a splitter the
+        # user can drag. Laid out flat, they needed about 1000 px of height;
+        # on a shorter screen Qt squeezed every row below its minimum and
+        # clipped the text in the spin boxes and combos.
+        controls = QWidget()
+        layout = QVBoxLayout(controls)
 
         disclaimer = QLabel(DISCLAIMER)
         disclaimer.setWordWrap(True)
@@ -1798,6 +1808,17 @@ class FdtdWindow(QMainWindow):
         for check in (self.graph_log_check, self.graph_shared_check, self.graph_overlay_check):
             check.toggled.connect(lambda _on: self._refresh_probe_graphs())
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(controls)
+
+        # Compute, its progress and the result stay in view below the split.
+        results = QWidget()
+        layout = QVBoxLayout(results)
+        layout.setContentsMargins(0, 0, 0, 0)
+
         self.run_button = QPushButton("Compute")
         self.run_button.setToolTip(
             "Run the FDTD propagation with the parameters and sources above. Runs off the "
@@ -1886,6 +1907,17 @@ class FdtdWindow(QMainWindow):
         # Wire slider↔spinbox sync (re-entrancy guard: _syncing_run_time)
         self.run_time_spin.valueChanged.connect(self._on_run_time_spin_changed)
         self.run_time_slider.valueChanged.connect(self._on_run_time_slider_changed)
+
+        splitter = QSplitter(Qt.Vertical)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(scroll)
+        splitter.addWidget(results)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        # Start with all the controls showing where the window allows it.
+        splitter.setSizes([controls.sizeHint().height(), results.minimumSizeHint().height()])
+        outer.addWidget(splitter)
+        self.propagation_splitter = splitter
 
         return widget
 
