@@ -843,3 +843,21 @@ def test_new_switches_round_trip_through_the_saved_config(qapp):
     fresh._restore_config(config)
     assert fresh.run_eim_check.isChecked() is True
     assert fresh.run_subpixel_check.isChecked() is True
+
+@pytest.mark.parametrize("height", [820, 600])
+def test_propagation_controls_are_never_squeezed(qapp, height):
+    """On a window shorter than all the set-up controls, they scroll instead of
+    Qt squeezing every row below its minimum height (which clipped the text in
+    the spin boxes and combos), and Compute stays in view."""
+    from PySide6.QtWidgets import QTabWidget
+
+    main = MainWindow()
+    win = FdtdWindow(main.document, main.view)
+    win.findChild(QTabWidget).setCurrentIndex(1)
+    win.resize(724, height)
+    win.show()
+    QCoreApplication.processEvents()
+    for widget in (win.run_wavelength_spin, win.run_time_spin, win.run_units_combo):
+        assert widget.height() >= widget.minimumSizeHint().height()
+    assert win.run_button.isVisible() and not win.run_button.visibleRegion().isEmpty()
+    win.close()
