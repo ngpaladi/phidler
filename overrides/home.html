@@ -1,0 +1,58 @@
+{% extends "main.html" %}
+
+{#- The home page: a hero drawn like the app's canvas, with the logo's
+    add-drop ring on a micrometre grid. A pulse comes in on the top bus,
+    couples into the ring and leaves on the bottom bus: on resonance, all of
+    it drops. The page's markdown follows below as usual. -#}
+
+{% block tabs %}
+  {{ super() }}
+  <section class="phi-hero" aria-labelledby="phi-hero-title">
+    <svg class="phi-hero__canvas" viewBox="0 0 1200 420" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+      <defs>
+        <pattern id="phi-grid-minor" width="24" height="24" patternUnits="userSpaceOnUse">
+          <path d="M24 0H0V24" fill="none" class="phi-grid-minor"/>
+        </pattern>
+        <pattern id="phi-grid-major" width="120" height="120" patternUnits="userSpaceOnUse" x="60" y="102">
+          <rect width="120" height="120" fill="url(#phi-grid-minor)"/>
+          <path d="M120 0H0V120" fill="none" class="phi-grid-major"/>
+        </pattern>
+      </defs>
+      <rect width="1200" height="420" fill="url(#phi-grid-major)"/>
+      <path class="phi-axis" d="M640 222H1200M900 0V420"/>
+      <g class="phi-ticks">
+        <text x="906" y="240">0</text>
+        <text x="1026" y="240">50</text>
+        <text x="1146" y="240">100 &#956;m</text>
+      </g>
+
+      <g class="phi-device" transform="translate(900 222)">
+        <path class="phi-wg" d="M-250 -123H250M-250 123H250"/>
+        <circle class="phi-wg phi-ring" r="96"/>
+        <path class="phi-pulse phi-pulse--in" pathLength="100" d="M-250 -123H0"/>
+        <path class="phi-pulse phi-pulse--ring" pathLength="100" d="M0 -96A96 96 0 1 1 0 96A96 96 0 1 1 0 -96A96 96 0 0 1 0 96"/>
+        <path class="phi-pulse phi-pulse--drop" pathLength="100" d="M0 123H-250"/>
+      </g>
+    </svg>
+
+    <div class="phi-hero__inner md-grid">
+      <div class="phi-hero__text md-typeset">
+        <h1 id="phi-hero-title">Phidler</h1>
+        <p class="phi-hero__lede">
+          Lay out photonic chips on a canvas. Place parts from gdsfactory,
+          route between ports, watch light go through it, and export GDS.
+        </p>
+        <div class="phi-hero__actions">
+          <a href="{{ 'install/' | url }}" class="md-button md-button--primary">Install Phidler</a>
+          <a href="{{ 'tour/' | url }}" class="md-button">Take the tour</a>
+        </div>
+      </div>
+    </div>
+  </section>
+{% endblock %}
+
+{#- Just the page body: no automatic title (the hero is the title) and no
+    edit button. -#}
+{% block content %}
+  {{ page.content }}
+{% endblock %}

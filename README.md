@@ -75,12 +75,12 @@ packaging/flatpak/build.sh           # -> ./Phidler-x86_64.flatpak
 The manifest lives in [`packaging/flatpak/`](packaging/flatpak/). The sandbox can
 reach your home directory (for GDS / `.phidler` files), the network, and your SSH
 agent (for remote FDTD runs). The optional `[ai]`, `[tidy3d]` and `[nereid]`
-extras aren't bundled; see the [docs](docs/index.md#linux-flatpak) for adding
+extras aren't bundled; see the [docs](docs/install.md#linux-flatpak) for adding
 them.
 
 **GPU.** The bundle runs JAX on the CPU. For an NVIDIA GPU, add JAX's CUDA
 build inside the sandbox once, as described in the
-[docs](docs/index.md#linux-flatpak), then restart Phidler; the FDTD window's
+[docs](docs/install.md#linux-flatpak), then restart Phidler; the FDTD window's
 **Check JAX GPU…** confirms it.
 
 ### Linux .deb / .rpm
@@ -101,7 +101,7 @@ packaging/linux/build.sh             # -> ./phidler_<ver>-1_amd64.deb, ./phidler
 ```
 
 See [`packaging/linux/`](packaging/linux/) and the
-[docs](docs/index.md#linux-deb-rpm) for adding the GPU build of JAX.
+[docs](docs/install.md#linux-deb-rpm) for adding the GPU build of JAX.
 
 Or build a bundle with CUDA baked in: `GPU=1 packaging/flatpak/build.sh`
 (about 2.3 GB, too big for a GitHub release asset).

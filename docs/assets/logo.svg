@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Phidler">
+  <rect x="10" y="10" width="236" height="236" rx="44" fill="#1a1d23"/>
+  <g fill="none" stroke="#d2694a" stroke-width="15" stroke-linecap="round">
+    <path d="M47.5 55.5H208.5M47.5 200.5H208.5"/>
+    <circle cx="128" cy="128" r="58"/>
+  </g>
+</svg>

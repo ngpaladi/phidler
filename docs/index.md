@@ -1,224 +1,73 @@
-# Phidler
+---
+title: Phidler
+template: home.html
+hide:
+  - navigation
+  - toc
+---
 
-**Design photonic integrated circuits visually. Place, route, simulate, and
-export GDS, without writing a line of Python.**
+Phidler is a desktop app for laying out photonic integrated circuits. It puts
+an interactive canvas in front of [gdsfactory](https://gdsfactory.github.io/gdsfactory/)'s
+component library, so you can draw a circuit with the mouse instead of
+writing and re-running a script.
 
-Phidler is a desktop CAD application for photonic integrated circuit (PIC)
-layout, built on [gdsfactory](https://gdsfactory.github.io/gdsfactory/). It
-puts a real interactive canvas in front of gdsfactory's component library. You
-drag components from a searchable palette, route between ports with the mouse,
-length-match delay lines automatically, check basic design rules, watch light
-propagate through your layout with a built-in FDTD engine, and export a
-foundry-ready GDS. It all happens in one window.
+<figure class="phi-shot" markdown>
+![The Phidler main window: the component palette, a routed waveguide on the canvas, and the properties, layers and DRC panels](screenshots/main_overview.png)
+</figure>
 
-![Phidler main window](screenshots/main_overview.png)
+## What you can do with it
 
-## Why Phidler?
+<div class="phi-points" markdown>
+<div markdown>
+### Place and route by hand
 
-- **Visual, not scripted.** gdsfactory is powerful but Python-first. Phidler
-  gives you the same PDK components on a click-and-drag canvas, so laying out a
-  circuit doesn't mean writing and re-running a script.
-- **Routing that does the math.** Draw a waveguide between two ports, set a
-  target length, and Phidler inserts an adiabatic meander to hit it. That's the
-  delay matching an interferometer or a true-time-delay line needs, done for you.
-- **See the light.** A built-in [FDTD simulator](guide.md#fdtd-simulation) shows
-  the guided mode profile and animates a pulse propagating through your actual
-  layout. Run it locally, on a GPU (NVIDIA **or** AMD), or offloaded to a remote
-  box.
-- **One window, whole flow.** Palette → canvas → routing → DRC → simulation →
-  GDS export, plus a live scripting console for when you *do* want to drop into
-  gdsfactory. No round-trips between tools.
-- **Or just ask.** Have the [Claude Code](https://claude.com/code) CLI? Switch
-  the console to "Ask Claude" and describe the circuit you want in plain English.
-  It places and routes on the live canvas through the same session you do, and it
-  reads what you've got selected, so you see every move it makes.
-- **It's still gdsfactory underneath.** Every component is a real gdsfactory
-  factory, and the export is a real GDSII your foundry/PDK toolchain already
-  understands.
+Drag parts from a searchable palette and draw waveguides between ports. Set a
+target length and Phidler adds a meander to hit it, for delay matching in an
+interferometer or a delay line.
+</div>
+<div markdown>
+### See the light go through
 
-New here? Take the **[Feature Tour](tour.md)** to see what it looks like, then
-work through the **[MZI Tutorial](tutorial.md)** to build a real circuit
-end-to-end in about fifteen minutes.
+The built-in [FDTD simulator](guide.md#fdtd-simulation) solves the guided mode
+and animates a pulse through your actual layout. Run it locally, on an NVIDIA
+or AMD GPU, or on a remote machine.
+</div>
+<div markdown>
+### Simulate a whole chip
 
-## Installation
+Lithium niobate switches, heaters and photodetectors carry circuit models.
+Drive pads with voltages and read detector currents across the chip in the
+[Circuit tab](chip_simulation.md).
+</div>
+<div markdown>
+### Check and export
 
-### Linux — AppImage (no install)
+Run design rule checks against widths and spacings you set, then export a
+real GDSII file, or a Python script that rebuilds the layout in gdsfactory.
+</div>
+<div markdown>
+### Script it when you want to
 
-The quickest way to run Phidler on Linux is the **AppImage**: a single
-self-contained file that bundles Python, the app, and the full FDTD simulation
-stack (photonfdtd + JAX + matplotlib). Nothing to install, no Python needed.
+A live Python console runs against the open layout. With the
+[Claude Code](https://claude.com/code) CLI installed, you can also describe a
+circuit in plain English and watch it get placed and routed.
+</div>
+<div markdown>
+### Keep your parts
 
-Grab the latest [**nightly release**](https://github.com/ngpaladi/phidler/releases/tag/nightly),
-then:
+Save a part or a selection as a component file, with its layout, pins and
+solved model together, and load folders of them as palette
+[libraries](chip_simulation.md#component-files).
+</div>
+</div>
 
-```sh
-chmod +x Phidler-x86_64.AppImage
-./Phidler-x86_64.AppImage
-```
+## Where to start
 
-Because the simulation packages are bundled, **FDTD works out of the box**, with
-no separate photonfdtd install. (A fresh AppImage is built and published every
-night from `main`. It needs a reasonably recent glibc, so any current desktop
-distro is fine.)
-
-### Linux — Flatpak
-
-The nightly release also includes a **Flatpak bundle**,
-`Phidler-x86_64.flatpak`, with the same bundled FDTD stack (photonfdtd + JAX +
-matplotlib). Choose it over the AppImage if you'd rather have Phidler installed,
-sandboxed and in your desktop's app menu. It runs on the KDE runtime, which
-Flatpak fetches from Flathub the first time you install:
-
-```sh
-flatpak install --user Phidler-x86_64.flatpak
-flatpak run io.github.ngpaladi.Phidler      # or launch "Phidler" from your app menu
-```
-
-The bundle isn't on Flathub, so `flatpak update` won't pick up new builds. To
-update, download the latest nightly and run the same `flatpak install` command
-again. To remove it: `flatpak uninstall --user io.github.ngpaladi.Phidler`.
-
-**What the sandbox can reach.** Your home directory (so you can open and save GDS
-and `.phidler` files anywhere under it), the network, and your SSH agent.
-[Remote FDTD over SSH](guide.md#running-on-a-remote-server) works as it does outside the sandbox: it reads
-your `~/.ssh/config` and uses the keys loaded in your agent.
-Files outside your home directory, such as an external drive under `/run/media`
-or `/mnt`, aren't visible until you grant access:
-
-```sh
-flatpak override --user --filesystem=/mnt/data io.github.ngpaladi.Phidler
-```
-
-**Optional extras.** The Flatpak bundles only the core app and the FDTD stack,
-with JAX on the CPU. The `[ai]`, `[tidy3d]` and `[nereid]` extras and JAX's GPU
-build aren't included, and the runtime has no `pip`. If you have the KDE SDK installed
-(`flatpak install --user flathub org.kde.Sdk//6.11`, about 1 GB), you can add
-them to the app's own persistent Python environment, which lives under
-`~/.var/app/io.github.ngpaladi.Phidler/`:
-
-```sh
-flatpak run --devel --command=pip3 io.github.ngpaladi.Phidler install --user "jax[cuda12]"
-```
-
-That one adds the **GPU**: the sandbox already has access to `/dev/nvidia*`, and
-Flatpak supplies the NVIDIA driver libraries through the
-`org.freedesktop.Platform.GL.nvidia-*` extension matching your driver. Restart
-Phidler and click **Check JAX GPU…** in the FDTD window to confirm. (Building
-the bundle yourself with `GPU=1 packaging/flatpak/build.sh` bakes the CUDA build
-in instead, for a ~2.3 GB bundle.)
-
-**Ask Claude** won't work inside the Flatpak in any case: it needs the
-`claude` CLI on your host, which the sandbox can't see. For that, install
-[from source](#from-source).
-
-### Linux — .deb / .rpm
-
-The nightly release also has native packages for Debian/Ubuntu (`.deb`) and
-Fedora, RHEL and openSUSE (`.rpm`), with the same bundled FDTD stack. Each
-package carries its own Python under `/opt/phidler`, so it doesn't touch the
-system Python. It adds a `phidler` command and an entry in your app menu, and
-installs the few desktop libraries Qt needs from your distro:
-
-```sh
-sudo apt install ./phidler_*_amd64.deb      # Debian, Ubuntu
-sudo dnf install ./phidler-*.x86_64.rpm     # Fedora, RHEL
-sudo zypper install ./phidler-*.x86_64.rpm  # openSUSE
-```
-
-To update, install a newer package the same way. To remove it:
-`sudo apt remove phidler` or `sudo dnf remove phidler`.
-
-**GPU.** The packages run JAX on the CPU. For an NVIDIA GPU (driver supporting
-CUDA 12 or newer), add JAX's CUDA build to the bundled Python, then restart
-Phidler and click **Check JAX GPU…** in the FDTD window to confirm:
-
-```sh
-sudo /opt/phidler/bin/python3 -m pip install "jax[cuda12]==$(/opt/phidler/bin/python3 -c 'import jax; print(jax.__version__)')"
-```
-
-Pinning to the bundled JAX version keeps the plugin and JAX in step. Run it
-again after updating Phidler, since an update may bring a newer JAX.
-
-### From source
-
-Requires Python 3.10+.
-
-#### Linux
-
-```sh
-git clone https://github.com/ngpaladi/phidler.git
-cd phidler
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-#### macOS
-
-Requires Python 3.10+ from [python.org](https://www.python.org/downloads/)
-or Homebrew (`brew install python@3.12`).
-
-```sh
-git clone https://github.com/ngpaladi/phidler.git
-cd phidler
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-#### Windows
-
-Requires Python 3.10+ from [python.org](https://www.python.org/downloads/).
-Run in PowerShell or Command Prompt:
-
-```
-git clone https://github.com/ngpaladi/phidler.git
-cd phidler
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e ".[dev]"
-```
-
-Add `docs` to the extras (`pip install -e ".[dev,docs]"`) to also build
-this documentation site.
-
-## Running it
-
-**Linux / macOS:**
-
-```sh
-./run.sh
-```
-
-On first run, `run.sh` creates the `.venv` and installs Phidler for you if it
-isn't there yet, so the manual venv steps above are optional if you launch
-this way.
-
-**Windows:** `run.sh` is bash-only, so launch directly instead:
-
-```
-python -m phidler
-```
-
-Both show the Project Settings dialog first, where you pick a material
-platform before placing components (see
-[Project Settings](guide.md#project-settings)).
-
-On Linux, if your system Qt6 conflicts with PySide6's bundled Qt6 (an
-`undefined symbol` crash on import), `run.sh` already handles this. See
-[Development: environment notes](development.md#environment-notes) for
-details.
-
-## Next steps
-
-- [Feature Tour](tour.md): a screenshot walkthrough of everything Phidler can
-  do, from placement to FDTD.
-- [MZI Tutorial](tutorial.md): build a Mach–Zehnder interferometer step by
-  step, with routing, length matching, mode solving, DRC, and export.
-- [User Guide](guide.md): the complete reference for placing, editing, routing,
-  layers, DRC, save/export, scripting, and FDTD.
-- [Keyboard Shortcuts](shortcuts.md): the full key and menu reference.
-- [FAQ & Troubleshooting](faq.md): answers to common questions and fixes for
-  common snags.
-- [Development](development.md): code layout, test suite, and what's
-  verified vs. what still needs manual checking.
+- [Install Phidler](install.md): AppImage, Flatpak, .deb and .rpm for Linux,
+  or from source on Linux, macOS and Windows.
+- [Feature tour](tour.md): a screenshot walk through the whole app.
+- [Designing an MZI](tutorial.md): build a Mach–Zehnder interferometer with
+  routing, length matching, a mode solve, DRC and export, in about fifteen
+  minutes.
+- [User guide](guide.md): the full reference.
+- [Keyboard shortcuts](shortcuts.md) and [FAQ](faq.md).
