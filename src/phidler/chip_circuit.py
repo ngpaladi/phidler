@@ -117,6 +117,40 @@ def lnoi_mzi_switch(
     )
 
 
+def lnoi_mzi_switch_1x2(
+    arm_length: float = 5000.0,
+    width: float = 1.2,
+    coupler_gap: float = 1.0,
+    coupler_length: float = 0.0,
+    electrode_gap: float = 5.0,
+    signal_width: float = 20.0,
+    ground_width: float = 60.0,
+    bend_length: float = 150.0,
+    input_length: float = 50.0,
+    tip_gap: float = 1.0,
+    radius: float = 80.0,
+):
+    """A 1 x 2 Mach-Zehnder switch on x-cut thin-film lithium niobate: one input,
+    a 1 x 2 splitter.
+
+    Light into ``o1`` is split 50:50 by a symmetric Y-junction (by symmetry, at
+    any width), runs down two arms of ``arm_length`` between push-pull
+    ground-signal-ground electrodes, and is recombined by a 50:50 directional
+    coupler onto ``o3`` (upper) and ``o4`` (lower). The junction has a blunt
+    tip, its branches ``tip_gap`` apart where they part. With equal arms, the
+    outputs are 50:50 at 0 V; ``+V_pi/2`` sends all the light to one output and
+    ``-V_pi/2`` to the other. ``coupler_length`` 0 (the default) sizes the
+    output coupler for 50:50 at this ``width`` and ``coupler_gap``, as in
+    :func:`lnoi_mzi_switch`. Otherwise as
+    :func:`photonfdtd.lnoi.mzi_switch_1x2`."""
+    length = float(coupler_length) or coupler_length_50_50(coupler_gap, width)
+    return lnoi.mzi_switch_1x2(
+        arm_length=arm_length, width=width, coupler_gap=coupler_gap, coupler_length=length,
+        electrode_gap=electrode_gap, signal_width=signal_width, ground_width=ground_width,
+        bend_length=bend_length, input_length=input_length, tip_gap=tip_gap, radius=radius,
+    )
+
+
 def extra_cells() -> dict[str, Callable]:
     """The photonfdtd cells Phidler offers, by registered name."""
     if not AVAILABLE:
@@ -127,9 +161,13 @@ def extra_cells() -> dict[str, Callable]:
         "lnoi_dbeta_coupler_switch": lnoi.dbeta_coupler_switch,
         "waveguide_photodetector": pc_cells.photodetector,
     }
+    if hasattr(lnoi, "mzi_switch_1x2"):  # photonfdtd >= 0.16.2
+        cells["lnoi_mzi_switch_1x2"] = lnoi_mzi_switch_1x2
     # The delta-beta switch is left at its own width: its default length is
     # three coupling lengths at 1.2 µm, which another width would break.
-    for name in ("lnoi_phase_shifter", "lnoi_mzi_switch"):
+    for name in ("lnoi_phase_shifter", "lnoi_mzi_switch", "lnoi_mzi_switch_1x2"):
+        if name not in cells:
+            continue
         try:
             setattr(cells[name], FOLLOWS_CROSS_SECTION, LN_CROSS_SECTION)
         except (AttributeError, TypeError):  # pragma: no cover - a callable that refuses attributes
