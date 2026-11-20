@@ -76,7 +76,7 @@ New / open / save projects, import a [reference GDS](guide.md#reference-gds-back
 backdrop or [custom components](guide.md#custom-components), and export a
 [GDSII](guide.md#saving-loading-and-exporting) or a Python script.
 
-<img src="screenshots/menu_file.png" width="300" alt="The File menu">
+![The File menu](screenshots/menu_file.png){ width="300" }
 
 ### Edit
 
@@ -84,18 +84,18 @@ Undo/redo, the transform actions (rotate, flip, reset), delete, copy/paste,
 select-all, and the [Align / Distribute](guide.md#editing-on-the-canvas)
 submenu.
 
-<img src="screenshots/menu_edit.png" width="230" alt="The Edit menu">
+![The Edit menu](screenshots/menu_edit.png){ width="230" }
 
 ### View
 
 Zoom to fit / selection, toggle the component-thumbnail previews, show or hide
 individual panels, and enter fullscreen.
 
-<img src="screenshots/menu_view.png" width="260" alt="The View menu">
+![The View menu](screenshots/menu_view.png){ width="260" }
 
 ### Right-click (canvas)
 
 The most-used editing actions on whatever is selected, without a trip to the
 menu bar.
 
-<img src="screenshots/context_menu.png" width="250" alt="The canvas right-click context menu">
+![The canvas right-click context menu](screenshots/context_menu.png){ width="250" }

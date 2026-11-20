@@ -1,0 +1,168 @@
+# Installing Phidler
+
+## Linux — AppImage (no install)
+
+The quickest way to run Phidler on Linux is the **AppImage**: a single
+self-contained file that bundles Python, the app, and the full FDTD simulation
+stack (photonfdtd + JAX + matplotlib). Nothing to install, no Python needed.
+
+Grab the latest [**nightly release**](https://github.com/ngpaladi/phidler/releases/tag/nightly),
+then:
+
+```sh
+chmod +x Phidler-x86_64.AppImage
+./Phidler-x86_64.AppImage
+```
+
+Because the simulation packages are bundled, **FDTD works out of the box**, with
+no separate photonfdtd install. (A fresh AppImage is built and published every
+night from `main`. It needs a reasonably recent glibc, so any current desktop
+distro is fine.)
+
+## Linux — Flatpak
+
+The nightly release also includes a **Flatpak bundle**,
+`Phidler-x86_64.flatpak`, with the same bundled FDTD stack (photonfdtd + JAX +
+matplotlib). Choose it over the AppImage if you'd rather have Phidler installed,
+sandboxed and in your desktop's app menu. It runs on the KDE runtime, which
+Flatpak fetches from Flathub the first time you install:
+
+```sh
+flatpak install --user Phidler-x86_64.flatpak
+flatpak run io.github.ngpaladi.Phidler      # or launch "Phidler" from your app menu
+```
+
+The bundle isn't on Flathub, so `flatpak update` won't pick up new builds. To
+update, download the latest nightly and run the same `flatpak install` command
+again. To remove it: `flatpak uninstall --user io.github.ngpaladi.Phidler`.
+
+**What the sandbox can reach.** Your home directory (so you can open and save GDS
+and `.phidler` files anywhere under it), the network, and your SSH agent.
+[Remote FDTD over SSH](guide.md#running-on-a-remote-server) works as it does outside the sandbox: it reads
+your `~/.ssh/config` and uses the keys loaded in your agent.
+Files outside your home directory, such as an external drive under `/run/media`
+or `/mnt`, aren't visible until you grant access:
+
+```sh
+flatpak override --user --filesystem=/mnt/data io.github.ngpaladi.Phidler
+```
+
+**Optional extras.** The Flatpak bundles only the core app and the FDTD stack,
+with JAX on the CPU. The `[ai]`, `[tidy3d]` and `[nereid]` extras and JAX's GPU
+build aren't included, and the runtime has no `pip`. If you have the KDE SDK installed
+(`flatpak install --user flathub org.kde.Sdk//6.11`, about 1 GB), you can add
+them to the app's own persistent Python environment, which lives under
+`~/.var/app/io.github.ngpaladi.Phidler/`:
+
+```sh
+flatpak run --devel --command=pip3 io.github.ngpaladi.Phidler install --user "jax[cuda12]"
+```
+
+That one adds the **GPU**: the sandbox already has access to `/dev/nvidia*`, and
+Flatpak supplies the NVIDIA driver libraries through the
+`org.freedesktop.Platform.GL.nvidia-*` extension matching your driver. Restart
+Phidler and click **Check JAX GPU…** in the FDTD window to confirm. (Building
+the bundle yourself with `GPU=1 packaging/flatpak/build.sh` bakes the CUDA build
+in instead, for a ~2.3 GB bundle.)
+
+**Ask Claude** won't work inside the Flatpak in any case: it needs the
+`claude` CLI on your host, which the sandbox can't see. For that, install
+[from source](#from-source).
+
+## Linux — .deb / .rpm
+
+The nightly release also has native packages for Debian/Ubuntu (`.deb`) and
+Fedora, RHEL and openSUSE (`.rpm`), with the same bundled FDTD stack. Each
+package carries its own Python under `/opt/phidler`, so it doesn't touch the
+system Python. It adds a `phidler` command and an entry in your app menu, and
+installs the few desktop libraries Qt needs from your distro:
+
+```sh
+sudo apt install ./phidler_*_amd64.deb      # Debian, Ubuntu
+sudo dnf install ./phidler-*.x86_64.rpm     # Fedora, RHEL
+sudo zypper install ./phidler-*.x86_64.rpm  # openSUSE
+```
+
+To update, install a newer package the same way. To remove it:
+`sudo apt remove phidler` or `sudo dnf remove phidler`.
+
+**GPU.** The packages run JAX on the CPU. For an NVIDIA GPU (driver supporting
+CUDA 12 or newer), add JAX's CUDA build to the bundled Python, then restart
+Phidler and click **Check JAX GPU…** in the FDTD window to confirm:
+
+```sh
+sudo /opt/phidler/bin/python3 -m pip install "jax[cuda12]==$(/opt/phidler/bin/python3 -c 'import jax; print(jax.__version__)')"
+```
+
+Pinning to the bundled JAX version keeps the plugin and JAX in step. Run it
+again after updating Phidler, since an update may bring a newer JAX.
+
+## From source
+
+Requires Python 3.10+.
+
+### Linux
+
+```sh
+git clone https://github.com/ngpaladi/phidler.git
+cd phidler
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+### macOS
+
+Requires Python 3.10+ from [python.org](https://www.python.org/downloads/)
+or Homebrew (`brew install python@3.12`).
+
+```sh
+git clone https://github.com/ngpaladi/phidler.git
+cd phidler
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+### Windows
+
+Requires Python 3.10+ from [python.org](https://www.python.org/downloads/).
+Run in PowerShell or Command Prompt:
+
+```
+git clone https://github.com/ngpaladi/phidler.git
+cd phidler
+python -m venv .venv
+.venv\Scripts\activate
+pip install -e ".[dev]"
+```
+
+Add `docs` to the extras (`pip install -e ".[dev,docs]"`) to also build
+this documentation site.
+
+## Running it
+
+**Linux / macOS:**
+
+```sh
+./run.sh
+```
+
+On first run, `run.sh` creates the `.venv` and installs Phidler for you if it
+isn't there yet, so the manual venv steps above are optional if you launch
+this way.
+
+**Windows:** `run.sh` is bash-only, so launch directly instead:
+
+```
+python -m phidler
+```
+
+Both show the Project Settings dialog first, where you pick a material
+platform before placing components (see
+[Project Settings](guide.md#project-settings)).
+
+On Linux, if your system Qt6 conflicts with PySide6's bundled Qt6 (an
+`undefined symbol` crash on import), `run.sh` already handles this. See
+[Development: environment notes](development.md#environment-notes) for
+details.

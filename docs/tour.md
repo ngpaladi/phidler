@@ -10,7 +10,7 @@ Launching Phidler opens a recent-projects list. Pick up where you left off,
 browse for a file, or start fresh (which opens
 [Project Settings](guide.md#project-settings) to choose a material platform).
 
-<img src="screenshots/startup_dialog.png" width="440" alt="The startup dialog listing recent projects with Open Selected, Open Other, and New Project buttons">
+![The startup dialog listing recent projects with Open Selected, Open Other, and New Project buttons](screenshots/startup_dialog.png){ width="440" }
 
 ## The workspace
 
@@ -28,18 +28,18 @@ Every gdsfactory PDK (process design kit) component is in the palette, grouped
 by kind. Type in the filter box to narrow hundreds of factories down to what you
 want, and hover any entry for a live rendered preview before you place it.
 
-<img src="screenshots/palette_search.png" width="330" alt="Component palette filtered to 'ring', showing matching couplers, rings, and dies"> <img src="screenshots/palette_hover_preview.png" width="360" alt="Palette with a hover preview popup showing a rendered thumbnail of the component under the cursor">
+![Component palette filtered to 'ring', showing matching couplers, rings, and dies](screenshots/palette_search.png){ width="330" } ![Palette with a hover preview popup showing a rendered thumbnail of the component under the cursor](screenshots/palette_hover_preview.png){ width="360" }
 
 The catalog is the whole gdsfactory generic PDK, grouped by kind: waveguides,
 bends, couplers, splitters, rings, gratings, edge couplers, and more.
 
-<img src="screenshots/palette_catalog.png" width="320" alt="The component palette with its top categories expanded, showing the grouped PDK catalog">
+![The component palette with its top categories expanded, showing the grouped PDK catalog](screenshots/palette_catalog.png){ width="320" }
 
 Selecting a placed component opens its full parameter set in the **Properties**
 panel: position and orientation, an **Array** section for tiling, and every
 gdsfactory factory argument (radius, gap, length, …), edited live.
 
-<img src="screenshots/properties_panel_example.png" width="300" alt="Properties panel for a ring resonator showing transform, array, and component parameter fields">
+![Properties panel for a ring resonator showing transform, array, and component parameter fields](screenshots/properties_panel_example.png){ width="300" }
 
 ## Edit on the canvas
 
@@ -47,7 +47,7 @@ Drag to move, grab the on-canvas handles to rotate and scale, or type exact
 values into Properties. A right-click gives you rotate, flip, align, copy,
 delete, and zoom. They're all on the **Edit** menu too, with keyboard shortcuts.
 
-<img src="screenshots/transform_overlay.png" width="440" alt="A selected bend with on-canvas transform handles for rotation and scaling"> <img src="screenshots/context_menu.png" width="250" alt="The right-click canvas context menu listing rotate, flip, align, copy, delete, and zoom actions">
+![A selected bend with on-canvas transform handles for rotation and scaling](screenshots/transform_overlay.png){ width="440" } ![The right-click canvas context menu listing rotate, flip, align, copy, delete, and zoom actions](screenshots/context_menu.png){ width="250" }
 
 Select several components at once to move them as a group, or line them up and
 space them evenly with the **Align** and **Distribute** tools.
@@ -65,7 +65,7 @@ space them evenly with the **Align** and **Distribute** tools.
 A background grid keeps things tidy. With **Snap** on, placement, dragging, and
 routing all round to the grid pitch you set.
 
-<img src="screenshots/grid_snap_closeup.png" width="470" alt="A close-up of the canvas grid with a waveguide port snapped to a grid intersection">
+![A close-up of the canvas grid with a waveguide port snapped to a grid intersection](screenshots/grid_snap_closeup.png){ width="470" }
 
 ## Array a component
 
@@ -83,7 +83,7 @@ insert an adiabatic meander to hit it, so matched delays come for free.
 
 ![Routing mode: hovering a port with the rubber-band preview tracking to the target](screenshots/tutorial_routing_feedback.png)
 
-<img src="screenshots/cross_section_dropdown.png" width="230" alt="The cross-section dropdown open, listing strip, rib, nitride, and other PDK cross-sections">
+![The cross-section dropdown open, listing strip, rib, nitride, and other PDK cross-sections](screenshots/cross_section_dropdown.png){ width="230" }
 
 Select a route to read back its exact length and propagation time, including how
 far it lands from your goal.
@@ -111,7 +111,7 @@ delays.
 The **Layers** panel lists every layer actually used by your design, with a
 visibility toggle and an editable colour per layer.
 
-<img src="screenshots/layers_panel_example.png" width="300" alt="The Layers panel listing waveguide, slab, metal, and via layers with visibility toggles and colour swatches">
+![The Layers panel listing waveguide, slab, metal, and via layers with visibility toggles and colour swatches](screenshots/layers_panel_example.png){ width="300" }
 
 ## Trace over a reference
 
@@ -125,7 +125,7 @@ over it. Handy for matching an existing chip or a supplied floorplan.
 A quick DRC checks minimum width and spacing on a chosen layer and lists the
 violations; click one to zoom straight to it on the canvas.
 
-<img src="screenshots/drc_panel_results.png" width="320" alt="The DRC panel with min-width and min-spacing controls and a flagged violation"> <img src="screenshots/drc_violation.png" width="470" alt="A DRC width violation highlighted in red on the canvas">
+![The DRC panel with min-width and min-spacing controls and a flagged violation](screenshots/drc_panel_results.png){ width="320" } ![A DRC width violation highlighted in red on the canvas](screenshots/drc_violation.png){ width="470" }
 
 ## Simulate with FDTD
 
@@ -140,7 +140,7 @@ Then place **sources** on the canvas (a plain dipole, a mode-matched single
 photon, a scripted waveform, or a Cherenkov track), pick the cladding material,
 and run (on the GPU when JAX can see one).
 
-<img src="screenshots/fdtd_source_setup.png" width="420" alt="The FDTD propagation controls with two sources placed in the source table"> <img src="screenshots/fdtd_source_kind_dropdown.png" width="150" alt="The source-kind dropdown listing dipole, single_photon, scripted, and cherenkov"> <img src="screenshots/fdtd_cladding_material_dropdown.png" width="300" alt="The cladding-material dropdown listing SiO2, air, Si3N4, and other presets">
+![The FDTD propagation controls with two sources placed in the source table](screenshots/fdtd_source_setup.png){ width="420" } ![The source-kind dropdown listing dipole, single_photon, scripted, and cherenkov](screenshots/fdtd_source_kind_dropdown.png){ width="150" } ![The cladding-material dropdown listing SiO2, air, Si3N4, and other presets](screenshots/fdtd_cladding_material_dropdown.png){ width="300" }
 
 Watch the pulse propagate through your actual layout, scrub the field movie
 frame by frame, and export it as an animated GIF.
@@ -151,7 +151,7 @@ Runs too big for your laptop? Offload to a **GPU** (NVIDIA CUDA or AMD ROCm) or
 to a **remote server** over SSH. The progress bar and results come back the same
 either way.
 
-<img src="screenshots/remote_config_dialog.png" width="460" alt="The remote-server setup dialog: an SSH host list, a remote Acceleration dropdown, and a Connect and set up button">
+![The remote-server setup dialog: an SSH host list, a remote Acceleration dropdown, and a Connect and set up button](screenshots/remote_config_dialog.png){ width="460" }
 
 ## Script it when you want to
 
@@ -190,7 +190,7 @@ Projects save to an editable `.phidler` file that remembers your whole
 design and simulation set-up. When you're done, export a foundry-ready
 **GDSII**, or a Python script that rebuilds the layout in gdsfactory.
 
-<img src="screenshots/menu_file.png" width="300" alt="The File menu showing New, Open, Save, Import Reference GDS, Import Custom Components, Export GDS, and Export Python Script">
+![The File menu showing New, Open, Save, Import Reference GDS, Import Custom Components, Export GDS, and Export Python Script](screenshots/menu_file.png){ width="300" }
 
 ---
 

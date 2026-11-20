@@ -1,20 +1,63 @@
 site_name: Phidler
-site_description: Graphical CAD application for photonic integrated circuit layout, built on gdsfactory.
+site_description: Lay out photonic integrated circuits on a canvas, simulate them, and export GDS. Built on gdsfactory.
+site_url: https://www.noahpaladino.com/phidler/
+repo_url: https://github.com/ngpaladi/phidler
+repo_name: ngpaladi/phidler
+edit_uri: edit/main/docs/
 docs_dir: docs
 
 theme:
-  name: readthedocs
-  highlightjs: true
+  name: material
+  custom_dir: overrides
+  logo: assets/mark.svg
+  favicon: assets/logo.svg
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Instrument Sans
+    code: JetBrains Mono
+  palette:
+    # The canvas is dark in the app, so the docs start dark too.
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light pages
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark pages
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - toc.follow
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+
+extra_css:
+  - assets/phidler.css
+  - assets/hero-pulse.css
 
 nav:
-  - Home: index.md
-  - Feature Tour: tour.md
-  - Tutorial — Designing an MZI: tutorial.md
-  - Tutorial — Training a priority encoder: training.md
-  - Tutorial — Simulating a whole chip: chip_simulation.md
-  - User Guide: guide.md
-  - Keyboard Shortcuts: shortcuts.md
-  - FAQ & Troubleshooting: faq.md
+  - Home:
+      - index.md
+      - Install: install.md
+      - Feature tour: tour.md
+  - Tutorials:
+      - Designing an MZI: tutorial.md
+      - Training a priority encoder: training.md
+      - Simulating a whole chip: chip_simulation.md
+  - User guide:
+      - guide.md
+      - Keyboard shortcuts: shortcuts.md
+      - FAQ and troubleshooting: faq.md
   - Development: development.md
 
 hooks:
@@ -22,5 +65,13 @@ hooks:
 
 markdown_extensions:
   - tables
-  - fenced_code
-  - toc
+  - toc:
+      permalink: true
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.keys

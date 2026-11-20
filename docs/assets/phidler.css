@@ -1,0 +1,150 @@
+/* Phidler docs theme: the logo's charcoal canvas and waveguide orange.
+   Dark pages match the app's canvas; light pages keep the charcoal header. */
+
+:root {
+  --phi-charcoal: #1a1d23;      /* logo background, app canvas */
+  --phi-night: #14161b;         /* header and tabs */
+  --phi-orange: #d2694a;        /* logo waveguide */
+  --phi-glow: #ffc9ad;          /* light travelling in a guide */
+  --phi-grid: #262a32;          /* canvas grid */
+  --phi-grid-major: #2f343d;
+}
+
+[data-md-color-primary="custom"] {
+  --md-primary-fg-color: var(--phi-night);
+  --md-primary-fg-color--light: #23262d;
+  --md-primary-fg-color--dark: #0f1014;
+  --md-primary-bg-color: #e4e6ea;
+  --md-primary-bg-color--light: #a3a9b4;
+}
+
+[data-md-color-accent="custom"] {
+  --md-accent-fg-color: #e8865f;
+  --md-accent-fg-color--transparent: rgba(210, 105, 74, .12);
+}
+
+/* Light pages: cool paper, a deeper orange so links pass contrast on white. */
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: #f7f8fa;
+  --md-default-fg-color: rgba(26, 29, 35, .9);
+  --md-default-fg-color--light: rgba(26, 29, 35, .62);
+  --md-default-fg-color--lighter: rgba(26, 29, 35, .32);
+  --md-default-fg-color--lightest: rgba(26, 29, 35, .08);
+  --md-typeset-a-color: #ad4f2d;
+  --md-code-bg-color: #eceef2;
+  --md-accent-fg-color: #c45a37;
+}
+
+/* Dark pages: the canvas itself. */
+[data-md-color-scheme="slate"] {
+  --md-hue: 222;
+  --md-default-bg-color: var(--phi-charcoal);
+  --md-default-fg-color: rgba(228, 230, 234, .88);
+  --md-default-fg-color--light: rgba(228, 230, 234, .6);
+  --md-default-fg-color--lighter: rgba(228, 230, 234, .3);
+  --md-default-fg-color--lightest: rgba(228, 230, 234, .08);
+  --md-typeset-a-color: #e8865f;
+  --md-code-bg-color: #21252c;
+  --md-code-fg-color: #d9dce2;
+  --md-footer-bg-color: var(--phi-night);
+  --md-footer-bg-color--dark: #0f1014;
+  --md-typeset-table-color: rgba(228, 230, 234, .1);
+}
+
+/* Header: the logo mark in orange, the active tab marked by a short guide. */
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg { height: 1.5rem; }
+.md-header__button.md-logo { color: var(--phi-orange); }
+.md-tabs { background-color: var(--phi-night); }
+.md-tabs__link { opacity: .72; font-weight: 500; }
+.md-tabs__item--active .md-tabs__link { opacity: 1; color: #fff; }
+.md-tabs__item--active .md-tabs__link::after {
+  content: ""; display: block; height: 3px; margin-top: .3rem;
+  border-radius: 2px; background: var(--phi-orange);
+}
+
+/* Type: one family, a modest scale. */
+.md-typeset { font-size: .8rem; line-height: 1.65; }
+.md-typeset h1 { font-weight: 650; letter-spacing: -.02em; color: var(--md-default-fg-color); }
+.md-typeset h2 { font-weight: 620; letter-spacing: -.01em; }
+.md-typeset h3 { font-weight: 600; }
+.md-typeset p, .md-typeset li { max-width: 42rem; }
+.md-typeset img { border-radius: 6px; }
+.md-typeset kbd { font-family: var(--md-code-font-family); }
+
+.md-typeset .md-button { border-radius: 999px; font-weight: 600; padding: .55em 1.5em; }
+.md-typeset .md-button--primary {
+  background-color: var(--phi-orange); border-color: var(--phi-orange); color: #fff;
+}
+.md-typeset .md-button--primary:hover,
+.md-typeset .md-button--primary:focus {
+  background-color: #e07a57; border-color: #e07a57; color: #fff;
+}
+:focus-visible { outline: 2px solid var(--phi-glow); outline-offset: 2px; }
+
+/* ---------- Home page hero ---------- */
+
+.phi-hero {
+  position: relative; overflow: hidden; isolation: isolate;
+  background: var(--phi-charcoal); color: #e4e6ea;
+  border-bottom: 1px solid var(--phi-grid-major);
+}
+.phi-hero__canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; }
+.phi-grid-minor { stroke: var(--phi-grid); stroke-width: 1; }
+.phi-grid-major { stroke: var(--phi-grid-major); stroke-width: 1; }
+.phi-axis { stroke: #3a3f49; stroke-width: 1.5; }
+.phi-ticks { fill: #6c7380; font: 500 13px var(--md-text-font-family, sans-serif); }
+.phi-wg { fill: none; stroke: var(--phi-orange); stroke-width: 18; stroke-linecap: round; }
+
+/* The pulse (keyframes in hero-pulse.css, from docs/make_hero_pulse.py).
+   Hidden unless animated, so reduced motion shows only the device. */
+.phi-pulse {
+  fill: none; stroke: #fffaf6; stroke-width: 10; stroke-linecap: round;
+  opacity: 0; filter: drop-shadow(0 0 4px #fff) drop-shadow(0 0 10px var(--phi-glow));
+}
+.phi-ports text { font-size: 12px; }
+
+.phi-hero__inner { padding: 5.5rem .8rem 6rem; }
+.phi-hero__text { max-width: 30rem; }
+.phi-hero .md-typeset h1 {
+  margin: 0 0 .9rem; font-size: 3.6rem; line-height: 1; font-weight: 680;
+  letter-spacing: -.035em; color: #fff;
+}
+.phi-hero__lede { margin: 0 0 1.8rem; font-size: 1.05rem; line-height: 1.55; color: #c3c7cf; }
+.phi-hero__actions { display: flex; flex-wrap: wrap; gap: .6rem; }
+.phi-hero .md-button { margin: 0; font-size: .8rem; }
+.phi-hero .md-button:not(.md-button--primary) { color: #e4e6ea; border-color: #4a505b; }
+.phi-hero .md-button:not(.md-button--primary):hover { border-color: var(--phi-glow); color: #fff; background: none; }
+
+@media screen and (max-width: 76.1875em) {
+  .phi-hero__canvas { opacity: .55; }
+  .phi-hero__inner { padding: 3.5rem .8rem 4rem; }
+  .phi-hero .md-typeset h1 { font-size: 2.8rem; }
+}
+
+/* ---------- Home page body ---------- */
+
+/* What it does: two columns of plain paragraphs, no boxes. */
+.md-typeset .phi-points {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: .4rem 2.4rem; margin: 1rem 0 2rem;
+}
+.md-typeset .phi-points h3 { margin: 1rem 0 .25rem; font-size: .9rem; }
+.md-typeset .phi-points p { margin: 0; color: var(--md-default-fg-color--light); }
+
+.md-typeset .phi-shot {
+  margin: 1.5rem 0 2.5rem; padding: 0; border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 8px; overflow: hidden;
+}
+.md-typeset .phi-shot img { display: block; border-radius: 0; width: 100%; }
+.md-typeset .phi-shot > p { margin: 0; }
+
+/* Instrument Sans sets its word spaces tight; open them in bold settings. */
+.md-typeset h1, .md-typeset h2, .md-typeset h3, .md-typeset h4,
+.md-typeset strong, .md-typeset b, .md-button, .md-tabs__link { word-spacing: .08em; }
+
+/* Phones: the device would sit behind the text, so keep only the grid. */
+@media screen and (max-width: 44.9375em) {
+  .phi-device, .phi-ticks, .phi-axis { display: none; }
+  .phi-hero__canvas { opacity: 1; }
+}

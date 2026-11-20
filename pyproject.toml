@@ -22,6 +22,7 @@ dev = [
 ]
 docs = [
     "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5",
 ]
 # The FDTD solver. photonfdtd (published on PyPI) steps only on JAX/XLA since
 # 0.13 and pulls jax in itself; it runs on the GPU when a CUDA build of jax is

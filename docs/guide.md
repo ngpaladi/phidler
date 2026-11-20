@@ -56,7 +56,7 @@ turn.
 
 On startup (and via File > New), Phidler shows a Project Settings dialog:
 
-<img src="screenshots/project_settings_dialog.png" width="420" alt="Project Settings dialog">
+![Project Settings dialog](screenshots/project_settings_dialog.png){ width="420" }
 
 - **Platform**: pick Silicon (SOI), Silicon Nitride, Lithium Niobate (LN),
   Lithium Tantalate (LT), or Custom to set the core/cladding refractive
@@ -149,7 +149,7 @@ Use the **Components** panel on the left:
 - Click a component (or select it and press Enter) to arm placement, then
   click on the canvas to place it.
 
-<img src="screenshots/palette_hover_preview.png" width="260" alt="Component palette"> <img src="screenshots/hover_preview_popup.png" width="200" alt="Hover preview">
+![Component palette](screenshots/palette_hover_preview.png){ width="260" } ![Hover preview](screenshots/hover_preview_popup.png){ width="200" }
 
 ### The component catalog
 
@@ -159,7 +159,7 @@ are not real standalone cells, are filtered out so everything in the palette
 actually places.) They are grouped by function; the core photonic categories are
 expanded by default, and each one answers a recurring need in a circuit:
 
-<img src="screenshots/palette_catalog.png" width="320" alt="The component palette with its top categories expanded, showing the grouped PDK catalog">
+![The component palette with its top categories expanded, showing the grouped PDK catalog](screenshots/palette_catalog.png){ width="320" }
 
 
 - **Waveguides**: the straight sections (and crossings) light travels along.
@@ -266,7 +266,7 @@ Each is a single undo step, even when it moves several instances.
 Selecting a single instance shows a **rotate handle** on the canvas, and a
 shape also gets **corner handles** for resizing:
 
-<img src="screenshots/transform_overlay.png" width="520" alt="A selected rectangle with a square resize handle on each corner and a round rotate handle">
+![A selected rectangle with a square resize handle on each corner and a round rotate handle](screenshots/transform_overlay.png){ width="520" }
 
 - **Drag the handle above the shape** to rotate freely around the instance's
   position. It previews live and commits to the undo stack on release.
@@ -296,7 +296,7 @@ its parameters: length, width, radius, cross-section, etc. Click **Apply**
 to regenerate its geometry. `cross_section` is a dropdown of the active
 platform's valid names, so you can't type something invalid.
 
-<img src="screenshots/properties_panel_example.png" width="300" alt="Properties panel showing editable parameters for a selected ring resonator">
+![Properties panel showing editable parameters for a selected ring resonator](screenshots/properties_panel_example.png){ width="300" }
 
 ### What the parameters are, and how they edit
 
@@ -379,7 +379,7 @@ moment some component puts geometry on it, named from the active PDK (`WG`,
 checkbox and swatch; hover a layer for a one-line note on what it is for (the
 same descriptions collected below).
 
-<img src="screenshots/layers_panel_example.png" width="320" alt="Layers panel showing active layers with visibility toggles and color swatches">
+![Layers panel showing active layers with visibility toggles and color swatches](screenshots/layers_panel_example.png){ width="320" }
 
 Layers appear because **components carry them**, not because you draw on them
 directly. Phidler routes optical waveguides; it has no electrical-net router, so
@@ -491,7 +491,7 @@ Already placed a route and want it longer or shorter? Select it, and the
 Length**, and the meander re-runs to match (undoable, like any edit). Set the
 target to 0 to drop the goal and route straight again.
 
-<img src="screenshots/route_length_editor.png" width="300" alt="The Properties panel's Route editor for a selected route: its current length, a Target length with a µm/fs/ns unit, a 'Meander to match' toggle, and an Apply Length button">
+![The Properties panel's Route editor for a selected route: its current length, a Target length with a µm/fs/ns unit, a 'Meander to match' toggle, and an Apply Length button](screenshots/route_length_editor.png){ width="300" }
 
 **Component avoidance**: when a component sits on the straight path between the
 two ports, the route automatically detours around it rather than crossing
@@ -502,7 +502,7 @@ weaving through. gdsfactory has no general obstacle router, so think of it as
 "gets out of the way of the obvious blocker", not guaranteed avoidance on a
 dense layout.
 
-<img src="screenshots/routing_example.png" width="700" alt="Routing: a straight waveguide connected to a bend via an auto-routed euler path, with the Route button active in the toolbar">
+![Routing: a straight waveguide connected to a bend via an auto-routed euler path, with the Route button active in the toolbar](screenshots/routing_example.png){ width="700" }
 
 ## Measuring distances
 
@@ -514,7 +514,7 @@ dense layout.
 3. Click again to start a new measurement (clears the old one), or press
    `Esc` to cancel a pending first point and exit Measure mode.
 
-<img src="screenshots/measure_tool_example.png" width="700" alt="Measure tool: a dashed cyan line with a distance/dx/dy label across two components">
+![Measure tool: a dashed cyan line with a distance/dx/dy label across two components](screenshots/measure_tool_example.png){ width="700" }
 
 Turning on Measure mode turns off Route mode and cancels any armed
 placement, and vice versa; only one click-driven mode is active at a
@@ -535,7 +535,7 @@ project.
 The **DRC** panel (right side) runs a width/spacing check against
 thresholds you enter yourself:
 
-<img src="screenshots/drc_violation.png" width="600" alt="DRC panel showing a violation">
+![DRC panel showing a violation](screenshots/drc_violation.png){ width="600" }
 
 1. Pick a layer.
 2. Enter a minimum width and/or minimum spacing in microns.
@@ -585,7 +585,7 @@ will raise a clear error rather than silently guessing wrong.
 The **Console** dock (bottom, toggle from the View menu) is a Python REPL
 running against your live session:
 
-<img src="screenshots/console_session.png" width="700" alt="Scripting console">
+![Scripting console](screenshots/console_session.png){ width="700" }
 
 Available names:
 
@@ -949,7 +949,7 @@ remote server**: it shows the same `~/.ssh/config` hosts. Each host keeps its ow
 acceleration and install settings, so switching back to one restores them. A host
 needs **Connect && set up** once before its first run.
 
-<img src="screenshots/remote_config_dialog.png" width="560" alt="Remote server setup dialog: an SSH host list, a remote Acceleration dropdown, and a single Connect and set up button over a log pane">
+![Remote server setup dialog: an SSH host list, a remote Acceleration dropdown, and a single Connect and set up button over a log pane](screenshots/remote_config_dialog.png){ width="560" }
 
 The remote must be a POSIX host (Linux/macOS) reachable by key-based SSH.
 Projects that place **custom components** (local `.py` files) can't be offloaded
@@ -977,7 +977,7 @@ from your placed geometry — the same core/cladding, waveguides, and source
 positions — submits it to Tidy3D's cloud, and plays the returned field movie back
 in the same window.
 
-<img src="screenshots/fdtd_engine_dropdown.png" width="360" alt="The FDTD Engine dropdown open, offering photonfdtd (local / remote) and Tidy3D (cloud)">
+![The FDTD Engine dropdown open, offering photonfdtd (local / remote) and Tidy3D (cloud)](screenshots/fdtd_engine_dropdown.png){ width="360" }
 
 It's a separate, optional install and needs an account: `pip install
 "phidler[tidy3d]"`, then configure your API key once with `tidy3d configure` (or
