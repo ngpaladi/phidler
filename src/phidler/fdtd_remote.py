@@ -250,14 +250,24 @@ def _local_checkouts(cfg: RemoteConfig) -> tuple[Path, Path | None]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def check_remote(cfg: RemoteConfig) -> tuple[bool, str]:
-    """Quick readiness probe: can the remote python import phidler + photonfdtd?
-    Returns (ok, message). Never raises — connection/auth errors come back as
-    (False, <reason>) so the dialog can show them."""
+# ssh's own exit status when it couldn't connect (or the connection dropped,
+# e.g. a ProxyJump host closing the onward hop) -- as opposed to the remote
+# command failing, which returns that command's status.
+_SSH_CONNECTION_FAILED = 255
+
+
+def probe_remote(cfg: RemoteConfig) -> tuple[str, str]:
+    """Readiness probe: can the remote python import phidler + photonfdtd?
+
+    Returns ``(state, message)``, ``state`` being ``"ready"``,
+    ``"not_ready"`` (connected, but the imports fail: install needed) or
+    ``"unreachable"`` (no connection: installing can't help). A dropped or
+    timed-out connection is tried once more before it counts as unreachable,
+    since a jump host can drop a single connection. Never raises."""
     if not cfg.is_configured():
-        return False, "Set an SSH host first."
+        return "unreachable", "Set an SSH host first."
     # Import phidler+photonfdtd (the readiness gate) and, while we're on the box,
-    # report which accelerators are actually available there — so the user knows
+    # report which accelerators are actually available there -- so the user knows
     # which "Acceleration" choice will work before running. jax_gpu is True only
     # when XLA sees a GPU on the remote.
     payload = (
@@ -278,19 +288,34 @@ def check_remote(cfg: RemoteConfig) -> tuple[bool, str]:
         " % (_has('numba'), _has('jax'), jax_gpu, _has('cupy')))\n"
     )
     remote_cmd = f"{_remote_path(cfg.resolved_remote_python())} -c {shlex.quote(payload)}"
-    try:
-        proc = _ssh(cfg.alias, remote_cmd, timeout=_CONNECT_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        return False, f"Timed out connecting to '{cfg.alias}' (no response in {_CONNECT_TIMEOUT_S}s)."
-    except Exception as exc:  # ssh missing, etc.
-        return False, str(exc)
+    for attempt in (1, 2):
+        try:
+            proc = _ssh(cfg.alias, remote_cmd, timeout=_CONNECT_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            if attempt == 1:
+                continue
+            return "unreachable", f"Timed out connecting to '{cfg.alias}' (no response in {_CONNECT_TIMEOUT_S}s)."
+        except Exception as exc:  # ssh missing, etc.
+            return "unreachable", str(exc)
+        if proc.returncode == _SSH_CONNECTION_FAILED and attempt == 1:
+            continue
+        break
     if proc.returncode == 0 and "ok" in (proc.stdout or ""):
         msg = f"Connected to '{cfg.alias}': phidler and photonfdtd import successfully."
         backends = _summarize_remote_backends(proc.stdout or "")
         if backends:
             msg += "\n" + backends
-        return True, msg
-    return False, _remote_error(proc) or "Remote import check failed."
+        return "ready", msg
+    if proc.returncode == _SSH_CONNECTION_FAILED:
+        return "unreachable", (f"Couldn't connect to '{cfg.alias}': "
+                               f"{_remote_error(proc) or 'ssh connection failed'}")
+    return "not_ready", _remote_error(proc) or "Remote import check failed."
+
+
+def check_remote(cfg: RemoteConfig) -> tuple[bool, str]:
+    """``probe_remote`` as (ready, message)."""
+    state, msg = probe_remote(cfg)
+    return state == "ready", msg
 
 
 def _summarize_remote_backends(stdout: str) -> str:

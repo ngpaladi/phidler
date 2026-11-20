@@ -422,7 +422,7 @@ def test_smart_setup_skips_install_when_already_ready(qapp, monkeypatch):
     must NOT redeploy, and it saves the config on success."""
     import time
 
-    monkeypatch.setattr(fr, "check_remote", lambda cfg: (True, "ok, ready"))
+    monkeypatch.setattr(fr, "probe_remote", lambda cfg: ("ready", "ok, ready"))
     deployed = []
     monkeypatch.setattr(fr, "deploy_to_remote", lambda cfg, on_line: deployed.append(True) or True)
     import phidler.remote_config as rc
@@ -451,8 +451,8 @@ def test_smart_setup_installs_when_not_ready(qapp, monkeypatch):
     import time
 
     # Not ready on the first probe, ready after the (fake) install.
-    results = iter([(False, "cannot import phidler"), (True, "ok now")])
-    monkeypatch.setattr(fr, "check_remote", lambda cfg: next(results))
+    results = iter([("not_ready", "cannot import phidler"), ("ready", "ok now")])
+    monkeypatch.setattr(fr, "probe_remote", lambda cfg: next(results))
     deployed = []
     monkeypatch.setattr(fr, "deploy_to_remote", lambda cfg, on_line: deployed.append(True) or True)
     import phidler.remote_config as rc
@@ -481,8 +481,8 @@ def test_auto_setup_adopts_the_probe_recommendation(qapp, monkeypatch):
 
     # Not ready first; ready after the fake install. The fake deploy emits the
     # probe's recommendation line, exactly as the real one streams it.
-    results = iter([(False, "not ready"), (True, "ready")])
-    monkeypatch.setattr(fr, "check_remote", lambda cfg: next(results))
+    results = iter([("not_ready", "not ready"), ("ready", "ready")])
+    monkeypatch.setattr(fr, "probe_remote", lambda cfg: next(results))
 
     def fake_deploy(cfg, on_line):
         on_line("Detecting remote hardware …")
@@ -805,3 +805,41 @@ def test_run_on_a_host_that_is_not_set_up_says_so(monkeypatch):
     monkeypatch.setattr(fr, "write_bundle", lambda *a: None)
     with pytest.raises(RuntimeError, match="doesn't look set up.*Connect && set up"):
         fr.run_on_remote(object(), object(), cfg=RemoteConfig(alias="lab"))
+
+
+def test_a_dropped_connection_is_retried_once(monkeypatch):
+    """A jump host can drop one connection ('Connection closed by UNKNOWN port
+    65535', ssh exit 255): try again before giving up."""
+    calls = []
+
+    def ssh(alias, remote_cmd, timeout=None):
+        calls.append(alias)
+        if len(calls) == 1:
+            return _cp(255, stderr="Connection closed by UNKNOWN port 65535\n")
+        return _cp(0, stdout="ok\nbackends numba=True jax=True jax_gpu=False cupy=False\n")
+    monkeypatch.setattr(fr, "_ssh", ssh)
+    assert fr.probe_remote(_cfg())[0] == "ready"
+    assert len(calls) == 2
+
+
+def test_an_unreachable_remote_is_not_mistaken_for_one_needing_an_install(monkeypatch):
+    monkeypatch.setattr(fr, "_ssh", lambda *a, **k: _cp(255, stderr="Connection closed by UNKNOWN port 65535\n"))
+    state, msg = fr.probe_remote(_cfg())
+    assert state == "unreachable" and "Couldn't connect" in msg and "65535" in msg
+    monkeypatch.setattr(fr, "_ssh", lambda *a, **k: _cp(1, stderr="ModuleNotFoundError: No module named 'phidler'\n"))
+    assert fr.probe_remote(_cfg())[0] == "not_ready"
+
+
+def test_setup_does_not_install_over_a_dead_connection(qapp, monkeypatch):
+    from phidler.panels.fdtd_window import _RemoteOpWorker
+
+    monkeypatch.setattr(fr, "_ssh", lambda *a, **k: _cp(255, stderr="Connection closed by UNKNOWN port 65535\n"))
+    deployed = []
+    monkeypatch.setattr(fr, "deploy_to_remote", lambda *a, **k: deployed.append(a) or True)
+    worker = _RemoteOpWorker(_cfg(), "setup")
+    lines, results = [], []
+    worker.line.connect(lines.append)
+    worker.done.connect(results.append)
+    worker.run()
+    assert results == [False] and not deployed
+    assert any("Nothing was installed" in line for line in lines)

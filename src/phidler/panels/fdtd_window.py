@@ -948,7 +948,7 @@ class _RemoteOpWorker(QObject):
         self.force = force
 
     def run(self) -> None:
-        from phidler.fdtd_remote import check_remote, deploy_to_remote
+        from phidler.fdtd_remote import check_remote, deploy_to_remote, probe_remote
 
         try:
             if self.op == "check":
@@ -960,9 +960,15 @@ class _RemoteOpWorker(QObject):
                 # available accelerators. This folds the old test→deploy→save
                 # dance into a single action.
                 self.line.emit(f"Checking '{self.cfg.alias}' …")
-                ok, msg = check_remote(self.cfg)
+                state, msg = probe_remote(self.cfg)
                 self.line.emit(msg)
-                if ok and not self.force:
+                ok = state == "ready"
+                if state == "unreachable":
+                    # Installing needs the same connection; don't start one
+                    # (or reinstall a working remote) over a dropped link.
+                    self.line.emit("Nothing was installed. Check the connection "
+                                   "(e.g. ssh into it from a terminal) and try again.")
+                elif ok and not self.force:
                     self.line.emit("Remote is already set up — ready to run.")
                 else:
                     self.line.emit(
@@ -971,7 +977,8 @@ class _RemoteOpWorker(QObject):
                     )
                     ok = deploy_to_remote(self.cfg, self.line.emit)
                     if ok:
-                        ok, msg = check_remote(self.cfg)
+                        state, msg = probe_remote(self.cfg)
+                        ok = state == "ready"
                         self.line.emit(msg)
                         if ok:
                             self.line.emit("Remote is ready.")
@@ -1035,7 +1042,7 @@ class RemoteConfigDialog(QDialog):
         self.backend_combo = QComboBox()
         self.backend_combo.addItem("Auto — detect on the remote (recommended)", "auto")
         self.backend_combo.addItem("CPU (JAX)", "cpu")
-        self.backend_combo.addItem("GPU (JAX on CUDA 12)", "jax")
+        self.backend_combo.addItem("GPU (JAX on CUDA 12 or 13)", "jax")
         # Show the stored backend; a fresh config defaults to Auto.
         stored = cfg.backend if cfg.backend in ("auto", "cpu", "jax") else cfg.resolved_backend()
         idx = self.backend_combo.findData(stored)
@@ -1043,7 +1050,7 @@ class RemoteConfigDialog(QDialog):
         self.backend_combo.setToolTip(
             "Where the remote solve runs. photonfdtd runs on JAX; Auto inspects the "
             "remote's GPU during 'Connect & set up' and installs JAX's CUDA build when "
-            "the driver supports CUDA 12, otherwise runs on the CPU, then remembers "
+            "the driver supports CUDA 12 or newer, otherwise runs on the CPU, then remembers "
             "the choice. Or pin CPU or GPU."
         )
         form.addRow("Acceleration", self.backend_combo)
