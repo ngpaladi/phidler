@@ -175,6 +175,33 @@ def extra_cells() -> dict[str, Callable]:
     return cells
 
 
+# The photonfdtd release that added each of these cells, for telling the user
+# why a project that uses one won't open here.
+CELL_NEEDS_PHOTONFDTD = {
+    "lnoi_phase_shifter": "0.16.0",
+    "lnoi_mzi_switch": "0.16.0",
+    "lnoi_dbeta_coupler_switch": "0.16.0",
+    "waveguide_photodetector": "0.16.0",
+    "lnoi_mzi_switch_1x2": "0.16.2",
+}
+
+
+def why_missing(name: str) -> str:
+    """A plain explanation of why the component ``name`` isn't available."""
+    need = CELL_NEEDS_PHOTONFDTD.get(name)
+    if need is None:
+        return ("not in the component library; if it is a custom component, "
+                "its file may have moved (File > Import Custom Components… loads it again)")
+    try:
+        import photonfdtd
+        have = f"photonfdtd {photonfdtd.__version__} from {photonfdtd.__file__}"
+    except ImportError:
+        have = "no photonfdtd"
+    return (f"needs photonfdtd {need} or newer, and this Phidler has {have}. "
+            f"Update photonfdtd (pip install -U photonfdtd), or open the project in "
+            f"a Phidler that has it")
+
+
 def register_cells() -> None:
     """Make the photonfdtd cells and the LN ridge cross-section resolvable by
     name in the active PDK (placeable from the palette, routable, and

@@ -62,6 +62,34 @@ def save_project(document: LayoutDocument, path: str) -> None:
     Path(path).write_text(json.dumps(data, indent=2))
 
 
+class MissingComponentsError(ValueError):
+    """A project uses components this Phidler can't build."""
+
+
+def check_components_available(data: dict) -> None:
+    """Raise MissingComponentsError, naming each missing component and why
+    (when known), if any instance in a loaded project can't be built here."""
+    import gdsfactory as gf
+
+    from phidler import chip_circuit
+
+    cells = gf.get_active_pdk().cells
+    counts: dict[str, int] = {}
+    for inst in data.get("instances", []):
+        spec = inst["component_spec"]
+        if spec not in cells:
+            counts[spec] = counts.get(spec, 0) + 1
+    if not counts:
+        return
+    lines = []
+    for spec, n in counts.items():
+        uses = f"{spec} ({n} instance{'s' if n > 1 else ''})"
+        lines.append(f"- {uses}: {chip_circuit.why_missing(spec)}")
+    raise MissingComponentsError(
+        "This project uses components this Phidler can't build:\n" + "\n".join(lines)
+        + "\n\nNothing was changed; the open layout is as it was.")
+
+
 def load_project(path: str, document: LayoutDocument, scene) -> dict[str, ComponentSpec]:
     """Replaces the contents of `document`/`scene` in place — they stay the
     same live objects already wired into the rest of the UI — by replaying
@@ -75,14 +103,6 @@ def load_project(path: str, document: LayoutDocument, scene) -> dict[str, Compon
     """
     data = json.loads(Path(path).read_text())
 
-    removed_inst_ids, removed_route_ids = document.clear_all()
-    for inst_id in removed_inst_ids:
-        scene.remove_instance_item(inst_id)
-    for route_id in removed_route_ids:
-        scene.remove_route_item(route_id)
-    scene.clear_annotation_items()  # clear_all() emptied document.annotations; drop their items too
-    scene.clear_reference_item()
-
     # Custom components only exist in the active PDK's cell registry
     # because load_custom_components() ran earlier *this process* — in a
     # fresh session gf.get_component(name) wouldn't resolve them at all,
@@ -91,6 +111,7 @@ def load_project(path: str, document: LayoutDocument, scene) -> dict[str, Compon
     # part raised ValueError mid-replay and left the document empty,
     # since clear_all() had already run by the time the failure happened).
     custom_specs: dict[str, ComponentSpec] = {}
+    loaded_custom_paths: list[str] = []
     for custom_path in data.get("custom_component_paths", []):
         try:
             result = load_custom_components(custom_path)
@@ -102,6 +123,23 @@ def load_project(path: str, document: LayoutDocument, scene) -> dict[str, Compon
             # failing the whole load over a missing file up front
             continue
         custom_specs.update(result.specs)
+        loaded_custom_paths.append(custom_path)
+
+
+    # Every component must resolve before the open document is touched: a
+    # missing one used to fail half-way through the replay, after clear_all()
+    # had already emptied the canvas.
+    check_components_available(data)
+
+    removed_inst_ids, removed_route_ids = document.clear_all()
+    for inst_id in removed_inst_ids:
+        scene.remove_instance_item(inst_id)
+    for route_id in removed_route_ids:
+        scene.remove_route_item(route_id)
+    scene.clear_annotation_items()  # clear_all() emptied document.annotations; drop their items too
+    scene.clear_reference_item()
+
+    for custom_path in loaded_custom_paths:
         document.record_custom_component_path(custom_path)
 
     # Before the replay below: the project waveguide width decides how the

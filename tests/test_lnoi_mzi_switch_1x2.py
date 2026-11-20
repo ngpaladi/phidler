@@ -140,3 +140,27 @@ def test_exported_script_runs_on_its_own(tmp_path):
     result = subprocess.run([sys.executable, "-c", check], capture_output=True, text=True,
                             env={**os.environ}, timeout=300)
     assert result.returncode == 0, result.stderr[-2000:]
+
+
+def test_a_project_with_a_cell_this_photonfdtd_lacks_says_why_and_keeps_the_layout(qapp, tmp_path, monkeypatch):
+    """Opening a project that uses the 1 x 2 switch in a Phidler whose
+    photonfdtd predates it: a clear message, and the open layout untouched."""
+    import gdsfactory as gf
+
+    from phidler.main_window import MainWindow
+    from phidler.project_io import MissingComponentsError, load_project, save_project
+
+    doc = LayoutDocument()
+    doc.add_instance(NAME, {"arm_length": 500.0})
+    path = tmp_path / "uses_1x2.phidler"
+    save_project(doc, str(path))
+
+    win = MainWindow()
+    kept = win.document.add_instance("straight", {"length": 10.0})
+    win.scene.add_instance_item(kept.id)
+    monkeypatch.delitem(gf.get_active_pdk().cells, NAME)
+    with pytest.raises(MissingComponentsError) as err:
+        load_project(str(path), win.document, win.scene)
+    message = str(err.value)
+    assert f"{NAME} (1 instance)" in message and "photonfdtd 0.16.2 or newer" in message
+    assert list(win.document.instances) == [kept.id]
