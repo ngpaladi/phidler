@@ -843,3 +843,36 @@ def test_setup_does_not_install_over_a_dead_connection(qapp, monkeypatch):
     worker.run()
     assert results == [False] and not deployed
     assert any("Nothing was installed" in line for line in lines)
+
+
+def _reset_config_check(monkeypatch):
+    monkeypatch.setattr(fr, "_config_checked", False)
+    monkeypatch.setattr(fr, "_config_copy", None)
+
+
+def test_ssh_opts_copy_config_ssh_rejects(monkeypatch, tmp_path):
+    """A config ssh refuses for its permissions (the Flatpak's ssh with a 664
+    ~/.ssh/config) is passed as a private 0600 copy with -F."""
+    import os
+    import subprocess
+    _reset_config_check(monkeypatch)
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "config").write_text("Host box\n  ProxyJump gate\n")
+    monkeypatch.setattr(fr.Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr(fr.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(fr.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        a[0], 255, "", f"Bad owner or permissions on {home}/.ssh/config\n"))
+    opts = fr._ssh_opts()
+    assert opts[:2] == fr._SSH_OPTS and opts[2] == "-F"
+    copy = fr.Path(opts[3])
+    assert copy.read_text() == "Host box\n  ProxyJump gate\n"
+    assert os.stat(copy).st_mode & 0o777 == 0o600
+
+
+def test_ssh_opts_leave_accepted_config_alone(monkeypatch):
+    import subprocess
+    _reset_config_check(monkeypatch)
+    monkeypatch.setattr(fr.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        a[0], 0, "user me\n", ""))
+    assert fr._ssh_opts() == fr._SSH_OPTS
