@@ -81,6 +81,32 @@ def test_detect_nvidia_reads_cuda_version(monkeypatch):
     assert "RTX 4080" in hw.gpu_name
 
 
+def test_detect_nvidia_reads_the_600_series_header(monkeypatch):
+    """Drivers from the 600 series label it 'CUDA UMD Version' (seen on an RTX
+    PRO 6000 Blackwell with driver 615.71.09); it used to read as unknown and
+    the setup fell back to the CPU."""
+    header = ("| NVIDIA-SMI 615.71.09              KMD Version: 615.71.09     "
+              "CUDA UMD Version: 13.4     |\n")
+
+    def fake_run(cmd, timeout=15.0):
+        if cmd[:1] == ["nvidia-smi"] and "--query-gpu=name" in cmd:
+            return _cp("NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition\n")
+        if cmd[:1] == ["nvidia-smi"]:
+            return _cp(header)
+        return None
+
+    monkeypatch.setattr(probe, "_run", fake_run)
+    hw = detect_hardware()
+    assert hw.cuda_major == 13
+    r = decide_backend(hw, "auto")
+    assert r.backend == "jax" and r.pip_spec == "jax[cuda13]"
+
+
+def test_a_cuda_12_driver_keeps_the_cuda12_build():
+    assert decide_backend(Hardware("nvidia", 12), "auto").pip_spec == "jax[cuda12]"
+    assert decide_backend(Hardware("nvidia", 11), "auto").backend == "cpu"
+
+
 def test_detect_amd_via_rocminfo(monkeypatch):
     def fake_run(cmd, timeout=15.0):
         if cmd[:1] == ["nvidia-smi"]:

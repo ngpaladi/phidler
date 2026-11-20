@@ -132,12 +132,20 @@ def _nvidia() -> tuple[str, int | None] | None:
         out = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=15)
         if out.returncode != 0:
             return None
-        m = re.search(r"CUDA Version:\s*(\d+)", out.stdout)
+        from phidler.remote_setup_probe import CUDA_VERSION_RE
+
+        m = CUDA_VERSION_RE.search(out.stdout)
         name = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
                               capture_output=True, text=True, timeout=15).stdout.strip()
         return (name.splitlines()[0].strip() if name else "NVIDIA GPU", int(m.group(1)) if m else None)
     except Exception:
         return None
+
+
+def _extra(driver_cuda: int | None) -> str:
+    from phidler.remote_setup_probe import jax_cuda_extra
+
+    return jax_cuda_extra(driver_cuda or 12)
 
 
 def check_jax_gpu(python: str | None = None, timeout: float = 180.0) -> JaxGpuReport:
@@ -186,7 +194,7 @@ def check_jax_gpu(python: str | None = None, timeout: float = 180.0) -> JaxGpuRe
     elif not cuda_plugin:
         r.status = "plugin_missing"
         r.summary = "JAX runs on the CPU: there's an NVIDIA GPU, but JAX's CUDA build isn't installed."
-        r.advice = f'Install it with: {python} -m pip install "jax[cuda12]=={r.jax}"'
+        r.advice = f'Install it with: {python} -m pip install "jax[{_extra(driver_cuda)}]=={r.jax}"'
     else:
         r.status = "plugin_failed"
         r.summary = ("JAX runs on the CPU even though its CUDA plugin is installed: the plugin "
@@ -194,7 +202,7 @@ def check_jax_gpu(python: str | None = None, timeout: float = 180.0) -> JaxGpuRe
         r.advice = ("The usual cause is that the CUDA libraries the plugin needs (cuSPARSE, cuDNN, ...) "
                     "aren't found. If they were installed as pip 'nvidia-*' wheels into a different "
                     "site-packages, add their lib directories to LD_LIBRARY_PATH, or reinstall with "
-                    f'{python} -m pip install --force-reinstall "jax[cuda12]=={r.jax}".')
+                    f'{python} -m pip install --force-reinstall "jax[{_extra(driver_cuda)}]=={r.jax}".')
     return r
 
 

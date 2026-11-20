@@ -71,6 +71,17 @@ def _run(cmd: list[str], timeout: float = 15.0) -> subprocess.CompletedProcess |
         return None
 
 
+# The driver's CUDA version in nvidia-smi's header: "CUDA Version: 12.4" on
+# older drivers, "CUDA UMD Version: 13.4" from the 600-series drivers on.
+CUDA_VERSION_RE = re.compile(r"CUDA(?:\s+UMD)?\s+Version:\s*(\d+)")
+
+
+def jax_cuda_extra(cuda_major: int) -> str:
+    """The JAX pip extra matching a driver's CUDA major version: its CUDA 13
+    build for a CUDA 13+ driver, else the CUDA 12 build."""
+    return "cuda13" if cuda_major >= 13 else "cuda12"
+
+
 def detect_hardware() -> Hardware:
     """Probe for an NVIDIA or AMD GPU. NVIDIA is read from ``nvidia-smi`` (which
     also reports the max CUDA version the installed driver supports); AMD from
@@ -79,7 +90,7 @@ def detect_hardware() -> Hardware:
     if smi is not None and smi.returncode == 0:
         out = smi.stdout or ""
         cuda_major = None
-        m = re.search(r"CUDA Version:\s*(\d+)", out)
+        m = CUDA_VERSION_RE.search(out)
         if m:
             cuda_major = int(m.group(1))
         name = ""
@@ -120,11 +131,13 @@ def decide_backend(hw: Hardware, requested: str = "auto") -> Recommendation:
     # "jax" or "auto": use the GPU where JAX's CUDA wheels can.
     if hw.gpu == "nvidia":
         if hw.cuda_major is not None and hw.cuda_major >= 12:
-            return Recommendation("jax", "jax[cuda12]", f"NVIDIA GPU with CUDA {hw.cuda_major} → JAX runs on the GPU via XLA.")
+            extra = jax_cuda_extra(hw.cuda_major)
+            return Recommendation("jax", f"jax[{extra}]",
+                                  f"NVIDIA GPU with CUDA {hw.cuda_major} → JAX's {extra} build runs on the GPU via XLA.")
         return Recommendation(
             "cpu", None,
-            f"NVIDIA GPU with CUDA {hw.cuda_major or 'unknown'} → JAX's GPU build needs a CUDA 12 "
-            "driver, so runs stay on the CPU (update the driver, then set up again).",
+            f"NVIDIA GPU with CUDA {hw.cuda_major or 'unknown'} → JAX's GPU build needs a driver "
+            "supporting CUDA 12 or newer, so runs stay on the CPU (update the driver, then set up again).",
         )
     if hw.gpu == "amd":
         return Recommendation("cpu", None, "AMD/ROCm GPU → no supported JAX GPU build is installed automatically; using JAX on the CPU.")

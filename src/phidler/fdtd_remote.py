@@ -25,6 +25,7 @@ bundle/command/parse logic without a real SSH hop.
 from __future__ import annotations
 
 import collections
+import os
 import shlex
 import subprocess
 import tempfile
@@ -72,13 +73,59 @@ def _sourced(remote_cmd: str) -> str:
     return f"{{ [ -f ~/.bashrc ] && . ~/.bashrc; }} >/dev/null 2>&1; {remote_cmd}"
 
 
+_CONFIG_REJECTED = "Bad owner or permissions"
+_config_copy: Path | None = None
+_config_checked = False
+
+
+def _private_config_copy() -> Path | None:
+    """A 0600 copy of ~/.ssh/config, if ssh refuses the real one.
+
+    OpenSSH won't read a config that is group- or world-writable unless it
+    trusts the group. The host's ssh may accept a 664 config (a group holding
+    only the user), but the newer ssh in the Flatpak runtime rejects it, so
+    every connection fails with "Bad owner or permissions". ``ssh -G`` parses
+    the config without connecting; if it reports that, the same settings are
+    copied to a private file that is passed with -F. Decided once per run,
+    with the copy refreshed on each call so config edits still apply."""
+    global _config_copy, _config_checked
+    config = Path.home() / ".ssh" / "config"
+    if not _config_checked:
+        _config_checked = True
+        try:
+            probe = subprocess.run(["ssh", "-G", "phidler-config-check"],
+                                   capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if probe.returncode != 0 and _CONFIG_REJECTED in probe.stderr and config.is_file():
+            _config_copy = Path(tempfile.gettempdir()) / f"phidler-ssh-config-{os.getuid()}"
+    if _config_copy is None:
+        return None
+    try:
+        text = config.read_bytes()
+        fd = os.open(_config_copy, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(text)
+        os.chmod(_config_copy, 0o600)
+    except OSError:
+        return None
+    return _config_copy
+
+
+def _ssh_opts() -> list[str]:
+    """Options for every ssh/scp call: BatchMode, plus -F with a private
+    copy of the user's config when ssh rejects the original's permissions."""
+    copy = _private_config_copy()
+    return [*_SSH_OPTS, "-F", str(copy)] if copy else list(_SSH_OPTS)
+
+
 def _ssh(alias: str, remote_cmd: str, timeout: float | None = None) -> subprocess.CompletedProcess:
     """Run one command on the remote host, with ~/.bashrc loaded first (see
     _sourced). `remote_cmd` is passed as a single argument: ssh re-joins trailing
     argv and the *remote* shell re-splits it, so any command containing
     spaces/paths must already be a shlex-quoted string."""
     return subprocess.run(
-        ["ssh", *_SSH_OPTS, alias, _sourced(remote_cmd)],
+        ["ssh", *_ssh_opts(), alias, _sourced(remote_cmd)],
         capture_output=True, text=True, timeout=timeout,
     )
 
@@ -89,7 +136,7 @@ def _ssh_stream(alias: str, remote_cmd: str, on_line: Callable[[str], None]) -> 
     deploy_to_remote so pip/build/CUDA output shows live. Returns the exit code.
     stderr is merged into stdout so errors interleave in order."""
     proc = subprocess.Popen(
-        ["ssh", *_SSH_OPTS, alias, _sourced(remote_cmd)],
+        ["ssh", *_ssh_opts(), alias, _sourced(remote_cmd)],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
     )
     assert proc.stdout is not None
@@ -101,7 +148,7 @@ def _ssh_stream(alias: str, remote_cmd: str, on_line: Callable[[str], None]) -> 
 def _scp(src: str, dst: str) -> subprocess.CompletedProcess:
     """Copy one file. Either side may be `alias:remote/path`."""
     return subprocess.run(
-        ["scp", *_SSH_OPTS, src, dst],
+        ["scp", *_ssh_opts(), src, dst],
         capture_output=True, text=True,
     )
 
@@ -109,7 +156,7 @@ def _scp(src: str, dst: str) -> subprocess.CompletedProcess:
 def _rsync(src: str, dst: str, excludes: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
     """Mirror a directory tree. `-e ssh …` routes rsync over the same SSH
     transport (and BatchMode), so it honours ~/.ssh/config aliases too."""
-    cmd = ["rsync", "-az", "-e", "ssh " + " ".join(_SSH_OPTS)]
+    cmd = ["rsync", "-az", "-e", "ssh " + " ".join(shlex.quote(o) for o in _ssh_opts())]
     for ex in excludes:
         cmd.append(f"--exclude={ex}")
     cmd += [src, dst]
@@ -131,7 +178,7 @@ def _tar_upload_dir(
     remote_cmd = f"mkdir -p {_remote_path(remote_dir)} && tar xzf - -C {_remote_path(remote_dir)}"
     sender = subprocess.Popen(tar_cmd, stdout=subprocess.PIPE)
     receiver = subprocess.Popen(
-        ["ssh", *_SSH_OPTS, alias, _sourced(remote_cmd)],
+        ["ssh", *_ssh_opts(), alias, _sourced(remote_cmd)],
         stdin=sender.stdout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     assert sender.stdout is not None
@@ -250,14 +297,24 @@ def _local_checkouts(cfg: RemoteConfig) -> tuple[Path, Path | None]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def check_remote(cfg: RemoteConfig) -> tuple[bool, str]:
-    """Quick readiness probe: can the remote python import phidler + photonfdtd?
-    Returns (ok, message). Never raises — connection/auth errors come back as
-    (False, <reason>) so the dialog can show them."""
+# ssh's own exit status when it couldn't connect (or the connection dropped,
+# e.g. a ProxyJump host closing the onward hop) -- as opposed to the remote
+# command failing, which returns that command's status.
+_SSH_CONNECTION_FAILED = 255
+
+
+def probe_remote(cfg: RemoteConfig) -> tuple[str, str]:
+    """Readiness probe: can the remote python import phidler + photonfdtd?
+
+    Returns ``(state, message)``, ``state`` being ``"ready"``,
+    ``"not_ready"`` (connected, but the imports fail: install needed) or
+    ``"unreachable"`` (no connection: installing can't help). A dropped or
+    timed-out connection is tried once more before it counts as unreachable,
+    since a jump host can drop a single connection. Never raises."""
     if not cfg.is_configured():
-        return False, "Set an SSH host first."
+        return "unreachable", "Set an SSH host first."
     # Import phidler+photonfdtd (the readiness gate) and, while we're on the box,
-    # report which accelerators are actually available there — so the user knows
+    # report which accelerators are actually available there -- so the user knows
     # which "Acceleration" choice will work before running. jax_gpu is True only
     # when XLA sees a GPU on the remote.
     payload = (
@@ -278,19 +335,34 @@ def check_remote(cfg: RemoteConfig) -> tuple[bool, str]:
         " % (_has('numba'), _has('jax'), jax_gpu, _has('cupy')))\n"
     )
     remote_cmd = f"{_remote_path(cfg.resolved_remote_python())} -c {shlex.quote(payload)}"
-    try:
-        proc = _ssh(cfg.alias, remote_cmd, timeout=_CONNECT_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        return False, f"Timed out connecting to '{cfg.alias}' (no response in {_CONNECT_TIMEOUT_S}s)."
-    except Exception as exc:  # ssh missing, etc.
-        return False, str(exc)
+    for attempt in (1, 2):
+        try:
+            proc = _ssh(cfg.alias, remote_cmd, timeout=_CONNECT_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            if attempt == 1:
+                continue
+            return "unreachable", f"Timed out connecting to '{cfg.alias}' (no response in {_CONNECT_TIMEOUT_S}s)."
+        except Exception as exc:  # ssh missing, etc.
+            return "unreachable", str(exc)
+        if proc.returncode == _SSH_CONNECTION_FAILED and attempt == 1:
+            continue
+        break
     if proc.returncode == 0 and "ok" in (proc.stdout or ""):
         msg = f"Connected to '{cfg.alias}': phidler and photonfdtd import successfully."
         backends = _summarize_remote_backends(proc.stdout or "")
         if backends:
             msg += "\n" + backends
-        return True, msg
-    return False, _remote_error(proc) or "Remote import check failed."
+        return "ready", msg
+    if proc.returncode == _SSH_CONNECTION_FAILED:
+        return "unreachable", (f"Couldn't connect to '{cfg.alias}': "
+                               f"{_remote_error(proc) or 'ssh connection failed'}")
+    return "not_ready", _remote_error(proc) or "Remote import check failed."
+
+
+def check_remote(cfg: RemoteConfig) -> tuple[bool, str]:
+    """``probe_remote`` as (ready, message)."""
+    state, msg = probe_remote(cfg)
+    return state == "ready", msg
 
 
 def _summarize_remote_backends(stdout: str) -> str:
