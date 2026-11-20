@@ -164,6 +164,14 @@ class PropertiesPanel(QWidget):
         )
         self.apply_transform_button.clicked.connect(self._on_apply_transform)
         transform_layout.addRow(self.apply_transform_button)
+        # Typed values are held until applied (or the selection changes): the
+        # periodic resync must not put the old position back the moment focus
+        # moves to the Apply button. Enter in a field applies too.
+        self._transform_edited = False
+        for spin in (self.x_spin, self.y_spin, self.rotation_spin, self.scale_spin):
+            spin.valueChanged.connect(self._mark_transform_edited)
+            spin.lineEdit().returnPressed.connect(self._on_apply_transform)
+        self.mirror_check.toggled.connect(self._mark_transform_edited)
         layout.addWidget(self.transform_group)
 
         self.array_group = QGroupBox("Array")
@@ -191,10 +199,29 @@ class PropertiesPanel(QWidget):
         # own size so a fresh array is immediately visible/sensible.
         self.columns_spin.valueChanged.connect(lambda v: self._seed_pitch(self.column_pitch_spin, v, 0))
         self.rows_spin.valueChanged.connect(lambda v: self._seed_pitch(self.row_pitch_spin, v, 1))
+        # Padding is the gap between neighbouring copies: pitch minus the
+        # component's own width (columns) or height (rows). The pitch is what's
+        # stored; each pair of fields keeps the other in step as you type.
+        self.column_padding_spin = self._make_transform_spin(minimum=-1e6, maximum=1e6, decimals=4)
+        self.column_padding_spin.setToolTip(
+            "Gap (µm) between neighbouring columns, edge to edge: the column pitch "
+            "minus the component's width. 0 places copies side by side."
+        )
+        self.row_padding_spin = self._make_transform_spin(minimum=-1e6, maximum=1e6, decimals=4)
+        self.row_padding_spin.setToolTip(
+            "Gap (µm) between neighbouring rows, edge to edge: the row pitch "
+            "minus the component's height. 0 places copies touching."
+        )
+        for axis, pitch, padding in ((0, self.column_pitch_spin, self.column_padding_spin),
+                                     (1, self.row_pitch_spin, self.row_padding_spin)):
+            pitch.valueChanged.connect(lambda v, a=axis, pad=padding: self._sync_field(pad, v - self._bbox_extent[a]))
+            padding.valueChanged.connect(lambda v, a=axis, pit=pitch: self._sync_field(pit, v + self._bbox_extent[a]))
         array_layout.addRow("Columns", self.columns_spin)
         array_layout.addRow("Rows", self.rows_spin)
         array_layout.addRow("Column pitch (µm)", self.column_pitch_spin)
+        array_layout.addRow("Column padding (µm)", self.column_padding_spin)
         array_layout.addRow("Row pitch (µm)", self.row_pitch_spin)
+        array_layout.addRow("Row padding (µm)", self.row_padding_spin)
         self.apply_array_button = QPushButton("Apply Array")
         self.apply_array_button.setToolTip(
             "Tile the selected instance into a columns×rows array using the pitches above (undoable)."
@@ -286,6 +313,13 @@ class PropertiesPanel(QWidget):
         spin.setRange(1, 10_000)
         return spin
 
+    @staticmethod
+    def _sync_field(spin: QDoubleSpinBox, value: float) -> None:
+        """Set a linked field without echoing back to the one being edited."""
+        spin.blockSignals(True)
+        spin.setValue(value)
+        spin.blockSignals(False)
+
     def _seed_pitch(self, pitch_spin: QDoubleSpinBox, count: int, axis: int) -> None:
         if count > 1 and pitch_spin.value() == 0.0 and self._bbox_extent[axis] > 0.0:
             pitch_spin.setValue(self._bbox_extent[axis])
@@ -303,6 +337,7 @@ class PropertiesPanel(QWidget):
         bbox_extent: tuple[float, float] = (0.0, 0.0),
     ) -> None:
         self._inst_id = inst_id
+        self._transform_edited = False
         self._route_id = None
         self._fields = {}
         self._show_instance_groups(True)
@@ -330,7 +365,7 @@ class PropertiesPanel(QWidget):
         user has focus in one of these fields, the same is-interacting
         guard the handles use for their own periodic resync, so typing
         isn't clobbered mid-edit."""
-        if self._is_editing_transform():
+        if self._transform_edited or self._is_editing_transform():
             return
         self.x_spin.blockSignals(True)
         self.y_spin.blockSignals(True)
@@ -353,9 +388,13 @@ class PropertiesPanel(QWidget):
             w.hasFocus() for w in (self.x_spin, self.y_spin, self.rotation_spin, self.mirror_check, self.scale_spin)
         )
 
+    def _mark_transform_edited(self, *_args) -> None:
+        self._transform_edited = True
+
     def _on_apply_transform(self) -> None:
         if self._inst_id is None:
             return
+        self._transform_edited = False
         self.transform_applied.emit(
             self._inst_id,
             self.x_spin.value(),
@@ -378,6 +417,11 @@ class PropertiesPanel(QWidget):
             spin.blockSignals(True)  # don't let _seed_pitch fire while seeding values
             spin.setValue(value)
             spin.blockSignals(False)
+        # A zero pitch means "not tiled along this axis yet": show no padding,
+        # which is also what the pitch is seeded to when the count goes up.
+        for spin, pitch, extent in ((self.column_padding_spin, column_pitch, bbox_extent[0]),
+                                    (self.row_padding_spin, row_pitch, bbox_extent[1])):
+            self._sync_field(spin, pitch - extent if pitch else 0.0)
 
     def _on_apply_array(self) -> None:
         if self._inst_id is None:
@@ -403,6 +447,7 @@ class PropertiesPanel(QWidget):
         preformatted propagation-delay string shown next to the length."""
         self._route_id = route_id
         self._inst_id = None
+        self._transform_edited = False
         self._fields = {}
         self._clear_form()
         self._show_instance_groups(False)
@@ -439,6 +484,7 @@ class PropertiesPanel(QWidget):
 
     def clear(self) -> None:
         self._inst_id = None
+        self._transform_edited = False
         self._route_id = None
         self._fields = {}
         self._show_instance_groups(True)

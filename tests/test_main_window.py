@@ -57,7 +57,7 @@ def test_copy_paste_through_main_window(qapp):
     win.scene.items_by_inst[inst_id].setSelected(True)
 
     win._copy_selected()
-    assert len(win._clipboard) == 1
+    assert len(win._clipboard["instances"]) == 1
 
     win._paste_clipboard()
     assert len(win.document.instances) == 2

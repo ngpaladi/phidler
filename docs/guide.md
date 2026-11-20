@@ -229,12 +229,15 @@ automatically.
 - **Rotate / Flip**: `R` rotates 90°; `H` and `V` flip the selection
   horizontally / vertically (about either screen axis). You can also use the
   on-canvas transform overlay (see below).
-- **Delete / Copy / Paste**: `Delete`, `Ctrl+C`, `Ctrl+V`.
+- **Delete / Copy / Paste**: `Delete`, `Ctrl+C`, `Ctrl+V`. Copy and paste
+  carry the same things as Duplicate (below). Each paste lands two grid steps
+  further out, so repeated pastes don't stack.
 - **Duplicate**: `Ctrl+D` (also in the Edit and right-click menus) places a copy
-  of each selected component two grid steps down and to the right of it, with the
-  same parameters, rotation, flip, scale and array. The copies become the
+  of the selection two grid steps down and to the right of it. Components keep
+  their parameters, rotation, flip, scale and array. Routes between selected
+  components are copied too, re-routed between the copies; selecting a route
+  copies it with the two components it joins. The copies become the
   selection, so pressing `Ctrl+D` again steps out a row. It is one undo step.
-  Routes are not copied.
 - **Cancel with `Esc`**: backs out of whatever you're in the middle of:
   an armed placement, the measure, source or probe tool, or a route. `Esc` works no
   matter which panel has focus (you don't have to click the canvas first).
@@ -359,10 +362,11 @@ appear.
 The same panel has a **Transform** section above the parameter form:
 X, Y, Rotation, Mirror, and Scale as typed numeric fields, for exact
 placement instead of dragging by eye (matching a known coordinate from a
-foundry PDK, for instance). Edit the values and click **Apply Transform**
-to commit. It's undoable the same way a canvas drag is. The fields track
-the selected instance's live transform automatically; editing one pauses
-that tracking until you click elsewhere, so your typing isn't overwritten.
+foundry PDK, for instance). Edit the values and click **Apply Transform**,
+or press **Enter** in a field, to commit. It's undoable the same way a canvas
+drag is. The fields track the selected instance's live transform; once you
+edit one, they hold your values until you apply them or select something
+else, so your typing isn't overwritten.
 
 ## Layers
 

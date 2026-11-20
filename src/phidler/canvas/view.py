@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QUndoStack
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
@@ -538,6 +538,19 @@ class LayoutView(QGraphicsView):
                 out.append(item)
         return out
 
+    ROUTE_PICK_PX = 5
+
+    def route_near(self, viewport_pos: QPoint):
+        """The route item closest to ``viewport_pos`` within ROUTE_PICK_PX
+        screen pixels, or None."""
+        doc = self.scene().document
+        for d in range(1, self.ROUTE_PICK_PX + 1):  # growing squares: nearest first
+            area = QRect(viewport_pos.x() - d, viewport_pos.y() - d, 2 * d + 1, 2 * d + 1)
+            for item in self.items(area):
+                if getattr(item, "inst_id", None) in doc.routes:
+                    return item
+        return None
+
     def cycle_select_at(self, viewport_pos: QPoint):
         """Select the next item below the current one in the overlapping stack
         under ``viewport_pos``, wrapping from the bottom back to the top. With
@@ -618,6 +631,22 @@ class LayoutView(QGraphicsView):
 
         pos = event.position().toPoint()
         stack = self.selectable_items_at(pos)
+        if event.button() == Qt.LeftButton and not stack:
+            # Routes are drawn at the true waveguide width, a pixel or less
+            # when zoomed out, so a click a pixel off one would miss it and
+            # start a rubber band instead. Pick the nearest route within a few
+            # screen pixels.
+            route = self.route_near(pos)
+            if route is not None:
+                if event.modifiers() & Qt.ControlModifier:
+                    route.setSelected(not route.isSelected())
+                else:
+                    self.scene().clearSelection()
+                    route.setSelected(True)
+                self._rubber_origin = None
+                self._drag_start_transforms = {}
+                event.accept()
+                return
         # A left-press on empty canvas starts a rubber-band selection; remember
         # where, so the drag's horizontal direction can pick window vs crossing
         # (see mouseMoveEvent). Clicking an item instead starts a move, not a band.

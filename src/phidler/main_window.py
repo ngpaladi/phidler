@@ -120,7 +120,8 @@ class MainWindow(QMainWindow):
         self.view.set_n_eff(self.document.project_settings.core_index)
         self.setCentralWidget(self.view)
 
-        self._clipboard: list[tuple[str, dict]] = []
+        self._clipboard: dict | None = None  # see _selection_snapshot
+        self._paste_count = 0
         self.catalog = build_catalog()
         self.catalog_by_name = {spec.name: spec for specs in self.catalog.values() for spec in specs}
         self._pending_route_port: tuple[int, str] | None = None
@@ -1619,81 +1620,128 @@ class MainWindow(QMainWindow):
             shifts[inst_id] = target_center - current_center
         self._apply_axis_shifts(shifts, axis, f"Distribute {'Horizontally' if axis == 'x' else 'Vertically'}")
 
-    def _copy_selected(self) -> None:
-        ids = self._selected_instance_ids()
-        self._clipboard = [
-            (self.document.instances[inst_id].component_spec, dict(self.document.instances[inst_id].kwargs))
-            for inst_id in ids
+    def _selection_snapshot(self) -> dict | None:
+        """What Copy and Duplicate take from the selection: the selected
+        instances, plus each selected route's two end instances (a route can't
+        exist without the ports it joins), and every route that is selected or
+        runs between two of those instances. Positions are absolute; the clone
+        offsets them."""
+        inst_ids = list(dict.fromkeys(self._selected_instance_ids()))
+        selected_routes = self._selected_route_ids()
+        for route_id in selected_routes:
+            route = self.document.routes[route_id]
+            for end in (route.instance_id_a, route.instance_id_b):
+                if end in self.document.instances and end not in inst_ids:
+                    inst_ids.append(end)
+        if not inst_ids:
+            return None
+        chosen = set(inst_ids)
+        instances = []
+        for inst_id in inst_ids:
+            inst = self.document.instances[inst_id]
+            instances.append(dict(id=inst_id, spec=inst.component_spec, kwargs=dict(inst.kwargs),
+                                  transform=self.document.get_transform(inst_id), array=inst.array))
+        routes = [
+            dict(a=r.instance_id_a, port_a=r.port_name_a, b=r.instance_id_b, port_b=r.port_name_b,
+                 cross_section=r.cross_section, goal_length_um=r.goal_length_um,
+                 auto_match=r.auto_match, diagonal=r.diagonal)
+            for r in self.document.routes.values()
+            if r.instance_id_a in chosen and r.instance_id_b in chosen
         ]
-        self.statusBar().showMessage(f"Copied {len(self._clipboard)} instance(s)", 2000)
+        return dict(instances=instances, routes=routes)
 
-    def _paste_clipboard(self) -> None:
-        # Deliberately does NOT call undo_stack.undo() on a per-item failure
-        # here (unlike _push_add_instance): tested calling undo() while a
-        # macro is still open between beginMacro()/endMacro() and it produced
-        # confusing, undocumented behavior (count() and callback ordering
-        # didn't match a plain top-level undo at all). A failed paste is
-        # left in the macro instead — harmless, since AddInstanceCommand's
-        # .error guard already makes its redo()/undo() safe no-ops when
-        # placement failed, just a redo-able inert entry in history.
-        if not self._clipboard:
-            return
-        offset = self.view.grid_pitch * 2
-        failures = []
-        self.undo_stack.beginMacro("Paste")
-        for component_spec, kwargs in self._clipboard:
-            command = AddInstanceCommand(self.document, self.scene, component_spec, kwargs, x=offset, y=offset)
-            self.undo_stack.push(command)
-            if command.error is not None:
-                failures.append(component_spec)
-        self.undo_stack.endMacro()
-        if failures:
-            self.statusBar().showMessage(f"Could not paste: {', '.join(failures)}", 6000)
-
-    def _duplicate_selected(self) -> None:
-        """Copy each selected instance in place, nudged two grid steps so it
-        doesn't hide the original, keeping its parameters and its whole
-        transform (rotation, flip, scale) and array. The copies become the
-        selection, so Ctrl+D again steps out a row. One undo step. Routes aren't
-        duplicated: a copy starts unconnected."""
-        from phidler.model.commands import MoveInstanceCommand, SetArrayCommand
+    def _clone_snapshot(self, snapshot: dict, dx: float, dy: float, text: str) -> None:
+        """Place a copy of ``snapshot`` shifted by (dx, dy), as one undo step:
+        each instance with its parameters, rotation, flip, scale and array, and
+        each route between them re-routed between the copies. The copies
+        become the selection."""
+        from phidler.model.commands import AddRouteCommand, MoveInstanceCommand, SetArrayCommand
         from phidler.model.document import ArraySpec
 
-        ids = self._selected_instance_ids()
-        if not ids:
-            return
-        offset = self.view.grid_pitch * 2
-        new_ids, failures = [], []
-        self.undo_stack.beginMacro("Duplicate")
-        for inst_id in ids:
-            inst = self.document.instances[inst_id]
-            t = self.document.get_transform(inst_id)
+        new_id, failures, routed = {}, [], 0
+        self.undo_stack.beginMacro(text)
+        for entry in snapshot["instances"]:
+            t = entry["transform"]
+            # A failed placement is left inert in the macro rather than undone
+            # mid-macro (AddInstanceCommand's .error guard makes it a no-op).
             command = AddInstanceCommand(
-                self.document, self.scene, inst.component_spec, dict(inst.kwargs),
-                x=t.x + offset, y=t.y - offset, rotation=t.rotation, mirror=t.mirror,
-                text=f"Duplicate {inst.component_spec}",
+                self.document, self.scene, entry["spec"], dict(entry["kwargs"]),
+                x=t.x + dx, y=t.y + dy, rotation=t.rotation, mirror=t.mirror,
+                text=f"{text} {entry['spec']}",
             )
             self.undo_stack.push(command)
-            if command.error is not None:  # see _paste_clipboard: left inert in the macro
-                failures.append(inst.component_spec)
+            if command.error is not None:
+                failures.append(entry["spec"])
                 continue
-            new_id = command.inst_id
+            copy_id = command.inst_id
             if t.mag != 1.0:
-                placed = self.document.get_transform(new_id)
+                placed = self.document.get_transform(copy_id)
                 scaled = Transform(x=placed.x, y=placed.y, rotation=placed.rotation, mirror=placed.mirror, mag=t.mag)
-                self.undo_stack.push(MoveInstanceCommand(self.document, self.scene, new_id, placed, scaled))
-            if inst.array != ArraySpec():
-                self.undo_stack.push(SetArrayCommand(self.document, self.scene, new_id, ArraySpec(), inst.array))
-            new_ids.append(new_id)
+                self.undo_stack.push(MoveInstanceCommand(self.document, self.scene, copy_id, placed, scaled))
+            if entry["array"] != ArraySpec():
+                self.undo_stack.push(SetArrayCommand(self.document, self.scene, copy_id, ArraySpec(), entry["array"]))
+            new_id[entry["id"]] = copy_id
+        new_routes = []
+        for r in snapshot["routes"]:
+            if r["a"] not in new_id or r["b"] not in new_id:
+                continue  # an end failed to place
+            before = set(self.document.routes)
+            command = AddRouteCommand(
+                self.document, self.scene, new_id[r["a"]], r["port_a"], new_id[r["b"]], r["port_b"],
+                cross_section=r["cross_section"], goal_length_um=r["goal_length_um"],
+                auto_match=r["auto_match"], diagonal=r["diagonal"], text=f"{text} route",
+            )
+            self.undo_stack.push(command)
+            added = set(self.document.routes) - before
+            if added:
+                routed += 1
+                new_routes.extend(added)
+            else:
+                failures.append(f"route {r['port_a']}-{r['port_b']}")
         self.undo_stack.endMacro()
 
         self.scene.clearSelection()
-        for new_id in new_ids:
-            self.scene.items_by_inst[new_id].setSelected(True)
+        for copy_id in new_id.values():
+            self.scene.items_by_inst[copy_id].setSelected(True)
+        for route_id in new_routes:
+            item = self.scene.route_items.get(route_id)
+            if item is not None:
+                item.setSelected(True)
+        done = f"{len(new_id)} instance(s)" + (f" and {routed} route(s)" if routed else "")
         if failures:
-            self.statusBar().showMessage(f"Could not duplicate: {', '.join(failures)}", 6000)
+            self.statusBar().showMessage(f"{text}: {done}; could not copy {', '.join(failures)}", 6000)
         else:
-            self.statusBar().showMessage(f"Duplicated {len(new_ids)} instance(s)", 2000)
+            self.statusBar().showMessage(f"{text}: {done}", 2000)
+
+    def _copy_selected(self) -> None:
+        snapshot = self._selection_snapshot()
+        if snapshot is None:
+            return
+        self._clipboard = snapshot
+        self._paste_count = 0
+        n, r = len(snapshot["instances"]), len(snapshot["routes"])
+        self.statusBar().showMessage(f"Copied {n} instance(s)" + (f" and {r} route(s)" if r else ""), 2000)
+
+    def _paste_clipboard(self) -> None:
+        """Paste the copied parts and their routes, keeping their layout,
+        two grid steps further out each time so repeated pastes don't stack."""
+        if not self._clipboard:
+            return
+        self._paste_count = getattr(self, "_paste_count", 0) + 1
+        step = self.view.grid_pitch * 2 * self._paste_count
+        self._clone_snapshot(self._clipboard, step, -step, "Paste")
+
+    def _duplicate_selected(self) -> None:
+        """Copy the selection in place, nudged two grid steps so it doesn't hide
+        the original: parts with their parameters, transform and array, and the
+        routes between them (a selected route brings its two end parts). The
+        copies become the selection, so Ctrl+D again steps out a row. One undo
+        step."""
+        snapshot = self._selection_snapshot()
+        if snapshot is None:
+            return
+        offset = self.view.grid_pitch * 2
+        self._clone_snapshot(snapshot, offset, -offset, "Duplicate")
 
     def _select_all(self) -> None:
         for item in self.scene.items_by_inst.values():
