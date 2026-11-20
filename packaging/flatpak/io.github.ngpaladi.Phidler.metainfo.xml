@@ -23,6 +23,16 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.3" date="2026-11-20">
+      <description>
+        <p>Remote simulation works from the Flatpak: its ssh no longer rejects
+        a group-writable SSH config, and setup installs the matching release
+        on the remote instead of trying to upload the app. The remote gets a
+        backend-only install without Qt. A dropped connection is retried
+        rather than triggering a reinstall, and NVIDIA drivers reporting CUDA
+        13 get JAX's CUDA 13 build. The Tidy3D engine is removed.</p>
+      </description>
+    </release>
     <release version="0.4.2" date="2026-11-19">
       <description>
         <p>Typed X, Y and rotation in the Properties panel now move the
