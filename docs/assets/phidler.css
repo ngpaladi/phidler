@@ -96,83 +96,13 @@
 .phi-ticks { fill: #6c7380; font: 500 13px var(--md-text-font-family, sans-serif); }
 .phi-wg { fill: none; stroke: var(--phi-orange); stroke-width: 18; stroke-linecap: round; }
 
-/* Light in the guides: time-averaged intensity, so uniform along a guide
-   and changing only as the device fills. Opacity and glow carry intensity
-   (input = 1); the base values are the steady state on resonance. */
-.phi-light {
-  fill: none; stroke: var(--phi-glow); stroke-width: 8; stroke-linecap: round;
-  filter: drop-shadow(0 0 5px var(--phi-glow));
+/* The pulse (keyframes in hero-pulse.css, from docs/make_hero_pulse.py).
+   Hidden unless animated, so reduced motion shows only the device. */
+.phi-pulse {
+  fill: none; stroke: #fffaf6; stroke-width: 10; stroke-linecap: round;
+  opacity: 0; filter: drop-shadow(0 0 4px #fff) drop-shadow(0 0 10px var(--phi-glow));
 }
-.phi-light--in   { opacity: .85; }
-.phi-light--thru { opacity: 0; }
-.phi-light--drop { opacity: .85; }
-.phi-light--ring {                                  /* ~3.3x the input */
-  stroke: #fff1e8; stroke-width: 11; opacity: 1;
-  filter: drop-shadow(0 0 7px var(--phi-glow)) drop-shadow(0 0 10.8px #f0a07f);
-}
-.phi-front { fill: none; stroke: #fff; stroke-width: 44; }
 .phi-ports text { font-size: 12px; }
-.phi-caption { font-size: 12px; }
-
-@media (prefers-reduced-motion: no-preference) {
-  /* Fronts at 500 units/s: a 250-unit bus in 0.5 s, the 603-unit ring in
-     1.2 s. Light is switched on at 0.3 s. */
-  .phi-front--in   { stroke-dasharray: 262 262; animation: phi-reveal-in .5s linear .3s both; }
-  .phi-front--thru { stroke-dasharray: 262 262; animation: phi-reveal-in .5s linear .8s both; }
-  .phi-front--drop { stroke-dasharray: 262 262; animation: phi-reveal-in .5s linear 1.4s both; }
-  .phi-front--ring { stroke-dasharray: 604 604; animation: phi-reveal-ring 1.2s linear .8s both; }
-
-  /* Each round trip changes the levels; the ring's first light is back at
-     the top coupler at 2.0 s and first reaches the drop coupler at 1.4 s. */
-  .phi-light--thru { animation: phi-thru 10.8s linear .8s both; }
-  .phi-light--ring { animation: phi-ring 10.8s linear .8s both; }
-  .phi-light--drop { animation: phi-drop 10.8s linear 1.4s both; }
-}
-@keyframes phi-reveal-in   { from { stroke-dashoffset: 262; } to { stroke-dashoffset: 0; } }
-@keyframes phi-reveal-ring { from { stroke-dashoffset: 604; } to { stroke-dashoffset: 0; } }
-
-/* Intensity at each round trip (1.2 s = 11.11% of these 10.8 s), from the
-   coupled-mode round-trip model: kappa^2 = 0.3, lossless, on resonance.
-   Ring: 0.3 of the input on the first pass, building to 1/kappa^2 = 3.3
-   (shown past 1 by a wider, brighter glow). Through: 0.7, falling to 0.
-   Drop: kappa^2 x ring, 0.09 rising to 1. Generated; see the comment in
-   overrides/home.html. */
-@keyframes phi-thru {
-  0% { opacity: 0.595; }
-  11.11% { opacity: 0.292; }
-  22.22% { opacity: 0.143; }
-  33.33% { opacity: 0.070; }
-  44.44% { opacity: 0.034; }
-  55.56% { opacity: 0.017; }
-  66.67% { opacity: 0.008; }
-  77.78% { opacity: 0.004; }
-  88.89% { opacity: 0.002; }
-  100% { opacity: 0.001; }
-}
-@keyframes phi-ring {
-  0% { opacity: 0.255; stroke-width: 8.00px; filter: drop-shadow(0 0 4.0px var(--phi-glow)) drop-shadow(0 0 0.0px #f0a07f); }
-  11.11% { opacity: 0.737; stroke-width: 8.00px; filter: drop-shadow(0 0 4.0px var(--phi-glow)) drop-shadow(0 0 0.0px #f0a07f); }
-  22.22% { opacity: 1.000; stroke-width: 8.56px; filter: drop-shadow(0 0 4.6px var(--phi-glow)) drop-shadow(0 0 2.0px #f0a07f); }
-  33.33% { opacity: 1.000; stroke-width: 9.19px; filter: drop-shadow(0 0 5.2px var(--phi-glow)) drop-shadow(0 0 4.3px #f0a07f); }
-  44.44% { opacity: 1.000; stroke-width: 9.68px; filter: drop-shadow(0 0 5.7px var(--phi-glow)) drop-shadow(0 0 6.1px #f0a07f); }
-  55.56% { opacity: 1.000; stroke-width: 10.05px; filter: drop-shadow(0 0 6.1px var(--phi-glow)) drop-shadow(0 0 7.4px #f0a07f); }
-  66.67% { opacity: 1.000; stroke-width: 10.32px; filter: drop-shadow(0 0 6.3px var(--phi-glow)) drop-shadow(0 0 8.3px #f0a07f); }
-  77.78% { opacity: 1.000; stroke-width: 10.52px; filter: drop-shadow(0 0 6.5px var(--phi-glow)) drop-shadow(0 0 9.1px #f0a07f); }
-  88.89% { opacity: 1.000; stroke-width: 10.66px; filter: drop-shadow(0 0 6.7px var(--phi-glow)) drop-shadow(0 0 9.6px #f0a07f); }
-  100% { opacity: 1.000; stroke-width: 10.76px; filter: drop-shadow(0 0 6.8px var(--phi-glow)) drop-shadow(0 0 10.0px #f0a07f); }
-}
-@keyframes phi-drop {
-  0% { opacity: 0.076; }
-  11.11% { opacity: 0.221; }
-  22.22% { opacity: 0.367; }
-  33.33% { opacity: 0.491; }
-  44.44% { opacity: 0.588; }
-  55.56% { opacity: 0.662; }
-  66.67% { opacity: 0.716; }
-  77.78% { opacity: 0.755; }
-  88.89% { opacity: 0.783; }
-  100% { opacity: 0.803; }
-}
 
 .phi-hero__inner { padding: 5.5rem .8rem 6rem; }
 .phi-hero__text { max-width: 30rem; }

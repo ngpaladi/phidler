@@ -43,6 +43,7 @@ theme:
 
 extra_css:
   - assets/phidler.css
+  - assets/hero-pulse.css
 
 nav:
   - Home:
