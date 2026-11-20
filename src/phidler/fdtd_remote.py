@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import collections
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -53,6 +54,12 @@ _RSYNC_EXCLUDES = (".venv", ".git", "__pycache__", "*.egg-info", "build", "dist"
 # RemoteConfig.local_photonfdtd_dir. https (not ssh) so the remote needs no
 # GitHub credentials for the public repo.
 PHOTONFDTD_GIT_URL = "git+https://github.com/ngpaladi/photonfdtd.git"
+# Where an installed (not source-checkout) phidler -- the Flatpak, AppImage,
+# packages, a wheel -- gets its remote copy from: the release tag matching the
+# running version, so the remote runs the same code.
+PHIDLER_GIT_URL = "git+https://github.com/ngpaladi/phidler.git"
+# What the remote never needs: it only runs the solver, never the GUI.
+_GUI_ONLY_PACKAGES = frozenset({"pyside6", "shiboken6"})
 
 
 # ---------------------------------------------------------------------------
@@ -268,23 +275,23 @@ def _editable_checkout_dir(package: str) -> Path | None:
     # phidler and photonfdtd use.
     try:
         mod = __import__(package)
-        return Path(mod.__file__).resolve().parents[2]
+        root = Path(mod.__file__).resolve().parents[2]
     except Exception:
         return None
+    # An installed package (e.g. /app/lib/python3.13/site-packages in the
+    # Flatpak) has no source tree above it; only a real checkout has this.
+    return root if (root / "pyproject.toml").is_file() else None
 
 
-def _local_checkouts(cfg: RemoteConfig) -> tuple[Path, Path | None]:
-    """(phidler_root, photonfdtd_local) to deploy. phidler is always the local
-    editable checkout (the user's working copy). photonfdtd_local is the
+def _local_checkouts(cfg: RemoteConfig) -> tuple[Path | None, Path | None]:
+    """(phidler_root, photonfdtd_local) to deploy. phidler_root is the local
+    editable checkout (the user's working copy), or None when phidler is an
+    installed package (Flatpak, AppImage, wheel): the remote then gets the
+    release matching this version from GitHub. photonfdtd_local is the
     configured override checkout to upload, or None — meaning install photonfdtd
     from GitHub (PHOTONFDTD_GIT_URL) instead of needing a local checkout at all,
     which a machine that only offloads FDTD often won't have."""
     phidler_root = _editable_checkout_dir("phidler")
-    if phidler_root is None:
-        raise RuntimeError(
-            "Can't locate the local phidler source checkout to deploy "
-            "(phidler isn't an editable 'pip install -e' install)."
-        )
     photonfdtd_local: Path | None = None
     if cfg.local_photonfdtd_dir:
         photonfdtd_local = Path(cfg.local_photonfdtd_dir).expanduser()
@@ -544,10 +551,42 @@ def _ensure_remote_venv(alias: str, venv_dir: str, on_line: Callable[[str], None
     return True
 
 
+def _requirement_name(req: str) -> str:
+    return re.split(r"[\s\[<>=!~;@]", req.strip(), maxsplit=1)[0].lower()
+
+
+def backend_requirements(phidler_root: Path | None) -> list[str]:
+    """What the remote needs to run solves: phidler's dependencies and its
+    ``fdtd`` extra, minus the GUI (PySide6). Read from the checkout's
+    pyproject.toml, or from the installed package's metadata when there is no
+    checkout, so the list never drifts from the real one."""
+    reqs: list[str] = []
+    if phidler_root is not None and (phidler_root / "pyproject.toml").is_file():
+        import tomllib
+        project = tomllib.loads((phidler_root / "pyproject.toml").read_text())["project"]
+        reqs = [*project.get("dependencies", []),
+                *project.get("optional-dependencies", {}).get("fdtd", [])]
+    else:
+        import importlib.metadata as md
+        for line in md.requires("phidler") or []:
+            req, _, marker = line.partition(";")
+            marker = marker.replace("'", '"').replace(" ", "")
+            if not marker or marker == 'extra=="fdtd"':
+                reqs.append(req.strip())
+    return [r for r in reqs if _requirement_name(r) not in _GUI_ONLY_PACKAGES]
+
+
 def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
-    """One-time setup: rsync the local phidler + photonfdtd source checkouts to
-    the remote and `pip install -e` both into the remote Python's environment,
-    streaming all output to `on_line`. Returns True on success.
+    """One-time setup: install the solver side of phidler and photonfdtd into
+    a Python environment on the remote, streaming all output to `on_line`.
+    Returns True on success.
+
+    The remote only runs solves, so it gets a backend-only install: phidler's
+    dependencies without the GUI (PySide6/Qt, which a headless server neither
+    needs nor usually has the libraries for), then phidler itself with
+    --no-deps. From a source checkout phidler is uploaded and installed
+    editable; from an installed app (Flatpak, AppImage, packages) the remote
+    gets the GitHub release matching this version.
 
     With just a host configured, this installs under DEFAULT_REMOTE_DIR and
     creates a venv there itself. If the user overrode remote_python, that
@@ -565,7 +604,12 @@ def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
         return False
 
     remote_dir = cfg.resolved_remote_dir()
-    on_line(f"Local phidler:    {phidler_root}")
+    from . import __version__
+    phidler_tag = f"v{__version__}"
+    on_line(
+        f"Local phidler:    {phidler_root}" if phidler_root
+        else f"phidler:          {phidler_tag} from GitHub ({PHIDLER_GIT_URL})"
+    )
     on_line(
         f"Local photonfdtd: {photonfdtd_local}" if photonfdtd_local
         else f"photonfdtd: from GitHub ({PHOTONFDTD_GIT_URL})"
@@ -589,7 +633,7 @@ def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
 
     # Upload the local checkouts: always phidler, plus photonfdtd only when a
     # local override is set (otherwise it comes from GitHub, nothing to upload).
-    uploads = [("phidler", phidler_root)]
+    uploads = [("phidler", phidler_root)] if phidler_root is not None else []
     if photonfdtd_local is not None:
         uploads.insert(0, ("photonfdtd", photonfdtd_local))
     for label, root in uploads:
@@ -608,9 +652,16 @@ def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
         pf_cmd = f"{rpy} -m pip install -e {base}/{shlex.quote(photonfdtd_local.name)}"
     else:
         pf_cmd = f"{rpy} -m pip install {shlex.quote(PHOTONFDTD_GIT_URL)}"
+    deps = " ".join(shlex.quote(r) for r in backend_requirements(phidler_root))
+    if phidler_root is not None:
+        phidler_cmd = f"{rpy} -m pip install --no-deps -e {base}/{shlex.quote(phidler_root.name)}"
+    else:
+        phidler_cmd = (f"{rpy} -m pip install --no-deps --force-reinstall "
+                       f"{shlex.quote(f'{PHIDLER_GIT_URL}@{phidler_tag}')}")
     installs = [
         ("photonfdtd", pf_cmd),
-        ("phidler", f"{rpy} -m pip install -e {base}/{shlex.quote(phidler_root.name + '[fdtd]')}"),
+        ("phidler's solver dependencies (no GUI)", f"{rpy} -m pip install {deps}"),
+        ("phidler (backend only)", phidler_cmd),
     ]
     for label, cmd in installs:
         on_line(f"\nInstalling {label} on the remote …")
@@ -619,11 +670,11 @@ def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
             on_line(f"pip install of {label} failed (exit {rc}).")
             return False
 
-    # Detect the remote's GPU and install the ideal accelerator for it (JAX on
-    # CUDA 12, CuPy on CUDA 11 / ROCm, or nothing for a CPU-only host). Runs the
-    # phidler.remote_setup_probe module just installed above. The accelerator is
+    # Detect the remote's GPU and install the matching JAX build for it (CUDA 13
+    # or 12, or nothing for a CPU-only host). Runs the
+    # phidler.remote_setup_probe module just installed above. The GPU build is
     # optional, so a failure here is logged but doesn't fail the whole setup —
-    # phidler itself is installed and CPU/Numba always works.
+    # phidler itself is installed and JAX on the CPU always works.
     backend_choice = cfg.backend or "auto"
     on_line("\nDetecting remote hardware and setting up the ideal accelerator …")
     probe_cmd = f"{rpy} -m phidler.remote_setup_probe --backend {shlex.quote(backend_choice)} --install"
@@ -631,8 +682,8 @@ def deploy_to_remote(cfg: RemoteConfig, on_line: Callable[[str], None]) -> bool:
     if probe_rc != 0:
         on_line(
             "Accelerator setup didn't complete (exit "
-            f"{probe_rc}); the remote will still run on CPU/Numba. Install a GPU "
-            "package by hand if you need it."
+            f"{probe_rc}); the remote will still run on the CPU. Install JAX's CUDA "
+            "build by hand if you need it."
         )
 
     on_line("\nVerifying the remote install …")

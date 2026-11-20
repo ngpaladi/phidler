@@ -217,9 +217,12 @@ def test_deploy_installs_photonfdtd_before_phidler(monkeypatch):
     assert ok is True
     # both source trees uploaded
     assert {Path(c[0]).name for c in t.rsync_calls} == {"phidler", "photonfdtd"}
-    # photonfdtd installed first (not on PyPI), phidler second with its fdtd extra
+    # photonfdtd first (not on PyPI), then phidler's solver deps, then phidler
+    # itself with --no-deps: a backend-only install, never the GUI
     assert "photonfdtd" in t.stream_cmds[0] and "pip install -e" in t.stream_cmds[0]
-    assert "phidler" in t.stream_cmds[1] and "[fdtd]" in t.stream_cmds[1]
+    assert "gdsfactory" in t.stream_cmds[1] and "PySide6" not in t.stream_cmds[1]
+    assert "pip install --no-deps -e" in t.stream_cmds[2] and "/phidler" in t.stream_cmds[2]
+    assert not any("PySide6" in c or "[fdtd]" in c for c in t.stream_cmds)
 
 
 def test_deploy_reports_pip_failure(monkeypatch):
@@ -275,7 +278,7 @@ def test_deploy_pulls_photonfdtd_from_github_by_default(monkeypatch):
     assert {Path(c[0]).name for c in t.rsync_calls} == {"phidler"}
     pf_install = next(c for c in t.stream_cmds if fr.PHOTONFDTD_GIT_URL in c)
     assert "pip install" in pf_install and "-e" not in pf_install.split(fr.PHOTONFDTD_GIT_URL)[0]
-    assert any("[fdtd]" in c for c in t.stream_cmds)  # phidler still installed with its extra
+    assert any("--no-deps -e" in c and "/phidler" in c for c in t.stream_cmds)
 
 
 def test_local_checkouts_defaults_photonfdtd_to_github(qapp):
@@ -326,9 +329,9 @@ def test_deploy_commands_keep_tilde_and_quote_extra(monkeypatch):
     monkeypatch.setattr(fr, "_local_checkouts",
                         lambda cfg: (Path("/local/phidler"), Path("/local/photonfdtd")))
     fr.deploy_to_remote(_cfg(remote_dir="~/phidler-remote", remote_python="~/phidler-remote/.venv/bin/python"), lambda _l: None)
-    phidler_cmd = t.stream_cmds[1]
+    deps_cmd, phidler_cmd = t.stream_cmds[1], t.stream_cmds[2]
     assert "~/phidler-remote/" in phidler_cmd          # tilde dir expands
-    assert "'phidler[fdtd]'" in phidler_cmd            # the glob-y extra stays literal
+    assert "'matplotlib>=3.7'" in deps_cmd             # the > of a specifier stays literal
 
 
 # -- FdtdWorker dispatch (locks in the remote branch) -------------------------
@@ -876,3 +879,45 @@ def test_ssh_opts_leave_accepted_config_alone(monkeypatch):
     monkeypatch.setattr(fr.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
         a[0], 0, "user me\n", ""))
     assert fr._ssh_opts() == fr._SSH_OPTS
+
+
+def test_backend_requirements_drop_the_gui(tmp_path):
+    """The remote install is phidler's deps plus its fdtd extra, minus Qt."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "phidler"\n'
+        'dependencies = ["gdsfactory>=9.44.0", "PySide6>=6.7.0"]\n'
+        '[project.optional-dependencies]\n'
+        'fdtd = ["photonfdtd>=0.16.2", "matplotlib>=3.7"]\nai = ["mcp>=1.2,<2"]\n')
+    assert fr.backend_requirements(tmp_path) == ["gdsfactory>=9.44.0", "photonfdtd>=0.16.2", "matplotlib>=3.7"]
+
+
+def test_backend_requirements_from_installed_metadata(monkeypatch):
+    import importlib.metadata as md
+    monkeypatch.setattr(md, "requires", lambda name: [
+        "gdsfactory>=9.44.0", "PySide6>=6.7.0", "pytest>=8.0.0; extra == 'dev'",
+        'photonfdtd>=0.16.2; extra == "fdtd"', "matplotlib>=3.7; extra == \"fdtd\""])
+    assert fr.backend_requirements(None) == ["gdsfactory>=9.44.0", "photonfdtd>=0.16.2", "matplotlib>=3.7"]
+
+
+def test_deploy_from_an_installed_app_uses_the_release_tag(monkeypatch):
+    """The Flatpak/AppImage has no source checkout: nothing is uploaded and the
+    remote gets the GitHub release matching this version, backend only."""
+    from phidler import __version__
+    t = FakeTransport()
+    _install(monkeypatch, t)
+    monkeypatch.setattr(fr, "_local_checkouts", lambda cfg: (None, None))
+    assert fr.deploy_to_remote(_cfg(), [].append) is True
+    assert t.rsync_calls == []
+    phidler_cmd = next(c for c in t.stream_cmds if fr.PHIDLER_GIT_URL in c)
+    assert f"{fr.PHIDLER_GIT_URL}@v{__version__}" in phidler_cmd and "--no-deps" in phidler_cmd
+
+
+def test_installed_package_is_not_mistaken_for_a_checkout(monkeypatch, tmp_path):
+    """In the Flatpak, phidler lives in site-packages; walking up from it must
+    not offer site-packages as the 'checkout' to upload."""
+    import types
+    pkg = tmp_path / "lib" / "python3.13" / "site-packages" / "phidler"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    monkeypatch.setitem(__import__("sys").modules, "fakepkg", types.SimpleNamespace(__file__=str(pkg / "__init__.py")))
+    assert fr._editable_checkout_dir("fakepkg") is None
