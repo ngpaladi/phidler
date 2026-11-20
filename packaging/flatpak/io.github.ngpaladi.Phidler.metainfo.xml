@@ -23,6 +23,17 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.2" date="2026-11-19">
+      <description>
+        <p>Typed X, Y and rotation in the Properties panel now move the
+        component when applied, and Enter applies them. Routes can be clicked
+        from a few pixels away, and Duplicate, Copy and Paste bring the routes
+        between the selected parts along. Arrays can be spaced by the gap
+        between copies as well as by pitch. Opening a project that uses a
+        component this install can't build now says which one and why, and
+        leaves the open layout as it was.</p>
+      </description>
+    </release>
     <release version="0.4.1" date="2026-11-19">
       <description>
         <p>A 1 x 2 lithium niobate Mach-Zehnder switch: one input through a
