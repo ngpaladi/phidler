@@ -48,7 +48,7 @@ flatpak override --user --filesystem=/mnt/data io.github.ngpaladi.Phidler
 ```
 
 **Optional extras.** The Flatpak bundles only the core app and the FDTD stack,
-with JAX on the CPU. The `[ai]`, `[tidy3d]` and `[nereid]` extras and JAX's GPU
+with JAX on the CPU. The `[ai]` and `[nereid]` extras and JAX's GPU
 build aren't included, and the runtime has no `pip`. If you have the KDE SDK installed
 (`flatpak install --user flathub org.kde.Sdk//6.11`, about 1 GB), you can add
 them to the app's own persistent Python environment, which lives under
@@ -139,6 +139,13 @@ pip install -e ".[dev]"
 
 Add `docs` to the extras (`pip install -e ".[dev,docs]"`) to also build
 this documentation site.
+
+### Compute server (backend only)
+
+A machine that only runs simulations for Phidler over SSH doesn't need the
+GUI. **Connect & set up** in the app installs everything it needs, without Qt;
+to do it by hand, see
+[what goes on the remote](guide.md#what-goes-on-the-remote).
 
 ## Running it
 

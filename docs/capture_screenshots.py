@@ -900,12 +900,6 @@ def console_ask_claude() -> None:
     crop_bottom("console_ask_claude", fraction=0.42)
 
 
-def fdtd_engine_dropdown() -> None:
-    """The FDTD Engine selector: photonfdtd (local/remote) vs Tidy3D (cloud)."""
-    win, fdtd_win = _fdtd_prop_window_with_sources()
-    _grab_combo_popup(fdtd_win.run_engine_combo, "fdtd_engine_dropdown")
-
-
 def route_length_editor() -> None:
     """The Properties panel's Route editor: select a placed route and change its
     target length (re-runs the meander), undoably."""
@@ -1020,7 +1014,6 @@ def regenerate_all() -> None:
     palette_catalog()
     # Newer features
     console_ask_claude()
-    fdtd_engine_dropdown()
     route_length_editor()
     train_priority_encoder()
     print("done")

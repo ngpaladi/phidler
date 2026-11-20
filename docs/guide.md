@@ -929,14 +929,14 @@ back, while the UI here stays responsive. Tick **Run on remote server** and clic
    authentication; it stores no passwords (key-based, non-interactive auth is
    required).
 2. Pick the remote **Acceleration**, or leave it on **Auto**. Auto inspects the
-   remote's GPU during setup: on an NVIDIA box whose driver supports CUDA 12 it
-   installs JAX's CUDA build so runs go to the GPU, and otherwise runs stay on
-   the CPU. It then remembers what it chose. You can also pin **CPU (JAX)** or
-   **GPU (JAX on CUDA 12)**. Either way it's the *remote's* hardware that
+   remote's GPU during setup: on an NVIDIA box whose driver supports CUDA 12 or
+   13 it installs the matching CUDA build of JAX so runs go to the GPU, and
+   otherwise runs stay on the CPU. It then remembers what it chose. You can also
+   pin **CPU (JAX)** or **GPU (JAX on CUDA 12 or 13)**. Either way it's the *remote's* hardware that
    matters, not this machine's.
 3. Click **Connect && set up**. That one button tests the connection, installs
    phidler + photonfdtd on the remote if they aren't there yet (a one-time step,
-   streamed into the log), detects the remote's hardware and installs the ideal
+   streamed into the log; see [the backend-only install](#what-goes-on-the-remote)), detects the remote's hardware and installs the ideal
    accelerator, verifies, and saves. Click it again any time; it only reinstalls
    when needed (or when you tick **Force reinstall**, e.g. after updating a
    package).
@@ -955,6 +955,28 @@ needs **Connect && set up** once before its first run.
 
 ![Remote server setup dialog: an SSH host list, a remote Acceleration dropdown, and a single Connect and set up button over a log pane](screenshots/remote_config_dialog.png){ width="560" }
 
+##### What goes on the remote
+
+The remote only runs solves, so it gets a *backend-only* install: photonfdtd,
+gdsfactory and matplotlib, then Phidler itself without its GUI dependencies.
+No Qt is installed on the remote, so a headless server needs no display
+libraries. If you run Phidler from a source checkout, setup uploads that
+checkout, so the remote runs your working copy. The Flatpak, AppImage and
+packages instead install the GitHub release matching their own version, so the
+remote always runs the same Phidler as the app.
+
+To prepare a compute server by hand instead (or to script it), install the same
+thing into any Python 3.11–3.13 environment there:
+
+```sh
+python3 -m venv ~/phidler-remote/.venv
+~/phidler-remote/.venv/bin/pip install "gdsfactory>=9.44" "photonfdtd>=0.16.2" "matplotlib>=3.7"
+~/phidler-remote/.venv/bin/pip install --no-deps "git+https://github.com/ngpaladi/phidler.git@v0.4.3"
+```
+
+Use the tag of the Phidler version you run. Add `"jax[cuda13]"` (or `"jax[cuda12]"` for a CUDA 12 driver) for the GPU.
+**Connect && set up** then finds it ready and installs nothing.
+
 The remote must be a POSIX host (Linux/macOS) reachable by key-based SSH.
 Projects that place **custom components** (local `.py` files) can't be offloaded
 (those files don't exist on the remote), and that case is reported as a clear
@@ -969,30 +991,6 @@ encoder, your own dataset, or a target transfer matrix), and the etch pattern
 inside the box is optimized by gradient descent. The result goes back on the
 layout as an ordinary component. See the
 [priority-encoder tutorial](training.md) for a complete walkthrough.
-
-#### Running on Tidy3D (the cloud solver)
-
-The **Engine** dropdown at the top of the run controls picks *which* FDTD solver
-runs the propagation. The default is **photonfdtd** (everything above — local, the
-acceleration options, or SSH). Switch it to **Tidy3D (cloud)** to run the same
-layout on [Flexcompute's Tidy3D](https://www.flexcompute.com/tidy3d/) instead: a
-different engine, not just a different machine. Phidler builds a `tidy3d.Simulation`
-from your placed geometry — the same core/cladding, waveguides, and source
-positions — submits it to Tidy3D's cloud, and plays the returned field movie back
-in the same window.
-
-![The FDTD Engine dropdown open, offering photonfdtd (local / remote) and Tidy3D (cloud)](screenshots/fdtd_engine_dropdown.png){ width="360" }
-
-It's a separate, optional install and needs an account: `pip install
-"phidler[tidy3d]"`, then configure your API key once with `tidy3d configure` (or
-set `TIDY3D_API_KEY`). Until both are in place the **Tidy3D** option is greyed out
-with a tooltip that says which piece is missing. A run **consumes FlexCredits**
-from your Flexcompute account, so phidler asks you to confirm before submitting.
-The Acceleration / Remote / Accuracy options don't apply on this engine (they're
-photonfdtd's), so they grey out when Tidy3D is selected; **Cell size**, **Run
-time**, **Region**, and your **sources** all still apply. This first version
-supports **dipole** sources (the default); mode-matched / scripted / Cherenkov
-sources aren't wired to Tidy3D yet.
 
 **Read the disclaimer in the window.** Both tabs run a real solve against
 your geometry, not a mockup. But treat the results as a qualitative

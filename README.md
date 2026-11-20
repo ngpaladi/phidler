@@ -74,7 +74,7 @@ packaging/flatpak/build.sh           # -> ./Phidler-x86_64.flatpak
 
 The manifest lives in [`packaging/flatpak/`](packaging/flatpak/). The sandbox can
 reach your home directory (for GDS / `.phidler` files), the network, and your SSH
-agent (for remote FDTD runs). The optional `[ai]`, `[tidy3d]` and `[nereid]`
+agent (for remote FDTD runs). The optional `[ai]` and `[nereid]`
 extras aren't bundled; see the [docs](docs/install.md#linux-flatpak) for adding
 them.
 

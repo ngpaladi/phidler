@@ -65,7 +65,7 @@ They carry the same app and the same bundled FDTD stack. The **AppImage** is one
 file you `chmod +x` and run: nothing is installed and nothing needs to be
 downloaded first. The **Flatpak** installs like a regular app, shows up in your
 app menu and runs sandboxed, at the cost of a one-off download of the KDE runtime
-from Flathub. If you want the optional extras (Ask Claude, Tidy3D, remote FDTD,
+from Flathub. If you want the optional extras (Ask Claude, remote FDTD,
 GPU JAX), install from source instead. See [Installation](install.md).
 
 ### The Flatpak can't see files on my external drive
