@@ -69,8 +69,10 @@ routing all round to the grid pitch you set.
 
 ## Array a component
 
-Need a fiber array, a bank of rings, or a splitter tree? Set columns, rows, and
-pitch in the Array section and Phidler tiles the component as a single unit.
+Need a fiber array, a bank of rings, or a splitter tree? Set columns and rows
+in the Array section, then either the pitch (centre to centre) or the padding
+(the gap between neighbouring copies, edge to edge), and Phidler tiles the
+component as a single unit.
 
 ![A vertical grating-coupler array placed as one arrayed instance](screenshots/array_layout.png)
 
