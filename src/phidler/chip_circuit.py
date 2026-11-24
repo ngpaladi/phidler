@@ -288,6 +288,10 @@ class ChipCircuit:
     #: photonfdtd's notes from the last analysis (floating electrodes,
     #: detectors with no circuit, non-convergence), for the tab to show.
     notes: list[str] = field(default_factory=list)
+    #: The per-component FDTD runs behind the passive parts' models (a
+    #: :class:`phidler.component_sim.LayoutSParams`), or None when every
+    #: model is photonfdtd's own.
+    fdtd: object = None
 
     @property
     def nets(self) -> list[str]:
@@ -304,24 +308,57 @@ class ChipCircuit:
     def label(self, name: str) -> str:
         return self.labels.get(name, name)
 
+    def model_kind(self, name: str) -> str:
+        """How instance ``name`` is modelled, for the tab's component list."""
+        kind = type(self.chip.models[name]).__name__
+        if self.fdtd is not None and name in self.fdtd.models:
+            return f"S-matrix, {self.fdtd.how(name)}"
+        return kind
 
-def build_circuit(document, config: CircuitConfig) -> ChipCircuit:
+
+def build_circuit(document, config: CircuitConfig, fdtd=None, progress=None,
+                  cancel=None) -> ChipCircuit:
     """The circuit of ``document``'s layout. Solves the LN cells'
     cross-sections the first time a design is seen (about a minute each;
-    cached on disk after that)."""
+    cached on disk after that).
+
+    ``fdtd`` (a :class:`phidler.component_sim.ComponentSimConfig`) measures
+    the passive components' S-matrices by FDTD, one component at a time,
+    instead of using photonfdtd's ideal models: see
+    :mod:`phidler.component_sim`. With ``fdtd.drive_voltages`` the driven
+    components (modulators, heaters) are run too, at those voltages.
+    ``progress(text)`` is called as that proceeds and ``cancel()`` is polled
+    between runs."""
     if not AVAILABLE:
         raise RuntimeError(UNAVAILABLE_REASON)
     register_cells()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # dangling-port and off-diagonal Pockels notes
-        chip = pc.Chip.from_gdsfactory(
-            document.top,
-            waveguide=dict(neff=config.neff, ng=config.ng, wl0=config.wavelength,
-                           loss_db_cm=config.loss_db_cm),
-            bandwidth=(config.bandwidth_ghz * 1e9) or None,
-            cell_size=config.cell_size,
-            wavelength=config.wavelength,  # LN cross-sections solved here too
-        )
+    measured = None
+
+    def chip_with(models):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # dangling-port and off-diagonal Pockels notes
+            return pc.Chip.from_gdsfactory(
+                document.top,
+                models=models,
+                waveguide=dict(neff=config.neff, ng=config.ng, wl0=config.wavelength,
+                               loss_db_cm=config.loss_db_cm),
+                bandwidth=(config.bandwidth_ghz * 1e9) or None,
+                cell_size=config.cell_size,
+                wavelength=config.wavelength,  # LN cross-sections solved here too
+            )
+
+    if fdtd is not None:
+        from phidler import component_sim
+
+        # Running the driven parts at a voltage starts from photonfdtd's own
+        # models of them (how far each volt moves the index, and where).
+        builtin = chip_with(None).models if fdtd.drive_voltages else None
+        measured = component_sim.layout_sparams(
+            document, fdtd, progress=progress, cancel=cancel, builtin=builtin,
+            lnoi_kwargs=dict(cell_size=config.cell_size, wavelength=config.wavelength))
+        if progress is not None:
+            progress("Joining the components into a circuit…")
+    chip = chip_with(dict(measured.models) if measured is not None else None)
     # Label instances by the layout's own ids where we can match them.
     by_ref = {inst.ref.name: inst for inst in document.instances.values()}
     labels = {}
@@ -333,7 +370,7 @@ def build_circuit(document, config: CircuitConfig) -> ChipCircuit:
         m = chip.models[inst]
         if m.ports or len(m.conductors) > 1 or isinstance(m, (pc.Heater, pc.Photodetector)):
             members[chip.net_names[k]].append(f"{labels.get(inst, inst)}.{cond}")
-    return ChipCircuit(chip, labels, members)
+    return ChipCircuit(chip, labels, members, fdtd=measured)
 
 
 def _drives(circ: ChipCircuit, specs: dict[str, DriveSpec], time: bool):

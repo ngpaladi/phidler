@@ -373,6 +373,16 @@ so they can be regenerated after future UI changes.
     for a 50:50 split from a mode solve at whatever width it is drawn at.
     Walkthrough:
     [docs/chip_simulation.md](docs/chip_simulation.md).
+    - **Component-by-component FDTD**: tick *Measure components by FDTD, one
+      component at a time* and each distinct passive part (bend,
+      taper, splitter, crossing, ring) is simulated alone on its own small
+      grid, its port modes launched and decomposed into an S-matrix, and the
+      circuit joins the S-matrices. Memory is set by the largest single
+      component instead of the whole layout, a part used many times is
+      simulated once, and results are cached on disk. Modulators and heaters
+      can be run too, at the voltages you list (off and on, say): the index
+      change each volt causes is applied under the electrodes and the part
+      is simulated once per voltage (`phidler/component_sim.py`).
   - **Component files** (`*.pcomp.json`): a part's layout, ports, pins and
     circuit model (solved physics, S-parameter table, recipe, optional
     generator) in one JSON file, like a KiCad library part. File > Import
@@ -633,6 +643,7 @@ src/phidler/
   component_files.py         # *.pcomp.json component files: import/register, library scan, export of a selection
   component_libraries.py     # library-folder settings + dialog, export dialog
   chip_circuit.py            # whole-chip circuit simulation on photonfdtd.circuit: LN cell registration, build_circuit, drives, analyses
+  component_sim.py           # component-by-component FDTD: per-cell S-matrices (port stubs, grid-solved port modes, mode decomposition), cache, layout_sparams
   jax_check.py               # diagnose whether JAX really runs on the GPU (fresh child process; python -m phidler.jax_check)
 tests/                       # all run under QT_QPA_PLATFORM=offscreen
 ```

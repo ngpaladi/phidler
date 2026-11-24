@@ -69,6 +69,116 @@ Any other optical component stops the build with a message naming it.
   bits, rounded by the modulator bandwidth set in the tab and by the
   detectors' own bandwidth.
 
+## Component by component: FDTD without the whole layout in memory
+
+An FDTD grid's memory grows with the area it covers (about 100 bytes per
+cell), so one run of a whole layout soon needs more than the machine has. The
+Circuit tab can instead measure each passive component with its own small FDTD
+run and join the results:
+
+1. In the Circuit tab, tick **Measure components by FDTD, one component at a
+   time**.
+2. Click **Build circuit from layout**. The status line names the component
+   and port being simulated; **Stop** ends the build after the run in
+   progress.
+3. Run any analysis as before.
+
+What happens during the build:
+
+- Every *distinct* passive component (a bend, a taper, a splitter, a crossing,
+  a ring, …) is simulated alone. Each of its ports is extended with a straight
+  stub of the port's own cross-section, the stub's guided mode is launched
+  into the component from one port at a time, and the light leaving every port
+  is measured. That gives the component's S-matrix: amplitude and phase from
+  each port to each port, over a band of wavelengths.
+- The circuit solver joins the S-matrices along the layout's connections, so
+  interference, loss and reflections between components are all in the result.
+- A component used many times is simulated once: the euler bend of every
+  route is one run per port, however many routes there are. Results are also
+  kept on disk (`~/.cache/phidler/component_sparams`), so a later build only
+  simulates components that are new or changed. Untick *Reuse cached results*
+  to measure everything again.
+- Straights keep their analytic model (the tab's n_eff, n_g and loss), and
+  detectors and metal keep the models listed above. So do modulators and
+  heaters, unless you give voltages to run them at (next section).
+
+The memory needed is that of the **largest single component**, not of the
+layout. After the build the status line reports both, for example *"the
+largest grid is 65,408 cells, against 309,632 cells for the whole layout in
+one run"*. The *Model* column of the component list shows which parts were
+measured (*S-matrix, FDTD*, or *FDTD (cached)*).
+
+| Setting | Meaning |
+|---|---|
+| **Domain** | *2.5-D (effective index)* collapses the vertical stack and runs in the chip plane: fast, and usually enough for routing parts. *Full 3-D* resolves the stack. |
+| **Simulate** | *Every passive component*, or *only components with no built-in model* (bends, tapers and MMIs then keep their ideal models, and only parts such as crossings and rings are simulated). |
+| **Cell size** | *Auto* is wavelength / 30 in 2.5-D and wavelength / 20 in 3-D. Results at the default are good to a few percent; halve it for a closer answer. |
+| **Band width**, **Wavelengths in band** | The band the S-matrices are recorded over, centred on the tab's *Wavelength*. One pulse covers the whole band, so more wavelengths cost no extra runs. A wavelength sweep outside the band holds the values at the band's edge. |
+| **Largest component grid** | The most cells one component may use, about 100 MB per million. A larger bend, taper or driven part keeps its built-in model, with a note; any other component stops the build with a message naming it. |
+| **Driven parts at (V)** | Voltages to simulate the modulators and heaters at, for example `0, 5`. Empty: they keep photonfdtd's models. See below. |
+
+### Modulators and heaters at a set voltage
+
+Type the voltages you want in **Driven parts at (V)**, separated by commas:
+`0, 5` for off and on, or more points for a sweep. Each modulator and heater
+is then simulated by FDTD once per voltage (times its ports), like any other
+component:
+
+- **A modulator** gets each voltage on its signal electrode, with its grounds
+  at 0 V. A part with two signal electrodes is run at every combination, up to
+  9 states.
+- **A heater** gets each voltage across it; the power is V² / R.
+- **The index change** each volt (or watt) causes comes from photonfdtd's own
+  model of the part: the cross-section solve for the LN cells, P_pi for a
+  heater. It is applied to the waveguide under the electrodes: both arms of an
+  MZI switch with opposite signs, each waveguide of a delta-beta coupler
+  section by section, the whole length of a phase shifter or heater. FDTD then
+  carries the light through the real geometry (the splitter, the bends, the
+  couplers) with that index in place.
+- **The grid** covers the waveguide layers only. Electrodes and pads are not
+  in the optical run, so they add no memory.
+
+The component stays a modulator or heater in the circuit, on the same nets and
+with the same bandwidth, so the drives table and every analysis work as
+before. At the listed voltages the result is the FDTD one. Between two listed
+voltages the amplitude and phase of each S-matrix entry are interpolated, and
+outside them the nearest is held, so list every state you want to read off. A
+status note names the voltages each driven part was measured at.
+
+Each state is cached on its own: adding a voltage later runs only the new one.
+
+Limits: the full-size LN cells (millimetres long) are far over the grid limit
+and keep their models; this is for parts short enough for FDTD. Component
+files that carry their own model, and detectors, are not simulated. A driven
+part with two optical ports must have them in line. Absorption that changes
+with the drive is not included, only the index.
+
+What it assumes:
+
+- **One mode per port.** Only the fundamental mode of each port is followed.
+  Light a component scatters into higher modes or radiation counts as its
+  loss.
+- **Coupling only through ports.** Two parts close enough to couple through
+  their evanescent fields (a ring beside its bus, drawn as two components)
+  must be one component to be simulated together.
+- **Ports facing along x or y** in the component's own frame. The component
+  may still be placed at any rotation.
+- **Resonant parts need time.** A run ends when the light has left the
+  component. A ring that is still ringing at the time limit is reported in a
+  note, and its S-matrix is less accurate.
+
+From Python or the console:
+
+```python
+from phidler import component_sim as cs, chip_circuit as cc
+
+cfg = cs.ComponentSimConfig(wavelength_um=1.55, eim=True)
+sp = cs.simulate_component(cell, doc.project_settings, cfg)   # one component
+sp.s[("o1", "o2")]                                             # complex, per wavelength
+circ = cc.build_circuit(doc, cc.CircuitConfig(), fdtd=cfg)     # the whole layout
+print(circ.fdtd.summary())
+```
+
 ## Component files
 
 Parts can travel as **component files** (`*.pcomp.json`, plain-text JSON).

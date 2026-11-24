@@ -914,6 +914,13 @@ memory. Two things help:
 If even a region is too big, a coarser **cell size** is the other lever (fewer
 cells in every dimension), at some cost in accuracy.
 
+For a measurement *through* a circuit that is too big to grid at once, use the
+Circuit tab's **Measure components by FDTD, one component at a time**:
+each distinct component is simulated alone and the results are joined, so the
+memory needed is that of the largest single component. Modulators and heaters
+can be run the same way at the voltages you list (off and on, say). See
+[Component by component](chip_simulation.md#component-by-component-fdtd-without-the-whole-layout-in-memory).
+
 #### Running on a remote server
 
 If this machine is slow, low on memory, or has no GPU, you can offload a run to

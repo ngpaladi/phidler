@@ -7,13 +7,22 @@ electrodes, heaters and detectors it reaches. The user sets the laser inputs,
 a drive per net (DC, square wave, sine, pulse, PRBS) and runs an operating
 point, a voltage sweep, a wavelength sweep or a time-domain run; photocurrents
 and output powers are plotted and tabulated.
+
+The passive components' models can also be measured by FDTD, one component at
+a time (see phidler.component_sim): each distinct part is simulated alone on a
+small grid and the circuit joins the results, so the memory needed is that of
+the largest single part instead of the whole layout. Modulators and heaters
+are run the same way at the voltages the user lists (off and on, say).
 """
 from __future__ import annotations
+
+import threading
 
 import numpy as np
 from PySide6.QtCore import QCoreApplication, QObject, QPointF, QRectF, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -144,14 +153,15 @@ class CircuitWorker(QObject):
 
     finished = Signal(object)
     failed = Signal(str)
+    progress = Signal(str)
 
-    def __init__(self, fn, *args) -> None:
+    def __init__(self, fn, *args, **kwargs) -> None:
         super().__init__()
-        self.fn, self.args = fn, args
+        self.fn, self.args, self.kwargs = fn, args, kwargs
 
     def run(self) -> None:
         try:
-            out = self.fn(*self.args)
+            out = self.fn(*self.args, **self.kwargs)
         except Exception as exc:  # surfaced in the tab
             self.failed.emit(f"{type(exc).__name__}: {exc}")
             return
@@ -171,6 +181,7 @@ class CircuitTab(QWidget):
         self.result = None
         self._thread: QThread | None = None
         self._worker: CircuitWorker | None = None
+        self._cancel = threading.Event()
 
         outer = QVBoxLayout(self)
         scroll = QScrollArea()
@@ -197,6 +208,7 @@ class CircuitTab(QWidget):
             layout.addWidget(warn)
 
         layout.addWidget(self._build_settings_group())
+        layout.addWidget(self._build_fdtd_group())
         build_row = QHBoxLayout()
         self.build_button = QPushButton("Build circuit from layout")
         self.build_button.setEnabled(cc.AVAILABLE)
@@ -206,6 +218,12 @@ class CircuitTab(QWidget):
             "comes from the cache.")
         self.build_button.clicked.connect(self._on_build)
         build_row.addWidget(self.build_button)
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setEnabled(False)
+        self.stop_button.setToolTip("Stop a component-by-component build after the FDTD run "
+                                    "in progress. Components already measured stay cached.")
+        self.stop_button.clicked.connect(self._on_stop)
+        build_row.addWidget(self.stop_button)
         build_row.addStretch(1)
         layout.addLayout(build_row)
 
@@ -281,6 +299,98 @@ class CircuitTab(QWidget):
         form.addRow("Modulator bandwidth", self.bw_spin)
         return box
 
+    def _build_fdtd_group(self) -> QGroupBox:
+        from phidler import component_sim as cs
+
+        d = cs.ComponentSimConfig()
+        box = QGroupBox("Measure components by FDTD, one component at a time")
+        box.setCheckable(True)
+        box.setChecked(False)
+        box.setToolTip(
+            "Instead of ideal models, simulate each distinct passive component (bend, taper, "
+            "splitter, crossing, ring, …) alone on its own small FDTD grid, and join the "
+            "measured S-matrices along the layout's connections. Memory is then set by the "
+            "largest single component, not the whole layout, and a component used many times "
+            "is simulated once. Results are cached, so only new or changed components run.")
+        self.fdtd_group = box
+        form = QFormLayout(box)
+        note = QLabel(
+            "Each distinct passive part is simulated alone and the circuit joins the results, "
+            "so the whole layout never has to fit in memory at once. Straights keep their "
+            "analytic model; modulators and heaters keep photonfdtd's unless voltages are "
+            "given for them below. Parts are assumed to couple only through their ports.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray; font-size: 9pt;")
+        form.addRow(note)
+        self.fdtd_domain_combo = QComboBox()
+        self.fdtd_domain_combo.addItem("2.5-D (effective index), fast", True)
+        self.fdtd_domain_combo.addItem("Full 3-D", False)
+        form.addRow("Domain", self.fdtd_domain_combo)
+        self.fdtd_scope_combo = QComboBox()
+        self.fdtd_scope_combo.addItem("Every passive component", False)
+        self.fdtd_scope_combo.addItem("Only components with no built-in model", True)
+        form.addRow("Simulate", self.fdtd_scope_combo)
+        self.fdtd_cell_spin = self._spin(0.0, 1.0, 0.0, 4, 0.005, " um")
+        self.fdtd_cell_spin.setSpecialValueText("Auto (wavelength / 30, or / 20 in 3-D)")
+        form.addRow("Cell size", self.fdtd_cell_spin)
+        self.fdtd_span_spin = self._spin(0.0, 2.0, d.span_um, 4, 0.01, " um")
+        self.fdtd_span_spin.setToolTip(
+            "Width of the wavelength band the S-matrices are recorded over, centred on the "
+            "circuit's wavelength. One pulse covers the band. A wavelength sweep outside it "
+            "holds the values at the band's edge.")
+        form.addRow("Band width", self.fdtd_span_spin)
+        self.fdtd_points_spin = QSpinBox()
+        self.fdtd_points_spin.setRange(1, 201)
+        self.fdtd_points_spin.setValue(d.n_wavelengths)
+        form.addRow("Wavelengths in band", self.fdtd_points_spin)
+        self.fdtd_max_cells_spin = self._spin(0.1, 100000.0, d.max_cells / 1e6, 1, 5.0, " M cells")
+        self.fdtd_max_cells_spin.setToolTip(
+            "The largest grid one component may use, about 100 MB per million cells. A "
+            "larger bend or taper keeps its analytic model; any other component stops the "
+            "build with a message.")
+        form.addRow("Largest component grid", self.fdtd_max_cells_spin)
+        self.fdtd_drive_edit = QLineEdit()
+        self.fdtd_drive_edit.setPlaceholderText(
+            "for example 0, 5 (off and on); empty: keep photonfdtd's models")
+        self.fdtd_drive_edit.setToolTip(
+            "Voltages to simulate the modulators and heaters at, separated by commas. Each "
+            "one is run by FDTD once per voltage: on a modulator's signal electrode with its "
+            "grounds at 0 V, or across a heater. The index change each volt causes is taken "
+            "from photonfdtd's model of the part and applied to the waveguide under its "
+            "electrodes. The circuit is exact at these voltages; a drive between two of them "
+            "is interpolated and one outside them is held at the nearest, so list every "
+            "state you want to see (off and on, or the points of a sweep).")
+        form.addRow("Driven parts at (V)", self.fdtd_drive_edit)
+        self.fdtd_cache_check = QCheckBox("Reuse cached results")
+        self.fdtd_cache_check.setChecked(True)
+        form.addRow("", self.fdtd_cache_check)
+        return box
+
+    def fdtd_config(self):
+        """The per-component FDTD settings, or None when the group is off.
+        Raises ValueError when the driven parts' voltages do not parse."""
+        from phidler import component_sim as cs
+
+        if not self.fdtd_group.isChecked():
+            return None
+        text = self.fdtd_drive_edit.text().replace(";", ",")
+        try:
+            volts = tuple(float(v) for v in text.split(",") if v.strip())
+        except ValueError:
+            raise ValueError(f"The driven parts' voltages are not numbers: {text.strip()!r}. "
+                             "Give them separated by commas, for example 0, 5.") from None
+        return cs.ComponentSimConfig(
+            wavelength_um=self.wl_spin.value(),
+            span_um=self.fdtd_span_spin.value(),
+            n_wavelengths=self.fdtd_points_spin.value(),
+            cell_size_um=self.fdtd_cell_spin.value() or None,
+            eim=bool(self.fdtd_domain_combo.currentData()),
+            max_cells=int(self.fdtd_max_cells_spin.value() * 1e6),
+            only_unmodelled=bool(self.fdtd_scope_combo.currentData()),
+            use_cache=self.fdtd_cache_check.isChecked(),
+            drive_voltages=volts,
+        )
+
     def _build_analysis_group(self) -> QGroupBox:
         box = QGroupBox("Analysis")
         form = QFormLayout(box)
@@ -319,11 +429,19 @@ class CircuitTab(QWidget):
     def is_busy(self) -> bool:
         return self._thread is not None
 
-    def _start(self, fn, args, done) -> None:
+    def _start(self, fn, args, done, with_progress: bool = False) -> None:
         self.build_button.setEnabled(False)
         self.run_button.setEnabled(False)
+        self._cancel.clear()
         self._thread = QThread(self)
         self._worker = CircuitWorker(fn, *args)
+        if with_progress:
+            # The job reports through the worker's signal (queued to this
+            # thread) and polls the Stop button's flag between FDTD runs.
+            self._worker.kwargs = dict(progress=self._worker.progress.emit,
+                                       cancel=self._cancel.is_set)
+            self._worker.progress.connect(self.status_label.setText)
+            self.stop_button.setEnabled(True)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.finished.connect(done)
@@ -339,8 +457,14 @@ class CircuitTab(QWidget):
                 obj.deleteLater()
         self._thread = None
         self._worker = None
+        self.stop_button.setEnabled(False)
         self.build_button.setEnabled(cc.AVAILABLE)
         self.run_button.setEnabled(self.circuit is not None)
+
+    def _on_stop(self) -> None:
+        self._cancel.set()
+        self.stop_button.setEnabled(False)
+        self.status_label.setText("Stopping after the FDTD run in progress…")
 
     def _on_failed(self, msg: str) -> None:
         self.status_label.setText(msg)
@@ -351,12 +475,22 @@ class CircuitTab(QWidget):
             return
         self.status_label.setText("Building the circuit (lithium niobate cross-sections are "
                                   "solved the first time a design is seen)…")
-        self._start(cc.build_circuit, (self.document, self.config()), self._on_built)
+        try:
+            fdtd = self.fdtd_config()
+        except ValueError as exc:
+            self.status_label.setText(str(exc))
+            return
+        if fdtd is None:
+            self._start(cc.build_circuit, (self.document, self.config()), self._on_built)
+            return
+        self.status_label.setText("Measuring the components by FDTD, one at a time…")
+        self._start(cc.build_circuit, (self.document, self.config(), fdtd), self._on_built,
+                    with_progress=True)
 
     def _on_built(self, circ: cc.ChipCircuit) -> None:
         self.circuit = circ
         chip = circ.chip
-        rows = [(circ.label(n), type(m).__name__) for n, m in chip.models.items()]
+        rows = [(circ.label(n), circ.model_kind(n)) for n in chip.models]
         self.components_table.setRowCount(len(rows))
         for i, (a, b) in enumerate(rows):
             self.components_table.setItem(i, 0, QTableWidgetItem(a))
@@ -393,6 +527,9 @@ class CircuitTab(QWidget):
         self.status_label.setText(
             f"{len(chip.models)} components, {len(ports)} optical ports, {len(nets)} nets, "
             f"{n_det} photodetector{'s' * (n_det != 1)}. Set the drives and Run.")
+        if circ.fdtd is not None:
+            extra = [circ.fdtd.summary()] + [f"Note: {n}" for n in circ.fdtd.notes()]
+            self.status_label.setText(self.status_label.text() + "\n" + "\n".join(extra))
 
     def _port_label(self, port: str) -> str:
         if self.circuit is None or "," not in port:
@@ -486,6 +623,7 @@ class CircuitTab(QWidget):
         interrupted (an LN solve can take a minute): its results are
         dropped, and its thread is kept alive, unparented, until it ends."""
         thread, worker = self._thread, self._worker
+        self._cancel.set()  # a component-by-component build stops after its current run
         if thread is None:
             return
         for sig in (worker.finished, worker.failed, thread.finished):
@@ -509,6 +647,7 @@ class CircuitTab(QWidget):
 
     def _usable_again(self) -> None:
         if self._thread is None:
+            self.stop_button.setEnabled(False)
             self.build_button.setEnabled(cc.AVAILABLE)
             self.run_button.setEnabled(self.circuit is not None)
             self.status_label.setText("Stopped: the window was closed.")
