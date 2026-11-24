@@ -978,7 +978,7 @@ thing into any Python 3.11–3.13 environment there:
 ```sh
 python3 -m venv ~/phidler-remote/.venv
 ~/phidler-remote/.venv/bin/pip install "gdsfactory>=9.44" "photonfdtd>=0.16.2" "matplotlib>=3.7"
-~/phidler-remote/.venv/bin/pip install --no-deps "git+https://github.com/ngpaladi/phidler.git@v0.4.3"
+~/phidler-remote/.venv/bin/pip install --no-deps "git+https://github.com/ngpaladi/phidler.git@v0.5.0"
 ```
 
 Use the tag of the Phidler version you run. Add `"jax[cuda13]"` (or `"jax[cuda12]"` for a CUDA 12 driver) for the GPU.
