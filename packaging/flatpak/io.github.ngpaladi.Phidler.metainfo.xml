@@ -23,6 +23,17 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.5.0" date="2026-11-23">
+      <description>
+        <p>Component-by-component FDTD in the Circuit tab: each distinct
+        component is simulated alone on its own small grid and the circuit
+        joins the measured S-matrices, so memory is set by the largest single
+        component instead of the whole layout. A part used many times is
+        simulated once and results are cached. Modulators and heaters can be
+        run the same way at the voltages you list, for example off and
+        on.</p>
+      </description>
+    </release>
     <release version="0.4.3" date="2026-11-20">
       <description>
         <p>Remote simulation works from the Flatpak: its ssh no longer rejects

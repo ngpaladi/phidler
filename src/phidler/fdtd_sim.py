@@ -323,6 +323,10 @@ class FdtdParams:
     cell_size_um: float | None = None  # defaults to wavelength_um / 15
     run_time_fs: float | None = None  # defaults to a few pulse widths
     padding_um: float = 0.5
+    # Padding above and below the vertical stack on a 3-D run, when it should
+    # differ from the in-plane padding (None: the same). The z axis has no PML,
+    # so a run that needs wide in-plane padding does not need it vertically.
+    padding_z_um: float | None = None
     pulse_fwhm_fs: float = 3.0
     monitor_interval: int = 4
     # Empty -> build_simulation falls back to one default dipole source at
@@ -373,6 +377,9 @@ class FdtdParams:
 
     def resolved_run_time_fs(self) -> float:
         return self.run_time_fs if self.run_time_fs is not None else self.pulse_fwhm_fs * 8
+
+    def resolved_padding_z_um(self) -> float:
+        return self.padding_um if self.padding_z_um is None else self.padding_z_um
 
 
 @dataclass(frozen=True)
@@ -663,7 +670,8 @@ def estimate_grid_cell_count(
         z_extent, z_pml = 0.0, 0
     else:
         clad_thickness_um = fdtd_clad_thickness_um(settings, params.wavelength_um)
-        z_extent = settings.thickness_um * 1e-6 + 2 * clad_thickness_um * 1e-6 + 2 * padding_m
+        z_extent = (settings.thickness_um * 1e-6 + 2 * clad_thickness_um * 1e-6
+                    + 2 * params.resolved_padding_z_um() * 1e-6)
         z_pml = 12
     grid = pf.Grid(size=(x_extent, y_extent, z_extent), cell_size=cell_size_m, pml_layers=(12, 12, z_pml))
     return int(grid.shape[0]) * int(grid.shape[1]) * int(grid.shape[2])
@@ -1297,7 +1305,7 @@ def build_simulation(
                 (clad, (0.0, thickness_m)),
                 (clad, (thickness_m, thickness_m + clad_thickness_m)),
             ],
-            padding=(padding_m, padding_m, padding_m),
+            padding=(padding_m, padding_m, params.resolved_padding_z_um() * 1e-6),
             **common,
         )
 

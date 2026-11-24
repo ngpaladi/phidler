@@ -914,6 +914,13 @@ memory. Two things help:
 If even a region is too big, a coarser **cell size** is the other lever (fewer
 cells in every dimension), at some cost in accuracy.
 
+For a measurement *through* a circuit that is too big to grid at once, use the
+Circuit tab's **Measure components by FDTD, one component at a time**:
+each distinct component is simulated alone and the results are joined, so the
+memory needed is that of the largest single component. Modulators and heaters
+can be run the same way at the voltages you list (off and on, say). See
+[Component by component](chip_simulation.md#component-by-component-fdtd-without-the-whole-layout-in-memory).
+
 #### Running on a remote server
 
 If this machine is slow, low on memory, or has no GPU, you can offload a run to
@@ -971,7 +978,7 @@ thing into any Python 3.11–3.13 environment there:
 ```sh
 python3 -m venv ~/phidler-remote/.venv
 ~/phidler-remote/.venv/bin/pip install "gdsfactory>=9.44" "photonfdtd>=0.16.2" "matplotlib>=3.7"
-~/phidler-remote/.venv/bin/pip install --no-deps "git+https://github.com/ngpaladi/phidler.git@v0.4.3"
+~/phidler-remote/.venv/bin/pip install --no-deps "git+https://github.com/ngpaladi/phidler.git@v0.5.0"
 ```
 
 Use the tag of the Phidler version you run. Add `"jax[cuda13]"` (or `"jax[cuda12]"` for a CUDA 12 driver) for the GPU.
